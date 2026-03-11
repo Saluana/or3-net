@@ -16,14 +16,26 @@
 
     // Best practices
     "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitAny": true,
+    "noImplicitReturns": true,
+    "noImplicitThis": true,
+    "useUnknownInCatchVariables": true,
     "skipLibCheck": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noPropertyAccessFromIndexSignature": true,
 
-    // Some stricter flags (disabled by default)
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noPropertyAccessFromIndexSignature": false
-  }
+    // Paths
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@sdk/*": ["sdk/*"],
+      "@cli/*": ["cli/*"]
+    }
+  },
+  "include": ["src", "sdk", "cli", "tests", "index.ts", "eslint.config.mjs"]
 }
