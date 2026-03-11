@@ -466,9 +466,82 @@ describe("control plane database", () => {
       },
     });
 
+    alpha.saveJob({
+      job: {
+        job_id: "job_same",
+        workspace_id: "ws_alpha",
+        status: "pending",
+        node_id: "node_same",
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+      task_package: {
+        workspace_id: "ws_alpha",
+        job_id: "job_same",
+        kind: "turn",
+        instructions: "alpha",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+    });
+    beta.saveJob({
+      job: {
+        job_id: "job_same",
+        workspace_id: "ws_beta",
+        status: "pending",
+        node_id: "node_same",
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+      task_package: {
+        workspace_id: "ws_beta",
+        job_id: "job_same",
+        kind: "turn",
+        instructions: "beta",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+    });
+    alpha.saveLease({
+      workspace_id: "ws_alpha",
+      job_id: "job_same",
+      lease: {
+        lease_id: "lease_same",
+        node_id: "node_same",
+        profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        ttl: 60,
+        reset_required: true,
+        state: "active",
+      },
+      expires_at: "2024-01-01T00:01:00.000Z",
+    });
+    beta.saveLease({
+      workspace_id: "ws_beta",
+      job_id: "job_same",
+      lease: {
+        lease_id: "lease_same",
+        node_id: "node_same",
+        profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        ttl: 60,
+        reset_required: true,
+        state: "active",
+      },
+      expires_at: "2024-01-01T00:01:00.000Z",
+    });
+
     expect(alpha.getNode("node_same").pubkey_fingerprint).toBe("fp-a");
     expect(beta.getNode("node_same").pubkey_fingerprint).toBe("fp-b");
     expect(alpha.getPreview("preview_same").preview.path).toBe("/site-a");
     expect(beta.getPreview("preview_same").preview.path).toBe("/site-b");
+    expect(alpha.getJob("job_same").task_package.instructions).toBe("alpha");
+    expect(beta.getJob("job_same").task_package.instructions).toBe("beta");
+    expect(alpha.getLease("lease_same").job_id).toBe("job_same");
+    expect(beta.getLease("lease_same").job_id).toBe("job_same");
   });
 });

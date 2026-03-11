@@ -237,6 +237,16 @@ export class WorkspaceStore {
       .map(parseAgentRow);
   }
 
+  public deleteAgent(agentId: string): void {
+    const result = this.db
+      .prepare("DELETE FROM agents WHERE workspace_id = ? AND id = ?")
+      .run(this.workspaceId, agentId);
+
+    if (result.changes === 0) {
+      throw new Error(`Agent ${agentId} was not found in workspace ${this.workspaceId}`);
+    }
+  }
+
   public saveNode(nodeInput: SaveNodeInput): StoredNode {
     const manifest = nodeManifestSchema.parse(nodeInput.manifest);
     const createdAt = nodeInput.created_at ?? new Date().toISOString();

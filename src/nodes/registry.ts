@@ -66,6 +66,17 @@ export class NodeRegistryService {
     });
 
     const token = `or3n_${createId("cred")}`;
+    const rotatedAt = new Date().toISOString();
+    for (const credential of workspaceStore.listNodeCredentials(nodeId).filter((item) => item.rotated_at === null)) {
+      workspaceStore.saveNodeCredential({
+        credential_id: credential.credential_id,
+        node_id: credential.node_id,
+        token_hash: credential.token_hash,
+        issued_at: credential.issued_at,
+        expires_at: credential.expires_at,
+        rotated_at: rotatedAt,
+      });
+    }
     const expiresAt = new Date(Date.now() + this.credentialTtlMs).toISOString();
     workspaceStore.saveNodeCredential({
       credential_id: createId("nodecred"),

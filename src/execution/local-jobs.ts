@@ -1,8 +1,9 @@
 import { z } from "zod";
 
-import { jobErrorSchema, type Job, type JobStreamEvent, taskPackageSchema, type TaskPackage } from "../contracts/index.ts";
-import type { ControlPlaneDatabase, StoredJobWithDiagnostics } from "../db/index.ts";
+import { jobErrorSchema, type Job, type JobResult, type JobStreamEvent, taskPackageSchema, type TaskPackage } from "../contracts/index.ts";
+import type { ControlPlaneDatabase, StoredJobWithDiagnostics, StoredNode } from "../db/index.ts";
 import { createId } from "../lib/ids.ts";
+import type { RemoteNodeExecutor } from "../nodes/executor.ts";
 import type { SandboxNodeAdapter } from "../nodes/adapter-sandbox.ts";
 import type { LeaseScheduler } from "../scheduler/scheduler.ts";
 import type { InternClient, InternJobEvent } from "../../sdk/intern/index.ts";
@@ -22,6 +23,7 @@ export interface LocalJobServiceOptions {
   readonly streamBroker?: JobStreamBroker;
   readonly leaseScheduler?: LeaseScheduler;
   readonly sandboxNodeAdapter?: SandboxNodeAdapter;
+  readonly remoteNodeExecutor?: RemoteNodeExecutor;
 }
 
 const terminalStatuses = new Set<Job["status"]>(["completed", "failed", "aborted"]);
@@ -54,14 +56,16 @@ export class LocalJobService {
       task_package: taskPackage,
     });
 
-    this.applyEvent(workspaceId, jobId, taskPackage, {
+    const accepted = this.applyEvent(workspaceId, jobId, taskPackage, {
       event: "job.accepted",
       data: { job_id: jobId },
     });
-    this.streamBroker.publish(jobId, {
-      event: "job.accepted",
-      data: { job_id: jobId },
-    });
+    if (accepted) {
+      this.streamBroker.publish(jobId, {
+        event: "job.accepted",
+        data: { job_id: jobId },
+      });
+    }
 
     if (this.shouldUseRemoteExecution(workspaceId)) {
       void this.runRemoteTask(jobId, workspaceId, taskPackage);
@@ -165,8 +169,10 @@ export class LocalJobService {
           sawTerminalEvent = true;
         }
 
-        this.applyEvent(workspaceId, jobId, taskPackage, normalized);
-        this.streamBroker.publish(jobId, normalized);
+        const applied = this.applyEvent(workspaceId, jobId, taskPackage, normalized);
+        if (applied) {
+          this.streamBroker.publish(jobId, normalized);
+        }
       }
 
       if (!sawTerminalEvent) {
@@ -179,27 +185,19 @@ export class LocalJobService {
         retriable: true,
         details: {},
       });
-      const stored = this.options.database.workspace(workspaceId).getJob(jobId);
-      this.options.database.workspace(workspaceId).saveJob({
-        job: {
-          ...stored.job,
-          status: "failed",
-          completed_at: new Date().toISOString(),
-          error: failure,
-        },
-        task_package: taskPackage,
-      });
-      this.streamBroker.publish(jobId, {
+      const failureEvent: JobStreamEvent = {
         event: "job.failed",
         data: failure,
-      });
+      };
+      if (this.applyEvent(workspaceId, jobId, taskPackage, failureEvent)) {
+        this.streamBroker.publish(jobId, failureEvent);
+      }
     }
   }
 
   private async runRemoteTask(jobId: string, workspaceId: string, taskPackage: TaskPackage): Promise<void> {
     const scheduler = this.options.leaseScheduler;
-    const adapter = this.options.sandboxNodeAdapter;
-    if (scheduler === undefined || adapter === undefined) {
+    if (scheduler === undefined) {
       throw new Error("remote execution path is not configured");
     }
 
@@ -209,45 +207,26 @@ export class LocalJobService {
         job_id: jobId,
         task_package: taskPackage,
       });
-      this.applyEvent(workspaceId, jobId, taskPackage, {
+      const node = this.options.database.workspace(workspaceId).getNode(lease.lease.node_id);
+      const started = this.applyEvent(workspaceId, jobId, taskPackage, {
         event: "job.started",
         data: { job_id: jobId },
       });
-      this.streamBroker.publish(jobId, {
-        event: "job.started",
-        data: { job_id: jobId },
-      });
+      if (started) {
+        this.streamBroker.publish(jobId, {
+          event: "job.started",
+          data: { job_id: jobId },
+        });
+      }
 
-      const result = await adapter.executeTask(workspaceId, taskPackage);
-      this.options.database.workspace(workspaceId).saveJob({
-        job: {
-          ...this.options.database.workspace(workspaceId).getJob(jobId).job,
-          status: "completed",
-          node_id: lease.lease.node_id,
-          started_at: new Date().toISOString(),
-          completed_at: new Date().toISOString(),
-          result: {
-            output_text: `sandbox exit ${String(result.exit_code)}`,
-            artifacts: [],
-            meta: {
-              exit_code: result.exit_code,
-              sandbox_id: result.sandbox.id,
-            },
-          },
-        },
-        task_package: taskPackage,
-      });
-      this.streamBroker.publish(jobId, {
+      const result = await this.executeRemoteTask(workspaceId, node.manifest.adapter_kind, node, taskPackage);
+      const completedEvent: JobStreamEvent = {
         event: "job.completed",
-        data: {
-          output_text: `sandbox exit ${String(result.exit_code)}`,
-          artifacts: [],
-          meta: {
-            exit_code: result.exit_code,
-            sandbox_id: result.sandbox.id,
-          },
-        },
-      });
+        data: result,
+      };
+      if (this.applyEvent(workspaceId, jobId, taskPackage, completedEvent)) {
+        this.streamBroker.publish(jobId, completedEvent);
+      }
     } catch (error) {
       const failure = jobErrorSchema.parse({
         code: "remote_execution_failed",
@@ -255,8 +234,10 @@ export class LocalJobService {
         retriable: true,
         details: {},
       });
-      this.applyEvent(workspaceId, jobId, taskPackage, { event: "job.failed", data: failure });
-      this.streamBroker.publish(jobId, { event: "job.failed", data: failure });
+      const failureEvent: JobStreamEvent = { event: "job.failed", data: failure };
+      if (this.applyEvent(workspaceId, jobId, taskPackage, failureEvent)) {
+        this.streamBroker.publish(jobId, failureEvent);
+      }
     }
   }
 
@@ -265,11 +246,11 @@ export class LocalJobService {
     jobId: string,
     taskPackage: TaskPackage,
     event: JobStreamEvent,
-  ): void {
+  ): boolean {
     const workspaceStore = this.options.database.workspace(workspaceId);
     const stored = workspaceStore.getJob(jobId);
     if (terminalStatuses.has(stored.job.status)) {
-      return;
+      return false;
     }
     const now = new Date().toISOString();
 
@@ -282,7 +263,7 @@ export class LocalJobService {
           },
           task_package: taskPackage,
         });
-        return;
+        return true;
       case "job.started":
         workspaceStore.saveJob({
           job: {
@@ -292,7 +273,7 @@ export class LocalJobService {
           },
           task_package: taskPackage,
         });
-        return;
+        return true;
       case "job.completed":
         workspaceStore.saveJob({
           job: {
@@ -304,7 +285,7 @@ export class LocalJobService {
           },
           task_package: taskPackage,
         });
-        return;
+        return true;
       case "job.aborted":
         workspaceStore.saveJob({
           job: {
@@ -315,7 +296,7 @@ export class LocalJobService {
           },
           task_package: taskPackage,
         });
-        return;
+        return true;
       case "job.failed":
         workspaceStore.saveJob({
           job: {
@@ -327,25 +308,62 @@ export class LocalJobService {
           },
           task_package: taskPackage,
         });
-        return;
+        return true;
       case "text.delta":
       case "tool.call":
       case "tool.result":
-        return;
+        return true;
       default:
-        return;
+        return false;
     }
   }
 
   private shouldUseRemoteExecution(workspaceId: string): boolean {
-    if (this.options.leaseScheduler === undefined || this.options.sandboxNodeAdapter === undefined) {
+    if (this.options.leaseScheduler === undefined) {
       return false;
     }
 
     return this.options.database
       .workspace(workspaceId)
       .listNodes()
-      .some((node) => node.status === "approved" && node.health_status !== "stale");
+      .some(
+        (node) =>
+          node.status === "approved" &&
+          node.health_status !== "stale" &&
+          ((node.manifest.adapter_kind === "sandbox" && this.options.sandboxNodeAdapter !== undefined) ||
+            (this.options.remoteNodeExecutor?.canExecute(node) ?? false)),
+      );
+  }
+
+  private async executeRemoteTask(
+    workspaceId: string,
+    adapterKind: string,
+    node: StoredNode,
+    taskPackage: TaskPackage,
+  ): Promise<JobResult> {
+    if (adapterKind === "sandbox") {
+      const adapter = this.options.sandboxNodeAdapter;
+      if (adapter === undefined) {
+        throw new Error("sandbox node adapter is not configured");
+      }
+
+      const result = await adapter.executeTask(workspaceId, taskPackage);
+      return {
+        output_text: `sandbox exit ${String(result.exit_code)}`,
+        artifacts: [],
+        meta: {
+          exit_code: result.exit_code,
+          sandbox_id: result.sandbox.id,
+        },
+      };
+    }
+
+    const executor = this.options.remoteNodeExecutor;
+    if (!executor?.canExecute(node)) {
+      throw new Error(`no remote executor is registered for node ${node.manifest.node_id}`);
+    }
+
+    return executor.executeTask(node, taskPackage);
   }
 
   private finalizeAbort(workspaceId: string, jobId: string): void {

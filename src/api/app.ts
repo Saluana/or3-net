@@ -1,8 +1,10 @@
 import { z } from "zod";
 
 import type { AuthService } from "../auth/service.ts";
-import { previewDescriptorSchema } from "../contracts/index.ts";
+import type { AgentService } from "../agents/index.ts";
+import { agentSchema, previewDescriptorSchema, previewLaunchRequestSchema } from "../contracts/index.ts";
 import type { WorkspacePrincipal } from "../auth/tokens.ts";
+import { consoleEntryPath, renderConsoleHtml } from "../console/index.ts";
 import type { LocalJobService } from "../execution/local-jobs.ts";
 import { createJobRequestSchema } from "../execution/local-jobs.ts";
 import type { SandboxNodeAdapter } from "../nodes/adapter-sandbox.ts";
@@ -21,6 +23,7 @@ interface AppServices {
   readonly authService: AuthService;
   readonly localJobService: LocalJobService;
   readonly nodeRegistryService?: NodeRegistryService;
+  readonly agentService?: AgentService;
   readonly previewService?: PreviewService;
   readonly workspaceFileService?: InMemoryWorkspaceFileService;
   readonly sandboxNodeAdapter?: SandboxNodeAdapter;
@@ -31,6 +34,10 @@ export class Or3NetApp {
 
   public async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    if (request.method === "GET" && url.pathname === consoleEntryPath) {
+      return htmlResponse(renderConsoleHtml());
+    }
 
     const launchCapabilityMatch = new URLPattern({ pathname: "/v1/launch/:token" }).exec(url);
     if (request.method === "GET" && launchCapabilityMatch !== null) {
@@ -60,6 +67,32 @@ export class Or3NetApp {
     const jobAbortMatch = new URLPattern({ pathname: "/v1/jobs/:jobId/abort" }).exec(url);
     if (request.method === "POST" && jobAbortMatch !== null) {
       return this.handleAbortJob(request, requireGroup(jobAbortMatch.pathname.groups, "jobId"));
+    }
+
+    const agentsMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/agents" }).exec(url);
+    if (agentsMatch !== null) {
+      const workspaceId = requireGroup(agentsMatch.pathname.groups, "workspaceId");
+      if (request.method === "GET") {
+        return this.handleListAgents(request, workspaceId);
+      }
+      if (request.method === "POST") {
+        return this.handleCreateAgent(request, workspaceId);
+      }
+    }
+
+    const agentMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/agents/:agentId" }).exec(url);
+    if (agentMatch !== null) {
+      const workspaceId = requireGroup(agentMatch.pathname.groups, "workspaceId");
+      const agentId = requireGroup(agentMatch.pathname.groups, "agentId");
+      if (request.method === "GET") {
+        return this.handleGetAgent(request, workspaceId, agentId);
+      }
+      if (request.method === "PUT" || request.method === "PATCH") {
+        return this.handleUpdateAgent(request, workspaceId, agentId);
+      }
+      if (request.method === "DELETE") {
+        return this.handleDeleteAgent(request, workspaceId, agentId);
+      }
     }
 
     const nodesMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/nodes" }).exec(url);
@@ -100,6 +133,26 @@ export class Or3NetApp {
         requireGroup(nodeServiceLaunchMatch.pathname.groups, "workspaceId"),
         requireGroup(nodeServiceLaunchMatch.pathname.groups, "nodeId"),
         requireGroup(nodeServiceLaunchMatch.pathname.groups, "serviceId"),
+      );
+    }
+
+    const nodeServiceRevokeMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/nodes/:nodeId/services/:serviceId/revoke" }).exec(url);
+    if (request.method === "POST" && nodeServiceRevokeMatch !== null) {
+      return this.handleRevokeNodeService(
+        request,
+        requireGroup(nodeServiceRevokeMatch.pathname.groups, "workspaceId"),
+        requireGroup(nodeServiceRevokeMatch.pathname.groups, "nodeId"),
+        requireGroup(nodeServiceRevokeMatch.pathname.groups, "serviceId"),
+      );
+    }
+
+    const nodeServiceRestartMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/nodes/:nodeId/services/:serviceId/restart" }).exec(url);
+    if (request.method === "POST" && nodeServiceRestartMatch !== null) {
+      return this.handleRestartNodeService(
+        request,
+        requireGroup(nodeServiceRestartMatch.pathname.groups, "workspaceId"),
+        requireGroup(nodeServiceRestartMatch.pathname.groups, "nodeId"),
+        requireGroup(nodeServiceRestartMatch.pathname.groups, "serviceId"),
       );
     }
 
@@ -182,6 +235,49 @@ export class Or3NetApp {
     return jsonResponse(200, response);
   }
 
+  private async handleListAgents(request: Request, workspaceId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "agents:read");
+    const agents = requireAgentService(this.services.agentService).listAgents(principal.workspace_id);
+    return jsonResponse(200, { items: agents });
+  }
+
+  private async handleCreateAgent(request: Request, workspaceId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "agents:write");
+    const agent = agentSchema.parse(await request.json());
+    if (agent.workspace_id !== principal.workspace_id) {
+      throw new HttpError(403, "workspace mismatch");
+    }
+    return jsonResponse(201, {
+      agent: requireAgentService(this.services.agentService).saveAgent(principal.workspace_id, agent),
+    });
+  }
+
+  private async handleGetAgent(request: Request, workspaceId: string, agentId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "agents:read");
+    const agent = requireAgentService(this.services.agentService).getAgent(principal.workspace_id, agentId);
+    return jsonResponse(200, { agent });
+  }
+
+  private async handleUpdateAgent(request: Request, workspaceId: string, agentId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "agents:write");
+    const agent = agentSchema.parse(await request.json());
+    if (agent.workspace_id !== principal.workspace_id) {
+      throw new HttpError(403, "workspace mismatch");
+    }
+    if (agent.agent_id !== agentId) {
+      throw new HttpError(400, "agent id mismatch");
+    }
+    return jsonResponse(200, {
+      agent: requireAgentService(this.services.agentService).saveAgent(principal.workspace_id, agent),
+    });
+  }
+
+  private async handleDeleteAgent(request: Request, workspaceId: string, agentId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "agents:write");
+    requireAgentService(this.services.agentService).deleteAgent(principal.workspace_id, agentId);
+    return new Response(null, { status: 204 });
+  }
+
   private async handleListNodes(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "nodes:read");
     const registry = requireNodeRegistry(this.services.nodeRegistryService);
@@ -226,6 +322,7 @@ export class Or3NetApp {
     const internalLaunch = await adapter.prepareServiceLaunch(principal.workspace_id, node, serviceId);
     const launch = previewService.mintLaunchCapability({
       workspace_id: principal.workspace_id,
+      scope_key: buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId),
       target_url: internalLaunch.target_url,
       delivery_mode: internalLaunch.delivery_mode,
       supports_iframe: internalLaunch.supports_iframe,
@@ -235,6 +332,32 @@ export class Or3NetApp {
       expires_at: internalLaunch.expires_at,
     });
     return jsonResponse(200, launch as unknown as Record<string, unknown>);
+  }
+
+  private async handleRevokeNodeService(request: Request, workspaceId: string, nodeId: string, serviceId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "services:write");
+    const previewService = requirePreviewService(this.services.previewService);
+    const node = requireNodeRegistry(this.services.nodeRegistryService).listNodes(principal.workspace_id).find((item) => item.manifest.node_id === nodeId);
+    if (node === undefined) {
+      throw new HttpError(404, "node not found");
+    }
+    ensureLaunchableNode(node);
+    const revoked = previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
+    return jsonResponse(200, { ok: true, revoked });
+  }
+
+  private async handleRestartNodeService(request: Request, workspaceId: string, nodeId: string, serviceId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "services:write");
+    const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
+    const previewService = requirePreviewService(this.services.previewService);
+    const node = requireNodeRegistry(this.services.nodeRegistryService).listNodes(principal.workspace_id).find((item) => item.manifest.node_id === nodeId);
+    if (node === undefined) {
+      throw new HttpError(404, "node not found");
+    }
+    ensureLaunchableNode(node);
+    previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
+    const result = await adapter.restartService(principal.workspace_id, node, serviceId);
+    return jsonResponse(200, result as unknown as Record<string, unknown>);
   }
 
   private async handleListPreviews(request: Request, workspaceId: string): Promise<Response> {
@@ -259,7 +382,8 @@ export class Or3NetApp {
   private async handleLaunchPreview(request: Request, workspaceId: string, previewId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "previews:read");
     const previewService = requirePreviewService(this.services.previewService);
-    const launch = previewService.launchPreview(principal.workspace_id, previewId);
+    const launchRequest = previewLaunchRequestSchema.parse(await readOptionalJson(request));
+    const launch = previewService.launchPreview(principal.workspace_id, previewId, launchRequest);
     return jsonResponse(200, launch as unknown as Record<string, unknown>);
   }
 
@@ -336,6 +460,15 @@ const hasScope = (principal: WorkspacePrincipal, requiredScope: string): boolean
 const jsonResponse = (status: number, payload: Record<string, unknown>): Response =>
   Response.json(payload, { status });
 
+const htmlResponse = (html: string): Response =>
+  new Response(html, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+
 const requireGroup = (groups: Record<string, string | undefined>, key: string): string => {
   const value = groups[key];
   if (value === undefined) {
@@ -347,6 +480,13 @@ const requireGroup = (groups: Record<string, string | undefined>, key: string): 
 const requireNodeRegistry = (service: NodeRegistryService | undefined): NodeRegistryService => {
   if (service === undefined) {
     throw new HttpError(503, "node registry is not configured");
+  }
+  return service;
+};
+
+const requireAgentService = (service: AgentService | undefined): AgentService => {
+  if (service === undefined) {
+    throw new HttpError(503, "agent service is not configured");
   }
   return service;
 };
@@ -381,6 +521,17 @@ const ensureLaunchableNode = (node: { status: string; health_status: string }): 
   }
 };
 
+const buildServiceLaunchScope = (workspaceId: string, nodeId: string, serviceId: string): string =>
+  `service:${workspaceId}:${nodeId}:${serviceId}`;
+
+const readOptionalJson = async (request: Request): Promise<unknown> => {
+  const text = await request.text();
+  if (text.trim() === "") {
+    return {};
+  }
+  return JSON.parse(text) as unknown;
+};
+
 export const handleAppRequest = async (app: Or3NetApp, request: Request): Promise<Response> => {
   try {
     return await app.fetch(request);
@@ -394,8 +545,16 @@ export const handleAppRequest = async (app: Or3NetApp, request: Request): Promis
     if (error instanceof z.ZodError) {
       return jsonResponse(400, { error: error.issues[0]?.message ?? "invalid request" });
     }
+    if (error instanceof Error && isNotFoundError(error)) {
+      return jsonResponse(404, { error: error.message });
+    }
     return jsonResponse(500, {
       error: error instanceof Error ? error.message : "internal server error",
     });
   }
+};
+
+const isNotFoundError = (error: Error): boolean => {
+  const message = error.message.toLowerCase();
+  return message.includes("was not found") || message.endsWith("not found");
 };

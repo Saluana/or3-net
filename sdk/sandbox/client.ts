@@ -42,7 +42,7 @@ export class HttpSandboxClient implements SandboxClient {
       headers: { Accept: "text/event-stream" },
     });
     if (response.body === null) {
-      return;
+      throw new Error("Sandbox stream response missing body");
     }
     const decoder = new TextDecoder();
     let buffer = "";
@@ -55,6 +55,13 @@ export class HttpSandboxClient implements SandboxClient {
         if (event !== null) {
           yield event;
         }
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim() !== "") {
+      const event = parseSseFrame(buffer);
+      if (event !== null) {
+        yield event;
       }
     }
   }

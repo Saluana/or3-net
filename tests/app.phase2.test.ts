@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import type { SessionProofValidator } from "../src/auth/service.ts";
 import { AuthService, createControlPlaneDatabase, handleAppRequest, LocalJobService, Or3NetApp } from "../src/index.ts";
+import { issueWorkspaceToken } from "../src/auth/tokens.ts";
 import type { InternAbortResponse, InternClient, InternJobEvent, InternSubagentRequest, InternSubagentResponse, InternTurnRequest, InternTurnResponse } from "../sdk/intern/index.ts";
 import { JobStreamBroker } from "../src/execution/job-streams.ts";
 
@@ -78,6 +79,11 @@ describe("phase 2 host API", () => {
     database.saveWorkspace({
       workspace_id: "ws_test",
       name: "Test Workspace",
+      created_at: "2024-01-01T00:00:00.000Z",
+    });
+    database.saveWorkspace({
+      workspace_id: "ws_other",
+      name: "Other Workspace",
       created_at: "2024-01-01T00:00:00.000Z",
     });
     authService = new AuthService({
@@ -223,6 +229,154 @@ describe("phase 2 host API", () => {
 
     await secondReader.cancel();
   });
+
+  test("rejects malformed, expired, and scope-limited credentials", async () => {
+    const malformedResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/jobs", {
+        method: "POST",
+        headers: {
+          Authorization: "Basic not-a-bearer",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_key: "svc:bad-auth",
+          message: "nope",
+        }),
+      }),
+    );
+    expect(malformedResponse.status).toBe(401);
+
+    const expiredToken = await issueWorkspaceToken({
+      secret: "phase2-secret",
+      subject: "user_1",
+      workspace_id: "ws_test",
+      scopes: ["jobs:read", "jobs:write"],
+      ttlMs: -1_000,
+    });
+    const expiredTokenResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/jobs", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${expiredToken.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_key: "svc:expired",
+          message: "nope",
+        }),
+      }),
+    );
+    expect(expiredTokenResponse.status).toBe(401);
+
+    const { api_key: expiredApiKey } = await authService.createApiKey({
+      workspace_id: "ws_test",
+      name: "expired-key",
+      scopes: ["jobs:read", "jobs:write"],
+      expires_at: "2020-01-01T00:00:00.000Z",
+    });
+    const expiredApiResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/jobs", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${expiredApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_key: "svc:expired-key",
+          message: "nope",
+        }),
+      }),
+    );
+    expect(expiredApiResponse.status).toBe(401);
+
+    const { api_key: readonlyKey } = await authService.createApiKey({
+      workspace_id: "ws_test",
+      name: "readonly-key",
+      scopes: ["jobs:read"],
+    });
+    const missingScopeResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/jobs", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${readonlyKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_key: "svc:missing-scope",
+          message: "nope",
+        }),
+      }),
+    );
+    expect(missingScopeResponse.status).toBe(403);
+  });
+
+  test("does not leak job routes across workspaces", async () => {
+    const { api_key: ownerKey } = await exchangeWorkspaceApiKey("ws_test");
+    const createResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/jobs", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${ownerKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_key: "svc:isolated",
+          message: "say hello",
+        }),
+      }),
+    );
+    const job = (await createResponse.json()) as { job_id: string };
+
+    await waitFor(async () => {
+      const stored = await handleAppRequest(
+        app,
+        new Request(`http://or3.test/v1/jobs/${job.job_id}`, {
+          headers: { Authorization: `Bearer ${ownerKey}` },
+        }),
+      );
+      expect(stored.status).toBe(200);
+    });
+
+    const { api_key: otherKey } = await exchangeWorkspaceApiKey("ws_other");
+    const getResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/jobs/${job.job_id}`, {
+        headers: { Authorization: `Bearer ${otherKey}` },
+      }),
+    );
+    expect(getResponse.status).toBe(404);
+
+    const streamResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/jobs/${job.job_id}/stream`, {
+        headers: { Authorization: `Bearer ${otherKey}` },
+      }),
+    );
+    expect(streamResponse.status).toBe(404);
+
+    const abortResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/jobs/${job.job_id}/abort`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${otherKey}` },
+      }),
+    );
+    expect(abortResponse.status).toBe(404);
+  });
+
+  const exchangeWorkspaceApiKey = async (
+    workspaceId: string,
+  ): Promise<Awaited<ReturnType<AuthService["createApiKey"]>>> =>
+    authService.createApiKey({
+      workspace_id: workspaceId,
+      name: `${workspaceId}-key`,
+      scopes: ["jobs:read", "jobs:write"],
+    });
 });
 
 const waitFor = async (callback: () => Promise<void>, timeoutMs = 1_000): Promise<void> => {

@@ -99,6 +99,9 @@ const parseEventStream = async function* (response: Response): AsyncIterable<Int
   if (!response.ok) {
     throw new Error(`Intern stream failed with status ${String(response.status)}`);
   }
+  if (response.body === null) {
+    throw new Error("Intern stream response missing body");
+  }
 
   const body = response.body as ReadableStream<Uint8Array>;
   const decoder = new TextDecoder();

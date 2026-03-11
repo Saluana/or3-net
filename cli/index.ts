@@ -1,1 +1,197 @@
 export const cliName = "or3-net";
+
+interface CliDependencies {
+	readonly fetch: typeof fetch;
+	readonly stdout: { write(chunk: string): void };
+	readonly stderr: { write(chunk: string): void };
+}
+
+interface ParsedArgs {
+	readonly commandPath: string[];
+	readonly flags: Record<string, string>;
+}
+
+const defaultBaseUrl = "http://127.0.0.1:3001";
+
+export const runCli = async (argv: string[], deps: CliDependencies): Promise<number> => {
+	const parsed = parseArgs(argv);
+	const [section, action] = parsed.commandPath;
+
+	if (section === undefined || section === "help" || parsed.flags["help"] !== undefined) {
+		deps.stdout.write(renderHelp());
+		return 0;
+	}
+
+	try {
+		switch (`${section}:${action ?? ""}`) {
+			case "auth:exchange":
+				await handleAuthExchange(parsed.flags, deps);
+				return 0;
+			case "nodes:list":
+				await handleJsonRequest("GET", buildWorkspacePath(parsed.flags, "/nodes"), parsed.flags, deps);
+				return 0;
+			case "nodes:approve":
+				await handleJsonRequest("POST", buildWorkspacePath(parsed.flags, `/nodes/${requireFlag(parsed.flags, "node-id")}/approve`), parsed.flags, deps);
+				return 0;
+			case "nodes:enroll":
+				await handleJsonRequest(
+					"POST",
+					buildWorkspacePath(parsed.flags, "/nodes/enroll"),
+					parsed.flags,
+					deps,
+					parseJsonFlag(parsed.flags, "manifest-json"),
+				);
+				return 0;
+			case "jobs:submit":
+				await handleJsonRequest(
+					"POST",
+					buildWorkspacePath(parsed.flags, "/jobs"),
+					parsed.flags,
+					deps,
+					{
+						session_key: requireFlag(parsed.flags, "session-key"),
+						message: requireFlag(parsed.flags, "message"),
+						allowed_tools: splitCsv(parsed.flags["allowed-tools"]),
+					},
+				);
+				return 0;
+			case "jobs:get":
+				await handleJsonRequest("GET", `/v1/jobs/${requireFlag(parsed.flags, "job-id")}`, parsed.flags, deps);
+				return 0;
+			case "jobs:stream":
+				await handleStreamRequest(`/v1/jobs/${requireFlag(parsed.flags, "job-id")}/stream`, parsed.flags, deps);
+				return 0;
+			case "agents:list":
+				await handleJsonRequest("GET", buildWorkspacePath(parsed.flags, "/agents"), parsed.flags, deps);
+				return 0;
+			default:
+				deps.stderr.write(`Unknown command: ${parsed.commandPath.join(" ")}\n\n${renderHelp()}`);
+				return 1;
+		}
+	} catch (error) {
+		deps.stderr.write(`${error instanceof Error ? error.message : "CLI command failed"}\n`);
+		return 1;
+	}
+};
+
+const parseArgs = (argv: string[]): ParsedArgs => {
+	const commandPath: string[] = [];
+	const flags: Record<string, string> = {};
+
+	for (let index = 0; index < argv.length; index += 1) {
+		const value = argv[index];
+		if (value === undefined) {
+			continue;
+		}
+		if (value.startsWith("--")) {
+			const key = value.slice(2);
+			const next = argv[index + 1];
+			if (next === undefined || next.startsWith("--")) {
+				flags[key] = "true";
+				continue;
+			}
+			flags[key] = next;
+			index += 1;
+			continue;
+		}
+
+		commandPath.push(value);
+	}
+
+	return { commandPath, flags };
+};
+
+const buildWorkspacePath = (flags: Record<string, string>, suffix: string): string =>
+	`/v1/workspaces/${requireFlag(flags, "workspace-id")}${suffix}`;
+
+const requireFlag = (flags: Record<string, string>, key: string): string => {
+	const value = flags[key];
+	if (value === undefined || value.trim() === "") {
+		throw new Error(`Missing required flag --${key}`);
+	}
+	return value;
+};
+
+const parseJsonFlag = (flags: Record<string, string>, key: string): unknown => JSON.parse(requireFlag(flags, key)) as unknown;
+
+const splitCsv = (value: string | undefined): string[] =>
+	value === undefined || value.trim() === "" ? [] : value.split(",").map((item) => item.trim()).filter((item) => item !== "");
+
+const buildUrl = (flags: Record<string, string>, path: string): URL => new URL(path, flags["base-url"] ?? defaultBaseUrl);
+
+const authHeaders = (flags: Record<string, string>, includeJson: boolean): Record<string, string> => ({
+	...(flags["token"] === undefined ? {} : { Authorization: `Bearer ${flags["token"]}` }),
+	...(includeJson ? { "Content-Type": "application/json" } : {}),
+});
+
+const handleAuthExchange = async (flags: Record<string, string>, deps: CliDependencies): Promise<void> => {
+	await handleJsonRequest(
+		"POST",
+		"/v1/auth/exchange",
+		flags,
+		deps,
+		{
+			provider: flags["provider"] ?? "test",
+			workspace_id: requireFlag(flags, "workspace-id"),
+			session_proof: flags["proof-json"] === undefined ? { ok: true } : parseJsonFlag(flags, "proof-json"),
+		},
+	);
+};
+
+const handleJsonRequest = async (
+	method: string,
+	path: string,
+	flags: Record<string, string>,
+	deps: CliDependencies,
+	body?: unknown,
+): Promise<void> => {
+	const response = await deps.fetch(buildUrl(flags, path), {
+		method,
+		headers: authHeaders(flags, body !== undefined),
+		...(body === undefined ? {} : { body: JSON.stringify(body) }),
+	});
+	const text = await response.text();
+	if (!response.ok) {
+		throw new Error(text === "" ? `Request failed with status ${String(response.status)}` : text);
+	}
+	deps.stdout.write(`${formatJson(text)}\n`);
+};
+
+const handleStreamRequest = async (path: string, flags: Record<string, string>, deps: CliDependencies): Promise<void> => {
+	const response = await deps.fetch(buildUrl(flags, path), {
+		method: "GET",
+		headers: authHeaders(flags, false),
+	});
+	if (!response.ok) {
+		throw new Error(`Stream request failed with status ${String(response.status)}`);
+	}
+	deps.stdout.write(`${await response.text()}\n`);
+};
+
+const formatJson = (text: string): string => {
+	try {
+		return JSON.stringify(JSON.parse(text) as unknown, null, 2);
+	} catch {
+		return text;
+	}
+};
+
+const renderHelp = (): string => `${cliName} commands:
+	auth exchange --workspace-id <id> [--provider test] [--proof-json '{"ok":true}'] [--base-url <url>]
+	nodes list --workspace-id <id> --token <token> [--base-url <url>]
+	nodes enroll --workspace-id <id> --token <token> --manifest-json '<json>' [--base-url <url>]
+	nodes approve --workspace-id <id> --node-id <id> --token <token> [--base-url <url>]
+	jobs submit --workspace-id <id> --session-key <key> --message <text> --token <token> [--allowed-tools a,b]
+	jobs get --job-id <id> --token <token> [--base-url <url>]
+	jobs stream --job-id <id> --token <token> [--base-url <url>]
+	agents list --workspace-id <id> --token <token> [--base-url <url>]
+`;
+
+if (import.meta.main) {
+	const exitCode = await runCli(Bun.argv.slice(2), {
+		fetch,
+		stdout: { write: (chunk) => process.stdout.write(chunk) },
+		stderr: { write: (chunk) => process.stderr.write(chunk) },
+	});
+	process.exit(exitCode);
+}

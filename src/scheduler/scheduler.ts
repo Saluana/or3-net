@@ -17,7 +17,24 @@ export class LeaseScheduler {
 
   public issueLease(input: ScheduleJobInput): StoredLease {
     const workspaceStore = this.options.database.workspace(input.workspace_id);
-    const leases = workspaceStore.listLeases();
+    const nowIso = new Date().toISOString();
+    const leases = workspaceStore.listLeases().map((lease) => {
+      if (lease.lease.state !== "active" || Date.parse(lease.expires_at) > Date.now()) {
+        return lease;
+      }
+
+      return workspaceStore.saveLease({
+        workspace_id: input.workspace_id,
+        job_id: lease.job_id,
+        lease: {
+          ...lease.lease,
+          state: "expired",
+        },
+        created_at: lease.created_at,
+        expires_at: lease.expires_at,
+        released_at: lease.released_at ?? nowIso,
+      });
+    });
     const approvedNodes = workspaceStore
       .listNodes()
       .filter((node) => node.status === "approved")

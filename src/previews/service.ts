@@ -1,4 +1,4 @@
-import type { PreviewDescriptor, PreviewLaunchMetadata } from "../contracts/index.ts";
+import type { PreviewDescriptor, PreviewLaunchMetadata, PreviewLaunchRequest } from "../contracts/index.ts";
 import type { ControlPlaneDatabase, StoredPreview } from "../db/index.ts";
 import { createId } from "../lib/ids.ts";
 
@@ -6,6 +6,7 @@ interface LaunchCapability {
   readonly token: string;
   readonly workspace_id: string;
   readonly preview_id?: string;
+  readonly scope_key?: string;
   readonly target_url: string;
   readonly expires_at: string;
   readonly revoked: boolean;
@@ -23,6 +24,7 @@ export class PreviewStateError extends Error {
 export class PreviewService {
   private readonly launchCapabilities = new Map<string, LaunchCapability>();
   private readonly previewLaunchTokens = new Map<string, Set<string>>();
+  private readonly scopedLaunchTokens = new Map<string, Set<string>>();
 
   public constructor(private readonly database: ControlPlaneDatabase) {}
 
@@ -38,7 +40,7 @@ export class PreviewService {
     return this.database.workspace(workspaceId).savePreview({ preview });
   }
 
-  public launchPreview(workspaceId: string, previewId: string): PreviewLaunchMetadata {
+  public launchPreview(workspaceId: string, previewId: string, request?: PreviewLaunchRequest): PreviewLaunchMetadata {
     const stored = this.database.workspace(workspaceId).getPreview(previewId);
     if (stored.preview.status === "revoked") {
       throw new PreviewStateError(403, "preview has been revoked");
@@ -46,12 +48,13 @@ export class PreviewService {
     if (stored.preview.expires_at !== undefined && Date.parse(stored.preview.expires_at) <= Date.now()) {
       throw new PreviewStateError(410, "preview has expired");
     }
+    const supportsIframe = shouldOfferIframe(stored.preview, request);
     return this.mintLaunchCapability({
       workspace_id: workspaceId,
       preview_id: previewId,
       target_url: this.buildPreviewTargetUrl(stored.preview),
-      delivery_mode: stored.preview.delivery_mode,
-      supports_iframe: stored.preview.supports_iframe,
+      delivery_mode: resolveDeliveryMode(stored.preview, request, supportsIframe),
+      supports_iframe: supportsIframe,
       supports_new_tab: stored.preview.supports_new_tab,
       reused_tunnel: false,
       service_status: stored.preview.status,
@@ -81,12 +84,14 @@ export class PreviewService {
     readonly service_status: PreviewLaunchMetadata["service_status"];
     readonly expires_at: string;
     readonly preview_id?: string;
+    readonly scope_key?: string;
   }): PreviewLaunchMetadata {
     const token = createId("launchcap");
     this.launchCapabilities.set(token, {
       token,
       workspace_id: input.workspace_id,
       ...(input.preview_id === undefined ? {} : { preview_id: input.preview_id }),
+      ...(input.scope_key === undefined ? {} : { scope_key: input.scope_key }),
       target_url: input.target_url,
       expires_at: input.expires_at,
       revoked: false,
@@ -96,6 +101,12 @@ export class PreviewService {
       const existing = this.previewLaunchTokens.get(input.preview_id) ?? new Set<string>();
       existing.add(token);
       this.previewLaunchTokens.set(input.preview_id, existing);
+    }
+
+    if (input.scope_key !== undefined) {
+      const existing = this.scopedLaunchTokens.get(input.scope_key) ?? new Set<string>();
+      existing.add(token);
+      this.scopedLaunchTokens.set(input.scope_key, existing);
     }
 
     const launchUrl = `https://or3.local/v1/launch/${token}`;
@@ -125,6 +136,26 @@ export class PreviewService {
       target_url: capability.target_url,
       workspace_id: capability.workspace_id,
     };
+  }
+
+  public revokeLaunchScope(scopeKey: string): number {
+    const tokens = this.scopedLaunchTokens.get(scopeKey);
+    if (tokens === undefined) {
+      return 0;
+    }
+
+    let revokedCount = 0;
+    for (const token of tokens) {
+      const capability = this.launchCapabilities.get(token);
+      if (capability !== undefined && !capability.revoked) {
+        this.launchCapabilities.set(token, {
+          ...capability,
+          revoked: true,
+        });
+        revokedCount += 1;
+      }
+    }
+    return revokedCount;
   }
 
   private revokeLaunchCapabilitiesForPreview(previewId: string): void {
@@ -160,3 +191,25 @@ export class PreviewService {
     throw new PreviewStateError(403, "preview target is not available");
   }
 }
+
+const shouldOfferIframe = (preview: PreviewDescriptor, request?: PreviewLaunchRequest): boolean => {
+  if (!preview.supports_iframe) {
+    return false;
+  }
+
+  return request?.launch_mode_hint !== "new_tab" && request?.launch_mode_hint !== "external_browser";
+};
+
+const resolveDeliveryMode = (
+  preview: PreviewDescriptor,
+  request: PreviewLaunchRequest | undefined,
+  supportsIframe: boolean,
+): PreviewLaunchMetadata["delivery_mode"] => {
+  if (request?.launch_mode_hint === "pane") {
+    return supportsIframe ? "embedded" : "external-preferred";
+  }
+  if (request?.launch_mode_hint === "new_tab" || request?.launch_mode_hint === "external_browser") {
+    return "external";
+  }
+  return preview.delivery_mode;
+};

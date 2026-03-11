@@ -57,10 +57,13 @@ class FakeSandboxClient implements SandboxClient {
   public createCalls: string[] = [];
   public deleteCalls: string[] = [];
   public getCalls: string[] = [];
+  public tunnelCreateCalls: string[] = [];
   public failExecFor = new Set<string>();
+  public failNextExecCount = 0;
+  private nextSandboxId = 1;
 
   public create(request: CreateSandboxRequest): Promise<SandboxInfo> {
-    const sandbox = { id: `sbx_${request.workspace_id}`, status: "ready", workspace_id: request.workspace_id };
+    const sandbox = { id: `sbx_${request.workspace_id}_${String(this.nextSandboxId++)}`, status: "ready", workspace_id: request.workspace_id };
     this.createCalls.push(sandbox.id);
     this.sandboxes.set(sandbox.id, sandbox);
     return Promise.resolve(sandbox);
@@ -79,6 +82,10 @@ class FakeSandboxClient implements SandboxClient {
     return Promise.resolve();
   }
   public exec(sandboxId: string, request: SandboxExecRequest): Promise<SandboxExecResult> {
+    if (this.failNextExecCount > 0) {
+      this.failNextExecCount -= 1;
+      return Promise.reject(new Error("sandbox exec failed"));
+    }
     if (this.failExecFor.has(sandboxId)) {
       return Promise.reject(new Error("sandbox exec failed"));
     }
@@ -104,6 +111,7 @@ class FakeSandboxClient implements SandboxClient {
       url: `https://launch.local/${sandboxId}/${String(request.target_port)}`,
       state: "ready",
     };
+    this.tunnelCreateCalls.push(tunnel.id);
     const current = this.tunnels.get(sandboxId) ?? [];
     current.push(tunnel);
     this.tunnels.set(sandboxId, current);
@@ -229,6 +237,46 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     expect(revokedLaunchResponse.status).toBe(410);
   });
 
+  test("returns embedded pane launch metadata for iframe-safe previews and falls back to new-tab mode", async () => {
+    const token = await exchangeToken(app, "ws_preview");
+    previewService.registerPreview("ws_preview", {
+      preview_id: "preview_pane",
+      workspace_id: "ws_preview",
+      kind: "static-site",
+      delivery_mode: "embedded-preferred",
+      source_type: "files",
+      path: "/site",
+      entry_path: "/site/index.html",
+      status: "ready",
+      supports_iframe: true,
+      supports_new_tab: true,
+    });
+
+    const paneResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/previews/preview_pane/launch", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ launch_mode_hint: "pane" }),
+      }),
+    );
+    const panePayload = (await paneResponse.json()) as { delivery_mode: string; embed_url?: string };
+    expect(panePayload.delivery_mode).toBe("embedded");
+    expect(panePayload.embed_url).toContain("https://or3.local/v1/launch/");
+
+    const tabResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/previews/preview_pane/launch", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ launch_mode_hint: "new_tab" }),
+      }),
+    );
+    const tabPayload = (await tabResponse.json()) as { delivery_mode: string; embed_url?: string };
+    expect(tabPayload.delivery_mode).toBe("external");
+    expect(tabPayload.embed_url).toBeUndefined();
+  });
+
   test("denies launching expired previews", async () => {
     const token = await exchangeToken(app, "ws_preview");
     previewService.registerPreview("ws_preview", {
@@ -346,6 +394,21 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     const launchPayload = (await launchResponse.json()) as { launch_url: string };
     expect(launchPayload.launch_url).toContain("https://or3.local/v1/launch/");
 
+    const revokeResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/nodes/node_service/services/openclaw/revoke", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(revokeResponse.status).toBe(200);
+
+    const revokedLaunchResponse = await handleAppRequest(
+      app,
+      new Request(launchPayload.launch_url.replace("https://or3.local", "http://or3.test")),
+    );
+    expect(revokedLaunchResponse.status).toBe(410);
+
     const otherToken = await authService.createApiKey({
       workspace_id: "ws_other",
       name: "other-key",
@@ -362,8 +425,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
 
   test("recycles sandbox-backed task execution safely when execution fails", async () => {
     const adapter = new SandboxNodeAdapter(sandboxClient);
-    const firstSandbox = await sandboxClient.create({ workspace_id: "ws_preview" });
-    sandboxClient.failExecFor.add(firstSandbox.id);
+    sandboxClient.failNextExecCount = 1;
 
     let failure: Error | null = null;
     try {
@@ -387,6 +449,127 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
 
     expect(sandboxClient.deleteCalls.length).toBeGreaterThan(0);
     expect(sandboxClient.createCalls.length).toBeGreaterThan(1);
+  });
+
+  test("reuses existing service tunnels on subsequent launches", async () => {
+    const token = await exchangeToken(app, "ws_preview");
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_reuse",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "sandbox",
+      capabilities: ["exec", "network", "service:openclaw:3000:OpenClaw Dashboard"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["https"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: true, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    await nodeRegistry.enrollNode("ws_preview", { ...unsignedManifest, signature: signNodeManifest(unsignedManifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_preview", "node_reuse");
+
+    const firstResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/nodes/node_reuse/services/openclaw/launch", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    const firstLaunch = (await firstResponse.json()) as { reused_tunnel: boolean };
+
+    const secondResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/nodes/node_reuse/services/openclaw/launch", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    const secondLaunch = (await secondResponse.json()) as { reused_tunnel: boolean };
+
+    expect(firstLaunch.reused_tunnel).toBeFalse();
+    expect(secondLaunch.reused_tunnel).toBeTrue();
+    expect(sandboxClient.tunnelCreateCalls).toHaveLength(1);
+  });
+
+  test("restarts sandbox-backed services and forces a fresh tunnel on next launch", async () => {
+    const token = await exchangeToken(app, "ws_preview");
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_restart",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "sandbox",
+      capabilities: ["exec", "network", "service:openclaw:3000:OpenClaw Dashboard"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["https"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: true, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    await nodeRegistry.enrollNode("ws_preview", { ...unsignedManifest, signature: signNodeManifest(unsignedManifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_preview", "node_restart");
+
+    await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/nodes/node_restart/services/openclaw/launch", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+
+    const restartResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/nodes/node_restart/services/openclaw/restart", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(restartResponse.status).toBe(200);
+    expect(sandboxClient.deleteCalls.length).toBeGreaterThan(0);
+
+    const relaunched = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/nodes/node_restart/services/openclaw/launch", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    const relaunchedPayload = (await relaunched.json()) as { reused_tunnel: boolean };
+    expect(relaunchedPayload.reused_tunnel).toBeFalse();
+    expect(sandboxClient.tunnelCreateCalls).toHaveLength(2);
+  });
+
+  test("rejects file-backed previews with no target path", () => {
+    previewService.registerPreview("ws_preview", {
+      preview_id: "preview_missing_target",
+      workspace_id: "ws_preview",
+      kind: "static-site",
+      delivery_mode: "embedded-preferred",
+      source_type: "files",
+      status: "ready",
+      supports_iframe: true,
+      supports_new_tab: true,
+    });
+
+    expect(() => previewService.launchPreview("ws_preview", "preview_missing_target")).toThrow(
+      "file-backed preview is missing a target path",
+    );
+  });
+
+  test("expires direct launch capabilities even when they are not tied to a stored preview", () => {
+    const launch = previewService.mintLaunchCapability({
+      workspace_id: "ws_preview",
+      target_url: "https://launch.local/direct",
+      delivery_mode: "external",
+      supports_iframe: false,
+      supports_new_tab: true,
+      reused_tunnel: false,
+      service_status: "ready",
+      expires_at: "2020-01-01T00:00:00.000Z",
+    });
+
+    const token = launch.launch_url.split("/").pop();
+    expect(token).toBeDefined();
+    expect(() => previewService.resolveLaunchCapability(token ?? "")).toThrow("launch capability has expired");
   });
 });
 

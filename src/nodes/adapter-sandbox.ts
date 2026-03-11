@@ -60,15 +60,39 @@ export class SandboxNodeAdapter {
     }
 
     const sandbox = await this.ensureNodeSandbox(workspaceId, node.manifest.node_id);
-    const tunnel = await this.ensureTunnel(sandbox.id, service.target_port);
+    const { tunnel, reused } = await this.ensureTunnel(sandbox.id, service.target_port);
     return {
       target_url: tunnel.url,
       delivery_mode: "external",
       supports_iframe: false,
       supports_new_tab: true,
-      reused_tunnel: tunnel.state === "ready",
+      reused_tunnel: reused,
       service_status: "ready",
       expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+    };
+  }
+
+  public async restartService(workspaceId: string, node: StoredNode, serviceId: string): Promise<{ service_id: string; status: "ready" }> {
+    const service = this.listServices(node).find((candidate) => candidate.service_id === serviceId);
+    if (service === undefined) {
+      throw new Error(`service ${serviceId} is not available on node ${node.manifest.node_id}`);
+    }
+
+    const existing = this.nodeSandboxes.get(node.manifest.node_id);
+    if (existing !== undefined) {
+      this.nodeSandboxes.delete(node.manifest.node_id);
+      try {
+        await this.sandboxClient.delete(existing.id);
+      } catch {
+        // best effort restart cleanup
+      }
+    }
+
+    const replacement = await this.warmPool.acquire(workspaceId);
+    this.nodeSandboxes.set(node.manifest.node_id, replacement);
+    return {
+      service_id: service.service_id,
+      status: "ready",
     };
   }
 
@@ -89,12 +113,13 @@ export class SandboxNodeAdapter {
     };
   }
 
-  private async ensureTunnel(sandboxId: string, targetPort: number): Promise<SandboxTunnel> {
+  private async ensureTunnel(sandboxId: string, targetPort: number): Promise<{ tunnel: SandboxTunnel; reused: boolean }> {
     const existing = (await this.sandboxClient.listTunnels(sandboxId)).find((tunnel) => tunnel.target_port === targetPort);
     if (existing !== undefined) {
-      return existing;
+      return { tunnel: existing, reused: true };
     }
-    return this.sandboxClient.createTunnel(sandboxId, { target_port: targetPort, label: "service-launch" });
+    const tunnel = await this.sandboxClient.createTunnel(sandboxId, { target_port: targetPort, label: "service-launch" });
+    return { tunnel, reused: false };
   }
 
   private async ensureNodeSandbox(workspaceId: string, nodeId: string): Promise<SandboxInfo> {

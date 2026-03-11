@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "cli": "bun run cli/index.ts",
     "lint": "bunx eslint .",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"

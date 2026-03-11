@@ -3,7 +3,7 @@
 ## 1. External prerequisites
 
 - [x] [Req P0.1] Track the `or3-intern` internal service API work in `/Users/brendon/Documents/or3-intern/planning/or3-net-plan.md` and keep `or3-net` assumptions aligned with the final endpoint/auth shape.
-- [ ] [Req P0.2] Confirm the existing `or3-sandbox` HTTP API is sufficient for a TypeScript SDK; record any missing contract or documentation gaps in `/Users/brendon/Documents/or3-sandbox/planning/or3-net-plan.md`.
+- [x] [Req P0.2] Confirm the existing `or3-sandbox` HTTP API is sufficient for a TypeScript SDK; record any missing contract or documentation gaps in `/Users/brendon/Documents/or3-sandbox/planning/or3-net-plan.md`.
 - [x] [Req P0.3] Finalize the `or3-intern` TypeScript SDK surface in `or3-net` only after the service API event model and auth header scheme are frozen.
 
 ## 2. Contracts and project skeleton
@@ -26,7 +26,7 @@
 - [x] [Req 5.1] Implement `POST /v1/auth/exchange` with provider-agnostic session proof validation hooks.
 - [x] [Req 2.1, 2.2, 2.3] Implement job create/get/stream/abort routes and durable status transitions.
 - [x] [Req 4.1, 4.2, 4.4] Implement node list/enroll/approve routes and short-lived credential issuance.
-- [ ] [Req 6.1] Implement agent CRUD routes sized for the first chat plugin workflow.
+- [x] [Req 6.1] Implement agent CRUD routes sized for the first chat plugin workflow.
 - [x] [Req 6.1] Implement node service list/launch routes so `or3-chat` can open dashboards like OpenClaw via an opaque `launch_url`.
 - [x] [Req 6.1] Implement workspace file list/read routes and preview list/launch/revoke routes for static and live previews.
 
@@ -34,7 +34,7 @@
 
 - [x] [Req 4.3] Implement capability matching, node selection, lease issuance, and lease timeout handling.
 - [x] [Req 4.5] Implement warm pool tracking, hard-reset workflow, health verification, and failed-reset quarantine.
-- [ ] [Req 4.6] Implement transport abstraction so HTTPS/WSS and outbound WSS share one RPC contract and scheduler path.
+- [x] [Req 4.6] Implement transport abstraction so HTTPS/WSS and outbound WSS share one RPC contract and scheduler path.
 
 ## 6. Execution backends
 
@@ -47,16 +47,16 @@
 
 ## 7. Client surfaces
 
-- [ ] [Req 6.1] Build the Bun CLI for auth, node administration, job submission, and streaming inspection.
-- [ ] [Req 6.1] Build the minimal authenticated web console for operators and workspace admins.
+- [x] [Req 6.1] Build the Bun CLI for auth, node administration, job submission, and streaming inspection.
+- [x] [Req 6.1] Build the minimal authenticated web console for operators and workspace admins.
 - [ ] [Req 6.1] Coordinate plugin delivery through `/Users/brendon/Documents/or3/or3-chat/planning/or3-net-plan.md` rather than embedding chat-specific UX work in `or3-net`.
-- [ ] [Req 6.1] Add service-oriented node actions (`Open Dashboard`, `Revoke Access`, optional `Restart Service`) before exposing any lower-level tunnel management UI.
-- [ ] [Req 6.1] Add embedded pane preview support for static sites with `Open in New Tab` fallback for apps that cannot or should not be framed.
+- [x] [Req 6.1] Add service-oriented node actions (`Open Dashboard`, `Revoke Access`, optional `Restart Service`) before exposing any lower-level tunnel management UI.
+- [x] [Req 6.1] Add embedded pane preview support for static sites with `Open in New Tab` fallback for apps that cannot or should not be framed.
 
 ## 8. Security and policy hardening
 
-- [ ] [Req 4.1, 4.2, 4.4, 5.3] Enforce signature verification, approval gates, workspace isolation, and credential rotation.
-- [ ] [Req 3.2, 4.5] Enforce explicit task-package boundaries and reset-before-reuse safeguards.
+- [x] [Req 4.1, 4.2, 4.4, 5.3] Enforce signature verification, approval gates, workspace isolation, and credential rotation.
+- [x] [Req 3.2, 4.5] Enforce explicit task-package boundaries and reset-before-reuse safeguards.
 - [x] [Req 5.1, 5.2] Add scope checks and expiry handling for exchanged tokens and API keys.
 - [x] [Req 5.3, 6.1] Ensure launch endpoints mint only short-lived browser capabilities and never return raw sandbox bearer credentials to end-user clients.
 - [x] [Req 5.3, 6.1] Enforce iframe embedding rules, preview URL expiry, frame-ancestor restrictions, and revocation semantics for embedded previews.
@@ -64,9 +64,9 @@
 ## 9. Tests and acceptance
 
 - [x] [Req P0.3, 2.2, 2.3] Add SDK and host API tests for job submit/stream/abort flows.
-- [ ] [Req 4.1, 4.2, 4.6] Add node enrollment, manifest change, credential expiry, and transport parity tests.
-- [ ] [Req 5.3] Add workspace isolation regression tests across jobs, nodes, leases, and streams.
-- [ ] [Req 4.3, 4.5] Add scheduler and warm-pool recovery tests for node drop, lease expiry, and reset failures.
+- [x] [Req 4.1, 4.2, 4.6] Add node enrollment, manifest change, credential expiry, and transport parity tests.
+- [x] [Req 5.3] Add workspace isolation regression tests across jobs, nodes, leases, and streams.
+- [x] [Req 4.3, 4.5] Add scheduler and warm-pool recovery tests for node drop, lease expiry, and reset failures.
 - [ ] [Req 6.1] Add end-to-end tests covering chat plugin token exchange, job creation, live stream viewing, and abort.
 - [x] [Req 6.1] Add end-to-end tests for service launch: authorized dashboard open, expired launch URL, revoked tunnel, and workspace/user mismatch rejection.
 - [x] [Req 6.1] Add end-to-end tests for static previews in pane mode, `Open in New Tab` fallback, iframe denial cases, and preview revoke/expiry handling.
