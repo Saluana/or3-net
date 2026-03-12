@@ -1,5 +1,24 @@
 # Cross-Project Platform Standardization — Tasks
 
+## Recommended Implementation Order
+
+Use a contract-first rollout to avoid breakage:
+
+1. Complete Phase 1 in `or3-net` first: freeze vocabulary, canonical types, fixtures, compatibility policy, and contract tests before changing runtime behavior.
+2. Add non-breaking scaffolding in `or3-net`: introduce `ErrorEnvelope`, `AuditContext`, `PlatformSessionRef`, normalized stream/event types, and compatibility helpers without requiring consumers to switch immediately.
+3. Update backend providers before enforcing the new contract in public APIs:
+	- `or3-intern` first for audit/session metadata acceptance and `session_key` contract alignment.
+	- `or3-sandbox` second for `workspace_id` → `tenant_id` mapping, service-account scope alignment, and capability semantics.
+4. Turn on boundary normalization in `or3-net`: switch public/operator errors to the canonical envelope, normalize backend error/event shapes, formalize capability lifecycle, and add idempotency/retry behavior.
+5. Update consumers last: migrate `or3-chat` only after the upstream `or3-net` contract is stable and fixture-tested.
+
+Guiding rules:
+
+- Readers before writers: make services accept new metadata before requiring it.
+- Adapters before enforcement: normalize old shapes first, then tighten validation.
+- Providers before consumers: backend boundaries stabilize before `or3-chat` consumes them.
+- Fixture tests gate every boundary: each boundary should have passing contract tests before the next consumer-facing step.
+
 Tasks are organized by project in execution order. `or3-net` goes first as the boundary owner, then `or3-intern`, then `or3-sandbox`, and finally `or3-chat`.
 
 ---
