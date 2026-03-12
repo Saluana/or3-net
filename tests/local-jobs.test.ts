@@ -7,6 +7,8 @@ import {
   LeaseScheduler,
   LocalJobService,
   NodeRegistryService,
+  NodeTransportRegistry,
+  RemoteNodeExecutor,
   SandboxNodeAdapter,
   signNodeManifest,
 } from "../src/index.ts";
@@ -96,6 +98,26 @@ class FakeSandboxClient implements SandboxClient {
     return Promise.resolve();
   }
 
+  public list(): Promise<SandboxInfo[]> {
+    return Promise.resolve([...this.sandboxes.values()]);
+  }
+
+  public start(sandboxId: string): Promise<SandboxInfo> {
+    return this.get(sandboxId);
+  }
+
+  public stop(sandboxId: string): Promise<SandboxInfo> {
+    return this.get(sandboxId);
+  }
+
+  public suspend(sandboxId: string): Promise<SandboxInfo> {
+    return this.get(sandboxId);
+  }
+
+  public resume(sandboxId: string): Promise<SandboxInfo> {
+    return this.get(sandboxId);
+  }
+
   public exec(sandboxId: string, request: SandboxExecRequest): Promise<SandboxExecResult> {
     this.execCalls.push({ sandboxId, request });
     return Promise.resolve({ exit_code: 0, stdout: "ok" });
@@ -114,6 +136,23 @@ class FakeSandboxClient implements SandboxClient {
     return Promise.resolve();
   }
 
+  public readFile(sandboxId: string, path: string): Promise<{ path: string; content: string; encoding?: string }> {
+    void sandboxId;
+    return Promise.resolve({ path, content: "" });
+  }
+
+  public deleteFile(sandboxId: string, path: string): Promise<void> {
+    void sandboxId;
+    void path;
+    return Promise.resolve();
+  }
+
+  public mkdir(sandboxId: string, path: string): Promise<void> {
+    void sandboxId;
+    void path;
+    return Promise.resolve();
+  }
+
   public createTunnel(sandboxId: string, request: CreateTunnelRequest): Promise<SandboxTunnel> {
     return Promise.resolve({
       id: `tun_${sandboxId}_${String(request.target_port)}`,
@@ -127,6 +166,106 @@ class FakeSandboxClient implements SandboxClient {
   public listTunnels(sandboxId: string): Promise<SandboxTunnel[]> {
     void sandboxId;
     return Promise.resolve([]);
+  }
+
+  public revokeTunnel(tunnelId: string): Promise<void> {
+    void tunnelId;
+    return Promise.resolve();
+  }
+
+  public runtimeInfo(): Promise<Record<string, unknown>> {
+    return Promise.resolve({ runtime: "docker" });
+  }
+
+  public runtimeHealth(): Promise<Record<string, unknown>> {
+    return Promise.resolve({ status: "ok" });
+  }
+
+  public runtimeCapacity(): Promise<Record<string, unknown>> {
+    return Promise.resolve({ total: 1, available: 1 });
+  }
+
+  public getQuota(): Promise<Record<string, unknown>> {
+    return Promise.resolve({});
+  }
+
+  public getMetrics(): Promise<string> {
+    return Promise.resolve("");
+  }
+}
+
+class AbortableRemoteTransport {
+  public abortCalls = 0;
+  public executeCalls = 0;
+  public releaseSignal: (() => void) | null = null;
+
+  public create() {
+    return {
+      kind: "outbound-wss" as const,
+      startExecution: async () => {
+        this.executeCalls += 1;
+        let aborted = false;
+        const result = new Promise<{ output_text: string; artifacts: never[]; meta: Record<string, unknown> }>((resolve, reject) => {
+          this.releaseSignal = () => {
+            if (aborted) {
+              reject(new Error("remote aborted"));
+              return;
+            }
+            resolve({ output_text: "remote complete", artifacts: [], meta: { via: "remote" } });
+          };
+        });
+        return {
+          nodeId: "node_remote_rpc",
+          stream: (async function* () {
+            yield { event: "text.delta", data: { text: "remote working" } } as const;
+          })(),
+          result,
+          abort: async () => {
+            aborted = true;
+            this.abortCalls += 1;
+            this.releaseSignal?.();
+          },
+        };
+      },
+    };
+  }
+}
+
+class FailingRemoteTransport {
+  public constructor(
+    private readonly mode: "start" | "disconnect" | "stream-disconnect" | "abort",
+  ) {}
+
+  public create() {
+    return {
+      kind: "outbound-wss" as const,
+      startExecution: async () => {
+        if (this.mode === "start") {
+          throw new Error("dial tcp node failed");
+        }
+
+        return {
+          nodeId: "node_remote_fail",
+          result:
+            this.mode === "disconnect"
+              ? Promise.reject(new Error("connection closed"))
+              : this.mode === "stream-disconnect"
+                ? new Promise<{ output_text: string; artifacts: never[]; meta: Record<string, unknown> }>(() => undefined)
+              : new Promise<{ output_text: string; artifacts: never[]; meta: Record<string, unknown> }>(() => undefined),
+          stream:
+            this.mode === "stream-disconnect"
+              ? (async function* () {
+                  throw new Error("stream connection closed");
+                })()
+              : undefined,
+          abort: async () => {
+            if (this.mode === "abort") {
+              throw new Error("abort rpc failed");
+            }
+          },
+        };
+      },
+    };
   }
 }
 
@@ -284,6 +423,217 @@ describe("local job execution", () => {
     expect(internClient.submitTurnStreamCalls).toBe(0);
     expect(sandboxClient.execCalls).toHaveLength(1);
     expect(database.workspace("ws_jobs").listLeases()).toHaveLength(1);
+    expect(database.workspace("ws_jobs").listLeases()[0]?.lease.state).toBe("released");
+  });
+
+  test("aborts remote executor jobs via upstream handle and suppresses later completion", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_remote_rpc",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote",
+      capabilities: ["exec"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["outbound-wss"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: false, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    const nodeRegistry = new NodeRegistryService({ database });
+    await nodeRegistry.enrollNode("ws_jobs", { ...unsignedManifest, signature: signNodeManifest(unsignedManifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_jobs", "node_remote_rpc");
+
+    const transportRegistry = new NodeTransportRegistry();
+    const transport = new AbortableRemoteTransport();
+    transportRegistry.registerNodeTransport("node_remote_rpc", transport.create());
+
+    const broker = new JobStreamBroker();
+    const service = new LocalJobService({
+      database,
+      internClient: new ScriptedInternClient(async function* () {}),
+      streamBroker: broker,
+      leaseScheduler: new LeaseScheduler({ database }),
+      remoteNodeExecutor: new RemoteNodeExecutor(transportRegistry, database),
+    });
+
+    const created = service.submitJob("ws_jobs", { session_key: "svc:remote-abort", message: "abort remote" });
+
+    await waitFor(() => {
+      expect(service.getJob("ws_jobs", created.job_id).job.status).toBe("running");
+    });
+
+    const response = await service.abortJob("ws_jobs", created.job_id);
+    expect(response).toEqual({ ok: true, job_id: created.job_id });
+
+    await waitFor(() => {
+      const stored = service.getJob("ws_jobs", created.job_id).job;
+      expect(stored.status).toBe("aborted");
+      expect(database.workspace("ws_jobs").listLeases()[0]?.lease.state).toBe("released");
+    });
+
+    expect(transport.abortCalls).toBe(1);
+    expect(broker.history(created.job_id).map((event) => event.event)).toEqual([
+      "job.accepted",
+      "job.started",
+      "text.delta",
+      "job.aborted",
+    ]);
+  });
+
+  test("marks remote startup failures with a stable error code", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const manifest: UnsignedManifest = {
+      node_id: "node_remote_fail",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote",
+      capabilities: ["exec"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["outbound-wss"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: false, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    const nodeRegistry = new NodeRegistryService({ database });
+    await nodeRegistry.enrollNode("ws_jobs", { ...manifest, signature: signNodeManifest(manifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_jobs", "node_remote_fail");
+
+    const registry = new NodeTransportRegistry();
+    registry.registerNodeTransport("node_remote_fail", new FailingRemoteTransport("start").create());
+
+    const service = new LocalJobService({
+      database,
+      internClient: new ScriptedInternClient(async function* () {}),
+      streamBroker: new JobStreamBroker(),
+      leaseScheduler: new LeaseScheduler({ database }),
+      remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
+    });
+
+    const created = service.submitJob("ws_jobs", { session_key: "svc:remote-start-fail", message: "start fail" });
+
+    await waitFor(() => {
+      const stored = service.getJob("ws_jobs", created.job_id).job;
+      expect(stored.status).toBe("failed");
+      expect(stored.error?.code).toBe("remote_execution_start_failed");
+    });
+  });
+
+  test("marks transport disconnects with a stable error code", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const manifest: UnsignedManifest = {
+      node_id: "node_remote_disconnect",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote",
+      capabilities: ["exec"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["outbound-wss"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: false, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    const nodeRegistry = new NodeRegistryService({ database });
+    await nodeRegistry.enrollNode("ws_jobs", { ...manifest, signature: signNodeManifest(manifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_jobs", "node_remote_disconnect");
+
+    const registry = new NodeTransportRegistry();
+    registry.registerNodeTransport("node_remote_disconnect", new FailingRemoteTransport("disconnect").create());
+
+    const service = new LocalJobService({
+      database,
+      internClient: new ScriptedInternClient(async function* () {}),
+      streamBroker: new JobStreamBroker(),
+      leaseScheduler: new LeaseScheduler({ database }),
+      remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
+    });
+
+    const created = service.submitJob("ws_jobs", { session_key: "svc:remote-disconnect", message: "disconnect" });
+
+    await waitFor(() => {
+      const stored = service.getJob("ws_jobs", created.job_id).job;
+      expect(stored.status).toBe("failed");
+      expect(stored.error?.code).toBe("remote_transport_disconnected");
+    });
+  });
+
+  test("fails remote jobs with a stable abort error code when upstream abort fails", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const manifest: UnsignedManifest = {
+      node_id: "node_remote_abort_fail",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote",
+      capabilities: ["exec"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["outbound-wss"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: false, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    const nodeRegistry = new NodeRegistryService({ database });
+    await nodeRegistry.enrollNode("ws_jobs", { ...manifest, signature: signNodeManifest(manifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_jobs", "node_remote_abort_fail");
+
+    const registry = new NodeTransportRegistry();
+    registry.registerNodeTransport("node_remote_abort_fail", new FailingRemoteTransport("abort").create());
+
+    const service = new LocalJobService({
+      database,
+      internClient: new ScriptedInternClient(async function* () {}),
+      streamBroker: new JobStreamBroker(),
+      leaseScheduler: new LeaseScheduler({ database }),
+      remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
+    });
+
+    const created = service.submitJob("ws_jobs", { session_key: "svc:remote-abort-fail", message: "abort fail" });
+
+    await waitFor(() => {
+      expect(service.getJob("ws_jobs", created.job_id).job.status).toBe("running");
+    });
+
+    await expect(service.abortJob("ws_jobs", created.job_id)).rejects.toThrow("abort rpc failed");
+
+    await waitFor(() => {
+      const stored = service.getJob("ws_jobs", created.job_id).job;
+      expect(stored.status).toBe("failed");
+      expect(stored.error?.code).toBe("remote_abort_failed");
+      expect(database.workspace("ws_jobs").listLeases()[0]?.lease.state).toBe("failed");
+    });
+  });
+
+  test("fails fast and releases capacity when the remote progress stream disconnects", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const manifest: UnsignedManifest = {
+      node_id: "node_remote_stream_disconnect",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote",
+      capabilities: ["exec"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["outbound-wss"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: false, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    const nodeRegistry = new NodeRegistryService({ database });
+    await nodeRegistry.enrollNode("ws_jobs", { ...manifest, signature: signNodeManifest(manifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_jobs", "node_remote_stream_disconnect");
+
+    const registry = new NodeTransportRegistry();
+    registry.registerNodeTransport("node_remote_stream_disconnect", new FailingRemoteTransport("stream-disconnect").create());
+
+    const service = new LocalJobService({
+      database,
+      internClient: new ScriptedInternClient(async function* () {}),
+      streamBroker: new JobStreamBroker(),
+      leaseScheduler: new LeaseScheduler({ database }),
+      remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
+    });
+
+    const created = service.submitJob("ws_jobs", { session_key: "svc:remote-stream-disconnect", message: "disconnect" });
+
+    await waitFor(() => {
+      const stored = service.getJob("ws_jobs", created.job_id).job;
+      expect(stored.status).toBe("failed");
+      expect(stored.error?.code).toBe("remote_transport_disconnected");
+      expect(database.workspace("ws_jobs").listLeases()[0]?.lease.state).toBe("released");
+    });
   });
 });
 

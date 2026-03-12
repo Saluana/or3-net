@@ -56,6 +56,7 @@ export interface NodeCredentialRow {
   readonly node_id: string;
   readonly workspace_id: string;
   readonly token_hash: string;
+  readonly token_ciphertext: string | null;
   readonly issued_at: number;
   readonly expires_at: number;
   readonly rotated_at: number | null;
@@ -185,6 +186,7 @@ export interface StoredNodeCredential {
   readonly node_id: string;
   readonly workspace_id: string;
   readonly token_hash: string;
+  readonly token_ciphertext: string | null;
   readonly issued_at: string;
   readonly expires_at: string;
   readonly rotated_at: string | null;
@@ -261,6 +263,13 @@ export const schemaMigrations: readonly Migration[] = [
       "DROP TABLE nodes_v1",
       "DROP TABLE api_keys_v1",
       "PRAGMA foreign_keys = ON",
+    ],
+  },
+  {
+    version: 3,
+    name: "node-credential-runtime-token",
+    statements: [
+      "ALTER TABLE node_credentials ADD COLUMN token_ciphertext TEXT",
     ],
   },
 ];

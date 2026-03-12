@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { HttpsNodeTransport, NodeTransportRegistry, OutboundWssNodeTransport, RemoteNodeExecutor } from "../src/index.ts";
-import { taskPackageSchema, type NodeRequest } from "../src/contracts/index.ts";
+import { taskPackageSchema, type NodeRequest, type NodeEvent } from "../src/contracts/index.ts";
 
 const baseNode = {
   workspace_id: "ws_transport",
@@ -16,13 +16,15 @@ const baseNode = {
 };
 
 describe("node transport abstraction", () => {
-  test("executes the same RPC contract over https and outbound-wss", async () => {
+  test("executes the same lifecycle contract over https and outbound-wss", async () => {
     const seenMethods: string[] = [];
+    const seenAuth: string[] = [];
     const fetchTransport = new HttpsNodeTransport({
       endpoint: "https://node.example/rpc",
       fetch: ((_input, init) => {
         const payload = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as NodeRequest;
         seenMethods.push(`https:${payload.method}`);
+        seenAuth.push(init?.headers instanceof Headers ? (init.headers.get("Authorization") ?? "") : String((init?.headers as Record<string, string> | undefined)?.Authorization ?? ""));
         return Promise.resolve(new Response(
           JSON.stringify({
             id: payload.id,
@@ -32,12 +34,14 @@ describe("node transport abstraction", () => {
         ));
       }) as typeof fetch,
     });
-    const wssTransport = new OutboundWssNodeTransport((payload) => {
+    const wssTransport = new OutboundWssNodeTransport();
+    wssTransport.attachConnection("node_wss", async (payload, context) => {
       seenMethods.push(`outbound-wss:${payload.method}`);
-      return Promise.resolve({
+      seenAuth.push(context.credential.token);
+      return {
         id: payload.id,
         result: { output_text: "remote ok", artifacts: [], meta: { via: "outbound-wss" } },
-      });
+      };
     });
 
     const registry = new NodeTransportRegistry();
@@ -58,7 +62,7 @@ describe("node transport abstraction", () => {
       metadata: {},
     });
 
-    const httpsResult = await executor.executeTask(
+    const httpsRun = await executor.startExecution(
       {
         ...baseNode,
         manifest: {
@@ -75,9 +79,11 @@ describe("node transport abstraction", () => {
         },
       },
       taskPackage,
+      { token: "cred_https", expires_at: "2099-01-01T00:00:00.000Z" },
     );
+    const httpsResult = await httpsRun.result;
 
-    const wssResult = await executor.executeTask(
+    const wssRun = await executor.startExecution(
       {
         ...baseNode,
         manifest: {
@@ -94,10 +100,145 @@ describe("node transport abstraction", () => {
         },
       },
       taskPackage,
+      { token: "cred_wss", expires_at: "2099-01-01T00:00:00.000Z" },
     );
+    const wssResult = await wssRun.result;
 
     expect(httpsResult.output_text).toBe("remote ok");
     expect(wssResult.output_text).toBe("remote ok");
     expect(seenMethods).toEqual(["https:execute", "outbound-wss:execute"]);
+    expect(seenAuth).toEqual(["Bearer cred_https", "cred_wss"]);
+  });
+
+  test("supports abort and surfaced progress over both transports", async () => {
+    const events: NodeEvent[] = [
+      { event: "progress", data: { percent: 50, message: "halfway" } },
+      { event: "complete", data: { output_text: "done", artifacts: [], meta: {} } },
+    ];
+
+    const httpsTransport = new HttpsNodeTransport({
+      endpoint: "https://node.example/rpc",
+      fetch: ((_input, init) => {
+        const url = typeof _input === "string" ? _input : String(_input);
+        if (url.includes("/abort")) {
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ events }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }) as typeof fetch,
+    });
+
+    const httpsRun = await httpsTransport.startExecution(
+      {
+        workspace_id: "ws_transport",
+        job_id: "job_stream",
+        kind: "turn",
+        instructions: "echo hello",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+      {
+        workspaceId: "ws_transport",
+        nodeId: "node_https",
+        credential: { token: "cred_https", expiresAt: "2099-01-01T00:00:00.000Z" },
+      },
+    );
+    expect(await collect(httpsRun.stream ?? emptyAsync())).toEqual([
+      { event: "text.delta", data: { text: "halfway" } },
+    ]);
+    expect((await httpsRun.result).output_text).toBe("done");
+    await expect(httpsRun.abort()).resolves.toBeUndefined();
+
+    const wssTransport = new OutboundWssNodeTransport();
+    let aborted = false;
+    wssTransport.attachConnection("node_wss", async (request) => {
+      if (request.method === "abort") {
+        aborted = true;
+        return { id: request.id, result: { output_text: "aborted", artifacts: [], meta: {} } };
+      }
+      return { id: request.id, result: { output_text: "done", artifacts: [], meta: {} } };
+    }, async function* () {
+      yield { event: "progress", data: { percent: 25, message: "quarter" } };
+      yield { event: "complete", data: { output_text: "done", artifacts: [], meta: {} } };
+    });
+    const run = await wssTransport.startExecution(
+      {
+        workspace_id: "ws_transport",
+        job_id: "job_wss_stream",
+        kind: "turn",
+        instructions: "echo hi",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+      {
+        workspaceId: "ws_transport",
+        nodeId: "node_wss",
+        credential: { token: "cred_wss", expiresAt: "2099-01-01T00:00:00.000Z" },
+      },
+    );
+    expect(await collect(run.stream ?? emptyAsync())).toEqual([{ event: "text.delta", data: { text: "quarter" } }]);
+    await run.abort();
+    expect(aborted).toBeTrue();
+  });
+
+  test("consumes outbound-wss progress streams only once per execution", async () => {
+    const wssTransport = new OutboundWssNodeTransport();
+    let streamStarts = 0;
+    wssTransport.attachConnection(
+      "node_wss_single_consumer",
+      async (request) => ({
+        id: request.id,
+        result: { output_text: "done", artifacts: [], meta: {} },
+      }),
+      async function* () {
+        streamStarts += 1;
+        if (streamStarts > 1) {
+          throw new Error("stream opened twice");
+        }
+        yield { event: "progress", data: { percent: 10, message: "warming" } };
+        yield { event: "complete", data: { output_text: "done", artifacts: [], meta: {} } };
+      },
+    );
+
+    const run = await wssTransport.startExecution(
+      {
+        workspace_id: "ws_transport",
+        job_id: "job_wss_single",
+        kind: "turn",
+        instructions: "echo hi",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+      {
+        workspaceId: "ws_transport",
+        nodeId: "node_wss_single_consumer",
+        credential: { token: "cred_wss", expiresAt: "2099-01-01T00:00:00.000Z" },
+      },
+    );
+
+    expect(await collect(run.stream ?? emptyAsync())).toEqual([{ event: "text.delta", data: { text: "warming" } }]);
+    expect((await run.result).output_text).toBe("done");
+    expect(streamStarts).toBe(1);
   });
 });
+
+const collect = async <T>(iterable: AsyncIterable<T>): Promise<T[]> => {
+  const values: T[] = [];
+  for await (const value of iterable) {
+    values.push(value);
+  }
+  return values;
+};
+
+async function* emptyAsync<T>(): AsyncIterable<T> {}

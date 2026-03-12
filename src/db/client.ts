@@ -182,6 +182,7 @@ const parseNodeCredentialRow = (row: NodeCredentialRow): StoredNodeCredential =>
   node_id: row.node_id,
   workspace_id: row.workspace_id,
   token_hash: row.token_hash,
+  token_ciphertext: row.token_ciphertext,
   issued_at: toIsoDateTime(row.issued_at),
   expires_at: toIsoDateTime(row.expires_at),
   rotated_at: row.rotated_at === null ? null : toIsoDateTime(row.rotated_at),
@@ -298,6 +299,7 @@ export class WorkspaceStore {
     readonly credential_id: string;
     readonly node_id: string;
     readonly token_hash: string;
+    readonly token_ciphertext?: string;
     readonly issued_at?: string;
     readonly expires_at: string;
     readonly rotated_at?: string;
@@ -305,13 +307,14 @@ export class WorkspaceStore {
     const issuedAt = input.issued_at ?? new Date().toISOString();
     this.db
       .prepare(
-        "INSERT INTO node_credentials (workspace_id, id, node_id, token_hash, issued_at, expires_at, rotated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET node_id = excluded.node_id, token_hash = excluded.token_hash, issued_at = excluded.issued_at, expires_at = excluded.expires_at, rotated_at = excluded.rotated_at",
+        "INSERT INTO node_credentials (workspace_id, id, node_id, token_hash, token_ciphertext, issued_at, expires_at, rotated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET node_id = excluded.node_id, token_hash = excluded.token_hash, token_ciphertext = excluded.token_ciphertext, issued_at = excluded.issued_at, expires_at = excluded.expires_at, rotated_at = excluded.rotated_at",
       )
       .run(
         this.workspaceId,
         input.credential_id,
         input.node_id,
         input.token_hash,
+        input.token_ciphertext ?? null,
         fromIsoDateTime(issuedAt),
         fromIsoDateTime(input.expires_at),
         input.rotated_at === undefined ? null : fromIsoDateTime(input.rotated_at),
@@ -350,6 +353,16 @@ export class WorkspaceStore {
       )
       .all(this.workspaceId, nodeId)
       .map(parseNodeCredentialRow);
+  }
+
+  public getActiveNodeCredential(nodeId: string, nowMs = Date.now()): StoredNodeCredential | null {
+    const row = this.db
+      .query<NodeCredentialRow, [string, string, number]>(
+        "SELECT * FROM node_credentials WHERE workspace_id = ? AND node_id = ? AND rotated_at IS NULL AND expires_at > ? ORDER BY issued_at DESC LIMIT 1",
+      )
+      .get(this.workspaceId, nodeId, nowMs);
+
+    return row === null ? null : parseNodeCredentialRow(row);
   }
 
   public saveJob(jobInput: SaveJobInput): StoredJobWithDiagnostics {
@@ -459,6 +472,18 @@ export class WorkspaceStore {
       .query<LeaseRow, [string]>("SELECT * FROM leases WHERE workspace_id = ? ORDER BY created_at DESC")
       .all(this.workspaceId)
       .map(parseLeaseRow);
+  }
+
+  public releaseLease(leaseId: string, state: "released" | "expired" | "failed", releasedAt = new Date().toISOString()): StoredLease {
+    const result = this.db
+      .prepare("UPDATE leases SET state = ?, released_at = ? WHERE workspace_id = ? AND id = ?")
+      .run(state, fromIsoDateTime(releasedAt), this.workspaceId, leaseId);
+
+    if (result.changes === 0) {
+      throw new Error(`Lease ${leaseId} was not found in workspace ${this.workspaceId}`);
+    }
+
+    return this.getLease(leaseId);
   }
 
   public savePreview(previewInput: SavePreviewInput): StoredPreview {

@@ -362,20 +362,20 @@ describe("phase 3 node control plane", () => {
     await nodeRegistry.approveNode("ws_nodes", "node_wss");
 
     const registry = new NodeTransportRegistry();
-    registry.registerNodeTransport(
-      "node_wss",
-      new OutboundWssNodeTransport((request) =>
-        Promise.resolve({
-          id: request.id,
-          result: { output_text: "remote wss", artifacts: [], meta: { transport: "outbound-wss" } },
-        }),
-      ),
-    );
+    const transport = new OutboundWssNodeTransport();
+    transport.attachConnection("node_wss", (request, context) => {
+      expect(context.credential.token.startsWith("or3n_")).toBeTrue();
+      return Promise.resolve({
+        id: request.id,
+        result: { output_text: "remote wss", artifacts: [], meta: { transport: "outbound-wss" } },
+      });
+    });
+    registry.registerNodeTransport("node_wss", transport);
     const jobService = new LocalJobService({
       database,
       internClient: new NoopInternClient(),
       leaseScheduler: new LeaseScheduler({ database }),
-      remoteNodeExecutor: new RemoteNodeExecutor(registry),
+      remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
     });
 
     const created = jobService.submitJob("ws_nodes", {
@@ -473,6 +473,106 @@ describe("phase 3 node control plane", () => {
       }),
     );
     expect(listResponse.status).toBe(403);
+  });
+
+  test("managed-mode scheduling excludes uncertified and transport-ineligible nodes", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const uncertified: UnsignedManifest = {
+      node_id: "node_uncertified",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote",
+      capabilities: ["exec"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["https"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: false, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    const certified: UnsignedManifest = {
+      ...uncertified,
+      node_id: "node_certified",
+      certification: {
+        issuer: "or3",
+        certificate: "cert",
+        expires_at: "2099-01-01T00:00:00.000Z",
+      },
+    };
+
+    await nodeRegistry.enrollNode("ws_nodes", { ...uncertified, signature: signNodeManifest(uncertified, keyPair.secretKey) });
+    await nodeRegistry.enrollNode("ws_nodes", { ...certified, signature: signNodeManifest(certified, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_nodes", "node_uncertified");
+    await nodeRegistry.approveNode("ws_nodes", "node_certified");
+
+    const workspaceStore = database.workspace("ws_nodes");
+    workspaceStore.saveJob({
+      job: { job_id: "job_policy", workspace_id: "ws_nodes", status: "pending", created_at: "2024-01-01T00:00:00.000Z" },
+      task_package: {
+        workspace_id: "ws_nodes",
+        job_id: "job_policy",
+        kind: "turn",
+        instructions: "policy",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+    });
+
+    const scheduler = new LeaseScheduler({ database, transportRegistry: new NodeTransportRegistry(), enforceManagedCertification: true });
+    expect(() => scheduler.issueLease({ workspace_id: "ws_nodes", job_id: "job_policy", task_package: workspaceStore.getJob("job_policy").task_package })).toThrow(
+      /node_uncertified: no registered transport, missing valid certification; node_certified: no registered transport/,
+    );
+
+    const transportRegistry = new NodeTransportRegistry();
+    transportRegistry.registerKindTransport("https", { kind: "https", startExecution: async () => ({ nodeId: "node_certified", result: Promise.resolve({ output_text: "ok", artifacts: [], meta: {} }), abort: async () => {} }) });
+    const eligibleScheduler = new LeaseScheduler({ database, transportRegistry, enforceManagedCertification: true });
+    const lease = eligibleScheduler.issueLease({ workspace_id: "ws_nodes", job_id: "job_policy", task_package: workspaceStore.getJob("job_policy").task_package });
+    expect(lease.lease.node_id).toBe("node_certified");
+  });
+
+  test("ignores direct node transports whose kind is unsupported by the node manifest", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const manifest: UnsignedManifest = {
+      node_id: "node_https_only",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote",
+      capabilities: ["exec"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["https"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: false, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+
+    await nodeRegistry.enrollNode("ws_nodes", { ...manifest, signature: signNodeManifest(manifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_nodes", "node_https_only");
+
+    const workspaceStore = database.workspace("ws_nodes");
+    workspaceStore.saveJob({
+      job: { job_id: "job_transport_policy", workspace_id: "ws_nodes", status: "pending", created_at: "2024-01-01T00:00:00.000Z" },
+      task_package: {
+        workspace_id: "ws_nodes",
+        job_id: "job_transport_policy",
+        kind: "turn",
+        instructions: "policy",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+    });
+
+    const transportRegistry = new NodeTransportRegistry();
+    transportRegistry.registerNodeTransport("node_https_only", { kind: "outbound-wss", startExecution: async () => ({ nodeId: "node_https_only", result: Promise.resolve({ output_text: "bad", artifacts: [], meta: {} }), abort: async () => {} }) });
+    const scheduler = new LeaseScheduler({ database, transportRegistry });
+
+    expect(() => scheduler.issueLease({ workspace_id: "ws_nodes", job_id: "job_transport_policy", task_package: workspaceStore.getJob("job_transport_policy").task_package })).toThrow(
+      /node_https_only: registered transport is unsupported by the node/,
+    );
   });
 });
 

@@ -82,6 +82,7 @@ export class NodeRegistryService {
       credential_id: createId("nodecred"),
       node_id: nodeId,
       token_hash: await hashApiKey(token),
+      token_ciphertext: token,
       expires_at: expiresAt,
     });
 

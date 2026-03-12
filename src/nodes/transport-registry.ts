@@ -2,6 +2,18 @@ import type { StoredNode } from "../db/index.ts";
 
 import type { NodeRpcTransport } from "./transport.ts";
 
+export type NodeTransportResolution =
+  | {
+      readonly ok: true;
+      readonly transport: NodeRpcTransport;
+      readonly source: "node" | "kind";
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "no_registered_transport" | "unsupported_registered_transport";
+      readonly message: string;
+    };
+
 export class NodeTransportRegistry {
   private readonly nodeTransports = new Map<string, NodeRpcTransport>();
   private readonly kindTransports = new Map<NodeRpcTransport["kind"], NodeRpcTransport>();
@@ -15,26 +27,43 @@ export class NodeTransportRegistry {
   }
 
   public canResolve(node: StoredNode): boolean {
-    if (this.nodeTransports.has(node.manifest.node_id)) {
-      return true;
-    }
-
-    return node.manifest.supports_transports.some((kind) => this.kindTransports.has(kind));
+    return this.describeResolution(node).ok;
   }
 
-  public resolve(node: StoredNode): NodeRpcTransport {
+  public describeResolution(node: StoredNode): NodeTransportResolution {
     const direct = this.nodeTransports.get(node.manifest.node_id);
     if (direct !== undefined) {
-      return direct;
+      if (node.manifest.supports_transports.includes(direct.kind)) {
+        return { ok: true, transport: direct, source: "node" };
+      }
+
+      return {
+        ok: false,
+        reason: "unsupported_registered_transport",
+        message: `registered node transport ${direct.kind} is not supported by node ${node.manifest.node_id}`,
+      };
     }
 
     for (const kind of node.manifest.supports_transports) {
       const transport = this.kindTransports.get(kind);
       if (transport !== undefined) {
-        return transport;
+        return { ok: true, transport, source: "kind" };
       }
     }
 
-    throw new Error(`no registered transport for node ${node.manifest.node_id}`);
+    return {
+      ok: false,
+      reason: "no_registered_transport",
+      message: `no registered transport matches node ${node.manifest.node_id} (${node.manifest.supports_transports.join(", ")})`,
+    };
+  }
+
+  public resolve(node: StoredNode): NodeRpcTransport {
+    const resolution = this.describeResolution(node);
+    if (resolution.ok) {
+      return resolution.transport;
+    }
+
+    throw new Error(resolution.message);
   }
 }

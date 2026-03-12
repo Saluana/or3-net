@@ -5,7 +5,12 @@ import type {
   SandboxExecEvent,
   SandboxExecRequest,
   SandboxExecResult,
+  SandboxFileContent,
   SandboxInfo,
+  RuntimeCapacity,
+  RuntimeHealth,
+  RuntimeInfo,
+  SandboxQuota,
   SandboxTunnel,
   SandboxWriteFileRequest,
 } from "./types.ts";
@@ -23,6 +28,10 @@ export class HttpSandboxClient implements SandboxClient {
     return this.requestJson<SandboxInfo>("/v1/sandboxes", { method: "POST", body: request });
   }
 
+  public async list(): Promise<SandboxInfo[]> {
+    return this.requestJson<SandboxInfo[]>("/v1/sandboxes", { method: "GET" });
+  }
+
   public async get(sandboxId: string): Promise<SandboxInfo> {
     return this.requestJson<SandboxInfo>(`/v1/sandboxes/${sandboxId}`, { method: "GET" });
   }
@@ -31,12 +40,28 @@ export class HttpSandboxClient implements SandboxClient {
     await this.request(`/v1/sandboxes/${sandboxId}`, { method: "DELETE" });
   }
 
+  public async start(sandboxId: string): Promise<SandboxInfo> {
+    return this.requestJson<SandboxInfo>(`/v1/sandboxes/${sandboxId}/start`, { method: "POST" });
+  }
+
+  public async stop(sandboxId: string): Promise<SandboxInfo> {
+    return this.requestJson<SandboxInfo>(`/v1/sandboxes/${sandboxId}/stop`, { method: "POST" });
+  }
+
+  public async suspend(sandboxId: string): Promise<SandboxInfo> {
+    return this.requestJson<SandboxInfo>(`/v1/sandboxes/${sandboxId}/suspend`, { method: "POST" });
+  }
+
+  public async resume(sandboxId: string): Promise<SandboxInfo> {
+    return this.requestJson<SandboxInfo>(`/v1/sandboxes/${sandboxId}/resume`, { method: "POST" });
+  }
+
   public async exec(sandboxId: string, request: SandboxExecRequest): Promise<SandboxExecResult> {
     return this.requestJson<SandboxExecResult>(`/v1/sandboxes/${sandboxId}/exec`, { method: "POST", body: request });
   }
 
   public async *execStream(sandboxId: string, request: SandboxExecRequest): AsyncIterable<SandboxExecEvent> {
-    const response = await this.request(`/v1/sandboxes/${sandboxId}/exec`, {
+    const response = await this.request(`/v1/sandboxes/${sandboxId}/exec?stream=1`, {
       method: "POST",
       body: request,
       headers: { Accept: "text/event-stream" },
@@ -66,8 +91,28 @@ export class HttpSandboxClient implements SandboxClient {
     }
   }
 
+  public async readFile(sandboxId: string, path: string): Promise<SandboxFileContent> {
+    return this.requestJson<SandboxFileContent>(`/v1/sandboxes/${sandboxId}/files${normalizeFilePath(path)}`, {
+      method: "GET",
+    });
+  }
+
   public async writeFile(sandboxId: string, request: SandboxWriteFileRequest): Promise<void> {
-    await this.request(`/v1/sandboxes/${sandboxId}/files/write`, { method: "POST", body: request });
+    await this.request(`/v1/sandboxes/${sandboxId}/files${normalizeFilePath(request.path)}`, {
+      method: "PUT",
+      body: { content: request.content },
+    });
+  }
+
+  public async deleteFile(sandboxId: string, path: string): Promise<void> {
+    await this.request(`/v1/sandboxes/${sandboxId}/files${normalizeFilePath(path)}`, { method: "DELETE" });
+  }
+
+  public async mkdir(sandboxId: string, path: string): Promise<void> {
+    await this.request(`/v1/sandboxes/${sandboxId}/files${normalizeFilePath(path)}`, {
+      method: "POST",
+      body: {},
+    });
   }
 
   public async createTunnel(sandboxId: string, request: CreateTunnelRequest): Promise<SandboxTunnel> {
@@ -76,6 +121,30 @@ export class HttpSandboxClient implements SandboxClient {
 
   public async listTunnels(sandboxId: string): Promise<SandboxTunnel[]> {
     return this.requestJson<SandboxTunnel[]>(`/v1/sandboxes/${sandboxId}/tunnels`, { method: "GET" });
+  }
+
+  public async revokeTunnel(tunnelId: string): Promise<void> {
+    await this.request(`/v1/tunnels/${tunnelId}`, { method: "DELETE" });
+  }
+
+  public async runtimeInfo(): Promise<RuntimeInfo> {
+    return this.requestJson<RuntimeInfo>("/v1/runtime/info", { method: "GET" });
+  }
+
+  public async runtimeHealth(): Promise<RuntimeHealth> {
+    return this.requestJson<RuntimeHealth>("/v1/runtime/health", { method: "GET" });
+  }
+
+  public async runtimeCapacity(): Promise<RuntimeCapacity> {
+    return this.requestJson<RuntimeCapacity>("/v1/runtime/capacity", { method: "GET" });
+  }
+
+  public async getQuota(): Promise<SandboxQuota> {
+    return this.requestJson<SandboxQuota>("/v1/quotas/me", { method: "GET" });
+  }
+
+  public async getMetrics(): Promise<string> {
+    return await (await this.request("/metrics", { method: "GET" })).text();
   }
 
   private async request(path: string, init: { method: string; body?: unknown; headers?: Record<string, string> }): Promise<Response> {
@@ -113,5 +182,11 @@ const parseSseFrame = (frame: string): SandboxExecEvent | null => {
   if (event === null || dataLines.length === 0) {
     return null;
   }
-  return { event, data: JSON.parse(dataLines.join("\n")) as Record<string, unknown> };
+  const rawData = dataLines.join("\n");
+  if (event === "stdout" || event === "stderr") {
+    return { event, data: { chunk: rawData } };
+  }
+  return { event, data: JSON.parse(rawData) as Record<string, unknown> };
 };
+
+const normalizeFilePath = (path: string): string => (path.startsWith("/") ? path : `/${path}`);

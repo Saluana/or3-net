@@ -54,7 +54,7 @@ describe("HTTP SDK clients", () => {
       requests.push(toRequest(input, init));
       return Promise.resolve(new Response(
         chunkedStream([
-          "event: stdout\ndata: {\"chunk\":\"hello\"}\n\n",
+          "event: stdout\ndata: hello\n\n",
           "event: result\ndata: {\"exit_code\":0}",
         ]),
         {
@@ -79,6 +79,56 @@ describe("HTTP SDK clients", () => {
     expect(requests[0]?.headers.get("Authorization")).toBe("Bearer sandbox-token");
     expect(requests[0]?.headers.get("Accept")).toBe("text/event-stream");
     expect(requests[0]?.headers.get("Content-Type")).toBe("application/json");
+    expect(requests[0]?.url).toContain("/v1/sandboxes/sbx_1/exec?stream=1");
+  });
+
+  test("sandbox client exposes file, runtime, and tunnel helper methods", async () => {
+    const requests: Request[] = [];
+    const fetchImpl = ((input: FetchInput, init?: RequestInit) => {
+      const request = toRequest(input, init);
+      requests.push(request);
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/files/workspace.txt") && request.method === "GET") {
+        return Promise.resolve(new Response(JSON.stringify({ path: "/workspace.txt", content: "hello", encoding: "utf-8" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.pathname.endsWith("/files/workspace") && request.method === "POST") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.pathname === "/v1/runtime/health") {
+        return Promise.resolve(new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.pathname === "/v1/runtime/info") {
+        return Promise.resolve(new Response(JSON.stringify({ runtime: "docker" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.pathname === "/v1/runtime/capacity") {
+        return Promise.resolve(new Response(JSON.stringify({ total: 2, available: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.pathname === "/v1/quotas/me") {
+        return Promise.resolve(new Response(JSON.stringify({ cpu_seconds_remaining: 10 }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.pathname === "/metrics") {
+        return Promise.resolve(new Response("sandbox_up 1\n", { status: 200, headers: { "Content-Type": "text/plain" } }));
+      }
+      if (url.pathname.endsWith("/tunnels/tun_1") && request.method === "DELETE") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    }) as unknown as typeof fetch;
+
+    const client = new HttpSandboxClient({ baseUrl: "https://sandbox.test", token: "sandbox-token", fetch: fetchImpl });
+    const file = await client.readFile("sbx_1", "/workspace.txt");
+    expect(file.content).toBe("hello");
+    await client.mkdir("sbx_1", "/workspace");
+    expect(await client.runtimeHealth()).toEqual({ status: "ok" });
+    expect(await client.runtimeInfo()).toEqual({ runtime: "docker" });
+    expect(await client.runtimeCapacity()).toEqual({ total: 2, available: 1 });
+    expect(await client.getQuota()).toEqual({ cpu_seconds_remaining: 10 });
+    expect(await client.getMetrics()).toBe("sandbox_up 1\n");
+    await client.revokeTunnel("tun_1");
+
+    expect(requests.some((request) => request.url.includes("/v1/sandboxes/sbx_1/files/workspace.txt") && request.method === "GET")).toBeTrue();
+    expect(requests.some((request) => request.url.includes("/v1/runtime/health"))).toBeTrue();
+    expect(requests.some((request) => request.url.includes("/metrics"))).toBeTrue();
   });
 
   test("sandbox client rejects stream responses without a body", () => {
