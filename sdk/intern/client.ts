@@ -31,7 +31,7 @@ export class HttpInternClient implements InternClient {
     const response = await this.fetchImpl(new URL("/internal/v1/turns", this.options.baseUrl), {
       method: "POST",
       headers: await this.createHeaders(),
-      body: JSON.stringify(request),
+      body: JSON.stringify(serializeTurnRequest(request)),
     });
     return parseJsonResponse<InternTurnResponse>(response);
   }
@@ -40,7 +40,7 @@ export class HttpInternClient implements InternClient {
     const response = await this.fetchImpl(new URL("/internal/v1/turns", this.options.baseUrl), {
       method: "POST",
       headers: await this.createHeaders({ Accept: "text/event-stream" }),
-      body: JSON.stringify(request),
+      body: JSON.stringify(serializeTurnRequest(request)),
     });
     yield* parseEventStream(response);
   }
@@ -49,7 +49,7 @@ export class HttpInternClient implements InternClient {
     const response = await this.fetchImpl(new URL("/internal/v1/subagents", this.options.baseUrl), {
       method: "POST",
       headers: await this.createHeaders(),
-      body: JSON.stringify(request),
+      body: JSON.stringify(serializeSubagentRequest(request)),
     });
     return parseJsonResponse<InternSubagentResponse>(response);
   }
@@ -154,3 +154,23 @@ const parseEventFrame = (frame: string): InternJobEvent | null => {
     data: JSON.parse(dataLines.join("\n")) as Record<string, unknown>,
   };
 };
+
+const serializeTurnRequest = (request: InternTurnRequest): Record<string, unknown> => ({
+  session_key: request.sessionKey,
+  message: request.message,
+  ...(request.allowedTools === undefined ? {} : { allowed_tools: request.allowedTools }),
+  ...(request.meta === undefined ? {} : { meta: request.meta }),
+  ...(request.profileName === undefined ? {} : { profile_name: request.profileName }),
+});
+
+const serializeSubagentRequest = (request: InternSubagentRequest): Record<string, unknown> => ({
+  parent_session_key: request.parentSessionKey,
+  task: request.task,
+  prompt_snapshot: request.promptSnapshot,
+  ...(request.allowedTools === undefined ? {} : { allowed_tools: request.allowedTools }),
+  ...(request.timeoutSeconds === undefined ? {} : { timeout_seconds: request.timeoutSeconds }),
+  ...(request.meta === undefined ? {} : { meta: request.meta }),
+  ...(request.profileName === undefined ? {} : { profile_name: request.profileName }),
+  ...(request.channel === undefined ? {} : { channel: request.channel }),
+  ...(request.replyTo === undefined ? {} : { reply_to: request.replyTo }),
+});

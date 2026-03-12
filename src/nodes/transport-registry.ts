@@ -18,8 +18,8 @@ export class NodeTransportRegistry {
   private readonly nodeTransports = new Map<string, NodeRpcTransport>();
   private readonly kindTransports = new Map<NodeRpcTransport["kind"], NodeRpcTransport>();
 
-  public registerNodeTransport(nodeId: string, transport: NodeRpcTransport): void {
-    this.nodeTransports.set(nodeId, transport);
+  public registerNodeTransport(workspaceId: string, nodeId: string, transport: NodeRpcTransport): void {
+    this.nodeTransports.set(buildNodeKey(workspaceId, nodeId), transport);
   }
 
   public registerKindTransport(kind: NodeRpcTransport["kind"], transport: NodeRpcTransport): void {
@@ -31,7 +31,7 @@ export class NodeTransportRegistry {
   }
 
   public describeResolution(node: StoredNode): NodeTransportResolution {
-    const direct = this.nodeTransports.get(node.manifest.node_id);
+    const direct = this.nodeTransports.get(buildNodeKey(node.workspace_id, node.manifest.node_id));
     if (direct !== undefined) {
       if (node.manifest.supports_transports.includes(direct.kind)) {
         return { ok: true, transport: direct, source: "node" };
@@ -67,3 +67,5 @@ export class NodeTransportRegistry {
     throw new Error(resolution.message);
   }
 }
+
+const buildNodeKey = (workspaceId: string, nodeId: string): string => `${workspaceId}:${nodeId}`;

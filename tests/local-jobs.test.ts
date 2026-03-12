@@ -75,10 +75,11 @@ class FakeSandboxClient implements SandboxClient {
   private nextId = 1;
 
   public create(request: CreateSandboxRequest): Promise<SandboxInfo> {
+    const workspaceId = request.workspace_id ?? "ws_jobs";
     const sandbox = {
       id: `sbx_${String(this.nextId++)}`,
-      status: "ready",
-      workspace_id: request.workspace_id,
+      status: "running",
+      workspace_id: workspaceId,
     };
     this.createdSandboxIds.push(sandbox.id);
     this.sandboxes.set(sandbox.id, sandbox);
@@ -158,8 +159,7 @@ class FakeSandboxClient implements SandboxClient {
       id: `tun_${sandboxId}_${String(request.target_port)}`,
       sandbox_id: sandboxId,
       target_port: request.target_port,
-      url: `https://launch.local/${sandboxId}/${String(request.target_port)}`,
-      state: "ready",
+      endpoint: `https://launch.local/${sandboxId}/${String(request.target_port)}`,
     });
   }
 
@@ -173,15 +173,22 @@ class FakeSandboxClient implements SandboxClient {
     return Promise.resolve();
   }
 
-  public runtimeInfo(): Promise<Record<string, unknown>> {
+  public createSignedTunnelUrl(tunnelId: string): Promise<{ url: string; expires_at: string }> {
+    return Promise.resolve({
+      url: `https://launch.local/signed/${tunnelId}`,
+      expires_at: "2099-01-01T00:00:00.000Z",
+    });
+  }
+
+  public runtimeInfo(): Promise<{ runtime: string }> {
     return Promise.resolve({ runtime: "docker" });
   }
 
-  public runtimeHealth(): Promise<Record<string, unknown>> {
+  public runtimeHealth(): Promise<{ status: string }> {
     return Promise.resolve({ status: "ok" });
   }
 
-  public runtimeCapacity(): Promise<Record<string, unknown>> {
+  public runtimeCapacity(): Promise<{ total: number; available: number }> {
     return Promise.resolve({ total: 1, available: 1 });
   }
 
@@ -205,7 +212,7 @@ class AbortableRemoteTransport {
       startExecution: async () => {
         this.executeCalls += 1;
         let aborted = false;
-        const result = new Promise<{ output_text: string; artifacts: never[]; meta: Record<string, unknown> }>((resolve, reject) => {
+        const result = new Promise((resolve: (value: { output_text: string; artifacts: []; meta: { via: string } }) => void, reject) => {
           this.releaseSignal = () => {
             if (aborted) {
               reject(new Error("remote aborted"));
@@ -250,14 +257,15 @@ class FailingRemoteTransport {
             this.mode === "disconnect"
               ? Promise.reject(new Error("connection closed"))
               : this.mode === "stream-disconnect"
-                ? new Promise<{ output_text: string; artifacts: never[]; meta: Record<string, unknown> }>(() => undefined)
-              : new Promise<{ output_text: string; artifacts: never[]; meta: Record<string, unknown> }>(() => undefined),
-          stream:
-            this.mode === "stream-disconnect"
-              ? (async function* () {
+                ? new Promise<{ output_text: string; artifacts: []; meta: {} }>(() => undefined)
+                : new Promise<{ output_text: string; artifacts: []; meta: {} }>(() => undefined),
+          ...(this.mode === "stream-disconnect"
+            ? {
+                stream: (async function* () {
                   throw new Error("stream connection closed");
-                })()
-              : undefined,
+                })(),
+              }
+            : {}),
           abort: async () => {
             if (this.mode === "abort") {
               throw new Error("abort rpc failed");
@@ -374,7 +382,59 @@ describe("local job execution", () => {
     ]);
   });
 
-  test("routes jobs through the remote sandbox path when an approved node is available", async () => {
+  test("keeps local intern execution as the default even when an approved node is available", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_remote",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "sandbox",
+      capabilities: ["exec"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["https"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: true, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    const nodeRegistry = new NodeRegistryService({ database });
+    await nodeRegistry.enrollNode("ws_jobs", {
+      ...unsignedManifest,
+      signature: signNodeManifest(unsignedManifest, keyPair.secretKey),
+    });
+    await nodeRegistry.approveNode("ws_jobs", "node_remote");
+
+    const sandboxClient = new FakeSandboxClient();
+    const internClient = new ScriptedInternClient(async function* (request) {
+      await Promise.resolve();
+      yield { event: "queued", data: { job_id: `intern_${request.sessionKey}`, status: "queued" } };
+      yield { event: "started", data: { job_id: `intern_${request.sessionKey}`, status: "running" } };
+      yield { event: "completion", data: { job_id: `intern_${request.sessionKey}`, status: "completed", final_text: "local complete" } };
+    });
+    const service = new LocalJobService({
+      database,
+      internClient,
+      streamBroker: new JobStreamBroker(),
+      leaseScheduler: new LeaseScheduler({ database }),
+      sandboxNodeAdapter: new SandboxNodeAdapter(sandboxClient),
+    });
+
+    const job = service.submitJob("ws_jobs", {
+      session_key: "svc:remote",
+      message: "echo remote",
+    });
+
+    await waitFor(() => {
+      const stored = service.getJob("ws_jobs", job.job_id).job;
+      expect(stored.status).toBe("completed");
+      expect(stored.node_id).toBeUndefined();
+      expect(stored.result?.output_text).toBe("local complete");
+    });
+
+    expect(internClient.submitTurnStreamCalls).toBe(1);
+    expect(sandboxClient.execCalls).toHaveLength(0);
+    expect(database.workspace("ws_jobs").listLeases()).toHaveLength(0);
+  });
+
+  test("routes jobs through the remote sandbox path only when explicitly requested", async () => {
     const keyPair = nacl.sign.keyPair();
     const unsignedManifest: UnsignedManifest = {
       node_id: "node_remote",
@@ -411,6 +471,7 @@ describe("local job execution", () => {
     const job = service.submitJob("ws_jobs", {
       session_key: "svc:remote",
       message: "echo remote",
+      execution_target: "remote",
     });
 
     await waitFor(() => {
@@ -445,7 +506,7 @@ describe("local job execution", () => {
 
     const transportRegistry = new NodeTransportRegistry();
     const transport = new AbortableRemoteTransport();
-    transportRegistry.registerNodeTransport("node_remote_rpc", transport.create());
+    transportRegistry.registerNodeTransport("ws_jobs", "node_remote_rpc", transport.create());
 
     const broker = new JobStreamBroker();
     const service = new LocalJobService({
@@ -456,7 +517,11 @@ describe("local job execution", () => {
       remoteNodeExecutor: new RemoteNodeExecutor(transportRegistry, database),
     });
 
-    const created = service.submitJob("ws_jobs", { session_key: "svc:remote-abort", message: "abort remote" });
+    const created = service.submitJob("ws_jobs", {
+      session_key: "svc:remote-abort",
+      message: "abort remote",
+      execution_target: "remote",
+    });
 
     await waitFor(() => {
       expect(service.getJob("ws_jobs", created.job_id).job.status).toBe("running");
@@ -498,7 +563,7 @@ describe("local job execution", () => {
     await nodeRegistry.approveNode("ws_jobs", "node_remote_fail");
 
     const registry = new NodeTransportRegistry();
-    registry.registerNodeTransport("node_remote_fail", new FailingRemoteTransport("start").create());
+    registry.registerNodeTransport("ws_jobs", "node_remote_fail", new FailingRemoteTransport("start").create());
 
     const service = new LocalJobService({
       database,
@@ -508,7 +573,11 @@ describe("local job execution", () => {
       remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
     });
 
-    const created = service.submitJob("ws_jobs", { session_key: "svc:remote-start-fail", message: "start fail" });
+    const created = service.submitJob("ws_jobs", {
+      session_key: "svc:remote-start-fail",
+      message: "start fail",
+      execution_target: "remote",
+    });
 
     await waitFor(() => {
       const stored = service.getJob("ws_jobs", created.job_id).job;
@@ -535,7 +604,7 @@ describe("local job execution", () => {
     await nodeRegistry.approveNode("ws_jobs", "node_remote_disconnect");
 
     const registry = new NodeTransportRegistry();
-    registry.registerNodeTransport("node_remote_disconnect", new FailingRemoteTransport("disconnect").create());
+    registry.registerNodeTransport("ws_jobs", "node_remote_disconnect", new FailingRemoteTransport("disconnect").create());
 
     const service = new LocalJobService({
       database,
@@ -545,7 +614,11 @@ describe("local job execution", () => {
       remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
     });
 
-    const created = service.submitJob("ws_jobs", { session_key: "svc:remote-disconnect", message: "disconnect" });
+    const created = service.submitJob("ws_jobs", {
+      session_key: "svc:remote-disconnect",
+      message: "disconnect",
+      execution_target: "remote",
+    });
 
     await waitFor(() => {
       const stored = service.getJob("ws_jobs", created.job_id).job;
@@ -572,7 +645,7 @@ describe("local job execution", () => {
     await nodeRegistry.approveNode("ws_jobs", "node_remote_abort_fail");
 
     const registry = new NodeTransportRegistry();
-    registry.registerNodeTransport("node_remote_abort_fail", new FailingRemoteTransport("abort").create());
+    registry.registerNodeTransport("ws_jobs", "node_remote_abort_fail", new FailingRemoteTransport("abort").create());
 
     const service = new LocalJobService({
       database,
@@ -582,7 +655,11 @@ describe("local job execution", () => {
       remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
     });
 
-    const created = service.submitJob("ws_jobs", { session_key: "svc:remote-abort-fail", message: "abort fail" });
+    const created = service.submitJob("ws_jobs", {
+      session_key: "svc:remote-abort-fail",
+      message: "abort fail",
+      execution_target: "remote",
+    });
 
     await waitFor(() => {
       expect(service.getJob("ws_jobs", created.job_id).job.status).toBe("running");
@@ -616,7 +693,7 @@ describe("local job execution", () => {
     await nodeRegistry.approveNode("ws_jobs", "node_remote_stream_disconnect");
 
     const registry = new NodeTransportRegistry();
-    registry.registerNodeTransport("node_remote_stream_disconnect", new FailingRemoteTransport("stream-disconnect").create());
+    registry.registerNodeTransport("ws_jobs", "node_remote_stream_disconnect", new FailingRemoteTransport("stream-disconnect").create());
 
     const service = new LocalJobService({
       database,
@@ -626,7 +703,11 @@ describe("local job execution", () => {
       remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
     });
 
-    const created = service.submitJob("ws_jobs", { session_key: "svc:remote-stream-disconnect", message: "disconnect" });
+    const created = service.submitJob("ws_jobs", {
+      session_key: "svc:remote-stream-disconnect",
+      message: "disconnect",
+      execution_target: "remote",
+    });
 
     await waitFor(() => {
       const stored = service.getJob("ws_jobs", created.job_id).job;

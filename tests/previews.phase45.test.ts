@@ -55,6 +55,7 @@ class FakeSandboxClient implements SandboxClient {
   private readonly sandboxes = new Map<string, SandboxInfo>();
   private readonly tunnels = new Map<string, SandboxTunnel[]>();
   public createCalls: string[] = [];
+  public createRequests: CreateSandboxRequest[] = [];
   public deleteCalls: string[] = [];
   public getCalls: string[] = [];
   public tunnelCreateCalls: string[] = [];
@@ -63,8 +64,10 @@ class FakeSandboxClient implements SandboxClient {
   private nextSandboxId = 1;
 
   public create(request: CreateSandboxRequest): Promise<SandboxInfo> {
-    const sandbox = { id: `sbx_${request.workspace_id}_${String(this.nextSandboxId++)}`, status: "ready", workspace_id: request.workspace_id };
+    const workspaceId = request.workspace_id ?? "ws";
+    const sandbox = { id: `sbx_${workspaceId}_${String(this.nextSandboxId++)}`, status: "running", workspace_id: workspaceId };
     this.createCalls.push(sandbox.id);
+    this.createRequests.push(request);
     this.sandboxes.set(sandbox.id, sandbox);
     return Promise.resolve(sandbox);
   }
@@ -80,6 +83,21 @@ class FakeSandboxClient implements SandboxClient {
     this.deleteCalls.push(sandboxId);
     this.sandboxes.delete(sandboxId);
     return Promise.resolve();
+  }
+  public list(): Promise<SandboxInfo[]> {
+    return Promise.resolve([...this.sandboxes.values()]);
+  }
+  public start(sandboxId: string): Promise<SandboxInfo> {
+    return this.get(sandboxId);
+  }
+  public stop(sandboxId: string): Promise<SandboxInfo> {
+    return this.get(sandboxId);
+  }
+  public suspend(sandboxId: string): Promise<SandboxInfo> {
+    return this.get(sandboxId);
+  }
+  public resume(sandboxId: string): Promise<SandboxInfo> {
+    return this.get(sandboxId);
   }
   public exec(sandboxId: string, request: SandboxExecRequest): Promise<SandboxExecResult> {
     if (this.failNextExecCount > 0) {
@@ -103,13 +121,28 @@ class FakeSandboxClient implements SandboxClient {
     void request;
     return Promise.resolve();
   }
+  public readFile(sandboxId: string, path: string): Promise<{ path: string; content: string; encoding?: string }> {
+    void sandboxId;
+    return Promise.resolve({ path, content: "" });
+  }
+  public deleteFile(sandboxId: string, path: string): Promise<void> {
+    void sandboxId;
+    void path;
+    return Promise.resolve();
+  }
+  public mkdir(sandboxId: string, path: string): Promise<void> {
+    void sandboxId;
+    void path;
+    return Promise.resolve();
+  }
   public createTunnel(sandboxId: string, request: CreateTunnelRequest): Promise<SandboxTunnel> {
     const tunnel = {
       id: `tun_${sandboxId}_${String(request.target_port)}`,
       sandbox_id: sandboxId,
       target_port: request.target_port,
-      url: `https://launch.local/${sandboxId}/${String(request.target_port)}`,
-      state: "ready",
+      endpoint: `https://launch.local/${sandboxId}/${String(request.target_port)}`,
+      auth_mode: "token",
+      visibility: "private",
     };
     this.tunnelCreateCalls.push(tunnel.id);
     const current = this.tunnels.get(sandboxId) ?? [];
@@ -119,6 +152,34 @@ class FakeSandboxClient implements SandboxClient {
   }
   public listTunnels(sandboxId: string): Promise<SandboxTunnel[]> {
     return Promise.resolve(this.tunnels.get(sandboxId) ?? []);
+  }
+  public createSignedTunnelUrl(tunnelId: string): Promise<{ url: string; expires_at: string }> {
+    return Promise.resolve({
+      url: `https://launch.local/signed/${tunnelId}`,
+      expires_at: "2099-01-01T00:00:00.000Z",
+    });
+  }
+  public revokeTunnel(tunnelId: string): Promise<void> {
+    for (const [sandboxId, tunnels] of this.tunnels.entries()) {
+      const next = tunnels.filter((tunnel) => tunnel.id !== tunnelId);
+      this.tunnels.set(sandboxId, next);
+    }
+    return Promise.resolve();
+  }
+  public runtimeInfo(): Promise<Record<string, unknown>> {
+    return Promise.resolve({ runtime: "docker" });
+  }
+  public runtimeHealth(): Promise<{ status: string }> {
+    return Promise.resolve({ status: "ok" });
+  }
+  public runtimeCapacity(): Promise<Record<string, unknown>> {
+    return Promise.resolve({ total: 1, available: 1 });
+  }
+  public getQuota(): Promise<Record<string, unknown>> {
+    return Promise.resolve({});
+  }
+  public getMetrics(): Promise<string> {
+    return Promise.resolve("");
   }
 }
 
@@ -155,6 +216,18 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
         modified_at: "2024-01-01T00:00:00.000Z",
       },
       "<h1>Hello</h1>",
+    );
+    fileService.putFile(
+      "ws_preview",
+      {
+        workspace_id: "ws_preview",
+        path: "/site/app.js",
+        kind: "file",
+        size_bytes: 20,
+        mime_type: "application/javascript",
+        modified_at: "2024-01-01T00:00:00.000Z",
+      },
+      "console.log('hello');",
     );
     app = new Or3NetApp({
       authService,
@@ -211,14 +284,22 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       }),
     );
     const launchPayload = (await launchResponse.json()) as { launch_url: string; supports_iframe: boolean };
-    expect(launchPayload.launch_url).toContain("https://or3.local/v1/launch/");
+    expect(launchPayload.launch_url).toContain("http://or3.test/v1/launch/");
     expect(launchPayload.supports_iframe).toBeTrue();
 
     const resolvedLaunchResponse = await handleAppRequest(
       app,
-      new Request(launchPayload.launch_url.replace("https://or3.local", "http://or3.test")),
+      new Request(launchPayload.launch_url),
     );
-    expect(resolvedLaunchResponse.status).toBe(302);
+    expect(resolvedLaunchResponse.status).toBe(200);
+    expect(await resolvedLaunchResponse.text()).toContain("Hello");
+
+    const assetResponse = await handleAppRequest(
+      app,
+      new Request(new URL("app.js", launchPayload.launch_url).toString()),
+    );
+    expect(assetResponse.status).toBe(200);
+    expect(await assetResponse.text()).toContain("console.log");
 
     const revokeResponse = await handleAppRequest(
       app,
@@ -232,7 +313,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
 
     const revokedLaunchResponse = await handleAppRequest(
       app,
-      new Request(launchPayload.launch_url.replace("https://or3.local", "http://or3.test")),
+      new Request(launchPayload.launch_url),
     );
     expect(revokedLaunchResponse.status).toBe(410);
   });
@@ -262,7 +343,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     );
     const panePayload = (await paneResponse.json()) as { delivery_mode: string; embed_url?: string };
     expect(panePayload.delivery_mode).toBe("embedded");
-    expect(panePayload.embed_url).toContain("https://or3.local/v1/launch/");
+    expect(panePayload.embed_url).toContain("http://or3.test/v1/launch/");
 
     const tabResponse = await handleAppRequest(
       app,
@@ -392,7 +473,14 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       }),
     );
     const launchPayload = (await launchResponse.json()) as { launch_url: string };
-    expect(launchPayload.launch_url).toContain("https://or3.local/v1/launch/");
+    expect(launchPayload.launch_url).toContain("http://or3.test/v1/launch/");
+
+    const resolvedLaunchResponse = await handleAppRequest(
+      app,
+      new Request(launchPayload.launch_url),
+    );
+    expect(resolvedLaunchResponse.status).toBe(302);
+    expect(resolvedLaunchResponse.headers.get("Location")).toContain("https://launch.local/signed/");
 
     const revokeResponse = await handleAppRequest(
       app,
@@ -405,7 +493,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
 
     const revokedLaunchResponse = await handleAppRequest(
       app,
-      new Request(launchPayload.launch_url.replace("https://or3.local", "http://or3.test")),
+      new Request(launchPayload.launch_url),
     );
     expect(revokedLaunchResponse.status).toBe(410);
 
@@ -451,6 +539,49 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     expect(sandboxClient.createCalls.length).toBeGreaterThan(1);
   });
 
+  test("only requests tunnel-capable sandboxes for service launches", async () => {
+    const adapter = new SandboxNodeAdapter(sandboxClient);
+    const node = {
+      workspace_id: "ws_preview",
+      manifest: {
+        node_id: "node_services",
+        pubkey: "pubkey",
+        adapter_kind: "sandbox",
+        capabilities: ["exec", "service:openclaw:3000:OpenClaw Dashboard"],
+        isolation_class: "docker-trusted",
+        supports_transports: ["https"],
+        resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+        lease_policy: { max_ttl_seconds: 300, supports_warm_pool: true, reset_methods: ["process_kill"] },
+        version: "1.0.0",
+      },
+      pubkey_fingerprint: "fp",
+      status: "approved",
+      health_status: "ready",
+      approved_at: null,
+      revoked_at: null,
+      last_seen_at: null,
+      last_error: null,
+      created_at: new Date(0).toISOString(),
+    };
+
+    await adapter.executeTask("ws_preview", {
+      workspace_id: "ws_preview",
+      job_id: "job_tunnel_scope",
+      kind: "turn",
+      instructions: "echo ok",
+      artifacts: [],
+      tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+      timeout: { soft_ms: 1000 },
+      lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+      subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+      metadata: {},
+    });
+    await adapter.prepareServiceLaunch("ws_preview", node, "openclaw");
+
+    expect(sandboxClient.createRequests[0]).toEqual({ workspace_id: "ws_preview", start: true });
+    expect(sandboxClient.createRequests.some((request) => request.allow_tunnels === true)).toBe(true);
+  });
+
   test("reuses existing service tunnels on subsequent launches", async () => {
     const token = await exchangeToken(app, "ws_preview");
     const keyPair = nacl.sign.keyPair();
@@ -489,6 +620,50 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     expect(firstLaunch.reused_tunnel).toBeFalse();
     expect(secondLaunch.reused_tunnel).toBeTrue();
     expect(sandboxClient.tunnelCreateCalls).toHaveLength(1);
+  });
+
+  test("scopes sandbox-backed service caches by workspace instead of bare node_id", async () => {
+    const previewToken = await exchangeToken(app, "ws_preview");
+    const { api_key: otherToken } = await authService.createApiKey({
+      workspace_id: "ws_other",
+      name: "other-service-key",
+      scopes: ["services:read", "services:write"],
+    });
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_shared",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "sandbox",
+      capabilities: ["exec", "network", "service:openclaw:3000:OpenClaw Dashboard"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["https"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: true, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    await nodeRegistry.enrollNode("ws_preview", { ...unsignedManifest, signature: signNodeManifest(unsignedManifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_preview", "node_shared");
+    await nodeRegistry.enrollNode("ws_other", { ...unsignedManifest, signature: signNodeManifest(unsignedManifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_other", "node_shared");
+
+    const firstResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/nodes/node_shared/services/openclaw/launch", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${previewToken}` },
+      }),
+    );
+    const secondResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_other/nodes/node_shared/services/openclaw/launch", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${otherToken}` },
+      }),
+    );
+
+    expect(((await firstResponse.json()) as { reused_tunnel: boolean }).reused_tunnel).toBeFalse();
+    expect(((await secondResponse.json()) as { reused_tunnel: boolean }).reused_tunnel).toBeFalse();
+    expect(sandboxClient.tunnelCreateCalls).toHaveLength(2);
   });
 
   test("restarts sandbox-backed services and forces a fresh tunnel on next launch", async () => {

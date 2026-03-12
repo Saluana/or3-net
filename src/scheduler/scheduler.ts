@@ -104,7 +104,7 @@ export class LeaseScheduler {
     });
   }
 
-  public releaseLease(workspaceId: string, leaseId: string, state: Lease["state"] = "released"): StoredLease {
+  public releaseLease(workspaceId: string, leaseId: string, state: Exclude<Lease["state"], "active"> = "released"): StoredLease {
     const workspaceStore = this.options.database.workspace(workspaceId);
     return workspaceStore.releaseLease(leaseId, state, new Date().toISOString());
   }
@@ -175,7 +175,7 @@ const evaluateNodeEligibility = (
 };
 
 const buildLeaseFailureMessage = (
-  nodes: readonly Array<{ node: StoredNode; reasons: readonly NodeEligibilityIssue[] }>,
+  nodes: ReadonlyArray<{ node: StoredNode; reasons: readonly NodeEligibilityIssue[] }>,
 ): string => {
   const relevant = nodes
     .filter(({ reasons }) => reasons.length > 0)

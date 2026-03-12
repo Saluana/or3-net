@@ -185,12 +185,12 @@ export const renderConsoleHtml = (): string => `<!doctype html>
 			};
 			document.getElementById('openDashboard').onclick = async () => {
 				const { workspaceId, nodeId, serviceId } = getConfig();
-				const result = await call('/v1/workspaces/' + workspaceId + '/nodes/' + nodeId + '/services/' + serviceId + '/launch', { method: 'POST' });
-				write(result);
-				if (result.status === 200 && result.body && result.body.launch_url) {
-					window.open(result.body.launch_url.replace('https://or3.local', getConfig().baseUrl), '_blank', 'noopener');
-				}
-			};
+					const result = await call('/v1/workspaces/' + workspaceId + '/nodes/' + nodeId + '/services/' + serviceId + '/launch', { method: 'POST' });
+					write(result);
+					if (result.status === 200 && result.body && result.body.launch_url) {
+						window.open(result.body.launch_url, '_blank', 'noopener');
+					}
+				};
 			document.getElementById('revokeAccess').onclick = async () => {
 				const { workspaceId, nodeId, serviceId } = getConfig();
 				write(await call('/v1/workspaces/' + workspaceId + '/nodes/' + nodeId + '/services/' + serviceId + '/revoke', { method: 'POST' }));

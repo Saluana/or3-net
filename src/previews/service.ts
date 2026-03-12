@@ -1,16 +1,43 @@
+import { posix as pathPosix } from "node:path";
+
 import type { PreviewDescriptor, PreviewLaunchMetadata, PreviewLaunchRequest } from "../contracts/index.ts";
 import type { ControlPlaneDatabase, StoredPreview } from "../db/index.ts";
 import { createId } from "../lib/ids.ts";
 
-interface LaunchCapability {
-  readonly token: string;
-  readonly workspace_id: string;
-  readonly preview_id?: string;
-  readonly scope_key?: string;
-  readonly target_url: string;
-  readonly expires_at: string;
-  readonly revoked: boolean;
-}
+type LaunchCapability =
+  | {
+      readonly token: string;
+      readonly workspace_id: string;
+      readonly preview_id?: string;
+      readonly scope_key?: string;
+      readonly kind: "redirect";
+      readonly target_url: string;
+      readonly expires_at: string;
+      readonly revoked: boolean;
+    }
+  | {
+      readonly token: string;
+      readonly workspace_id: string;
+      readonly preview_id?: string;
+      readonly scope_key?: string;
+      readonly kind: "files";
+      readonly root_path: string;
+      readonly default_file_path: string;
+      readonly expires_at: string;
+      readonly revoked: boolean;
+    };
+
+export type ResolvedLaunchCapability =
+  | {
+      readonly kind: "redirect";
+      readonly target_url: string;
+      readonly workspace_id: string;
+    }
+  | {
+      readonly kind: "files";
+      readonly workspace_id: string;
+      readonly file_path: string;
+    };
 
 export class PreviewStateError extends Error {
   public constructor(
@@ -40,7 +67,12 @@ export class PreviewService {
     return this.database.workspace(workspaceId).savePreview({ preview });
   }
 
-  public launchPreview(workspaceId: string, previewId: string, request?: PreviewLaunchRequest): PreviewLaunchMetadata {
+  public launchPreview(
+    workspaceId: string,
+    previewId: string,
+    request?: PreviewLaunchRequest,
+    origin = "http://localhost",
+  ): PreviewLaunchMetadata {
     const stored = this.database.workspace(workspaceId).getPreview(previewId);
     if (stored.preview.status === "revoked") {
       throw new PreviewStateError(403, "preview has been revoked");
@@ -49,7 +81,25 @@ export class PreviewService {
       throw new PreviewStateError(410, "preview has expired");
     }
     const supportsIframe = shouldOfferIframe(stored.preview, request);
+    const expiresAt = stored.preview.expires_at ?? new Date(Date.now() + 15 * 60_000).toISOString();
+
+    if (stored.preview.source_type === "files") {
+      return this.mintFileLaunchCapability({
+        origin,
+        workspace_id: workspaceId,
+        preview_id: previewId,
+        preview: stored.preview,
+        delivery_mode: resolveDeliveryMode(stored.preview, request, supportsIframe),
+        supports_iframe: supportsIframe,
+        supports_new_tab: stored.preview.supports_new_tab,
+        reused_tunnel: false,
+        service_status: stored.preview.status,
+        expires_at: expiresAt,
+      });
+    }
+
     return this.mintLaunchCapability({
+      origin,
       workspace_id: workspaceId,
       preview_id: previewId,
       target_url: this.buildPreviewTargetUrl(stored.preview),
@@ -58,7 +108,7 @@ export class PreviewService {
       supports_new_tab: stored.preview.supports_new_tab,
       reused_tunnel: false,
       service_status: stored.preview.status,
-      expires_at: stored.preview.expires_at ?? new Date(Date.now() + 15 * 60_000).toISOString(),
+      expires_at: expiresAt,
     });
   }
 
@@ -75,6 +125,7 @@ export class PreviewService {
   }
 
   public mintLaunchCapability(input: {
+    readonly origin?: string;
     readonly workspace_id: string;
     readonly target_url: string;
     readonly delivery_mode: PreviewLaunchMetadata["delivery_mode"];
@@ -92,6 +143,7 @@ export class PreviewService {
       workspace_id: input.workspace_id,
       ...(input.preview_id === undefined ? {} : { preview_id: input.preview_id }),
       ...(input.scope_key === undefined ? {} : { scope_key: input.scope_key }),
+      kind: "redirect",
       target_url: input.target_url,
       expires_at: input.expires_at,
       revoked: false,
@@ -109,7 +161,7 @@ export class PreviewService {
       this.scopedLaunchTokens.set(input.scope_key, existing);
     }
 
-    const launchUrl = `https://or3.local/v1/launch/${token}`;
+    const launchUrl = new URL(`/v1/launch/${token}`, normalizeOrigin(input.origin)).toString();
     return {
       preview_id: input.preview_id ?? token,
       workspace_id: input.workspace_id,
@@ -124,7 +176,7 @@ export class PreviewService {
     };
   }
 
-  public resolveLaunchCapability(token: string): { target_url: string; workspace_id: string } {
+  public resolveLaunchCapability(token: string, requestedPath?: string): ResolvedLaunchCapability {
     const capability = this.launchCapabilities.get(token);
     if (capability === undefined || capability.revoked) {
       throw new PreviewStateError(410, "launch capability has been revoked");
@@ -132,9 +184,19 @@ export class PreviewService {
     if (Date.parse(capability.expires_at) <= Date.now()) {
       throw new PreviewStateError(410, "launch capability has expired");
     }
+
+    if (capability.kind === "redirect") {
+      return {
+        kind: "redirect",
+        target_url: capability.target_url,
+        workspace_id: capability.workspace_id,
+      };
+    }
+
     return {
-      target_url: capability.target_url,
+      kind: "files",
       workspace_id: capability.workspace_id,
+      file_path: resolveCapabilityFilePath(capability.root_path, capability.default_file_path, requestedPath),
     };
   }
 
@@ -176,19 +238,59 @@ export class PreviewService {
   }
 
   private buildPreviewTargetUrl(preview: PreviewDescriptor): string {
-    if (preview.source_type === "files") {
-      const filePath = preview.entry_path ?? preview.path;
-      if (filePath === undefined) {
-        throw new PreviewStateError(403, "file-backed preview is missing a target path");
-      }
-      return `https://or3.local/v1/workspaces/${preview.workspace_id}/files${filePath.startsWith("/") ? filePath : `/${filePath}`}`;
-    }
-
     if (preview.launch_url !== undefined) {
       return preview.launch_url;
     }
 
     throw new PreviewStateError(403, "preview target is not available");
+  }
+
+  private mintFileLaunchCapability(input: {
+    readonly origin?: string;
+    readonly workspace_id: string;
+    readonly preview_id: string;
+    readonly preview: PreviewDescriptor;
+    readonly delivery_mode: PreviewLaunchMetadata["delivery_mode"];
+    readonly supports_iframe: boolean;
+    readonly supports_new_tab: boolean;
+    readonly reused_tunnel: boolean;
+    readonly service_status: PreviewLaunchMetadata["service_status"];
+    readonly expires_at: string;
+  }): PreviewLaunchMetadata {
+    const token = createId("launchcap");
+    const rootPath = resolvePreviewRootPath(input.preview);
+    const defaultFilePath = resolvePreviewDefaultFilePath(input.preview);
+    if (!isPathWithinRoot(rootPath, defaultFilePath)) {
+      throw new PreviewStateError(403, "preview entry path is outside the preview root");
+    }
+    this.launchCapabilities.set(token, {
+      token,
+      workspace_id: input.workspace_id,
+      preview_id: input.preview_id,
+      kind: "files",
+      root_path: rootPath,
+      default_file_path: defaultFilePath,
+      expires_at: input.expires_at,
+      revoked: false,
+    });
+
+    const existing = this.previewLaunchTokens.get(input.preview_id) ?? new Set<string>();
+    existing.add(token);
+    this.previewLaunchTokens.set(input.preview_id, existing);
+
+    const launchUrl = buildFileLaunchUrl(input.origin, token, rootPath, defaultFilePath);
+    return {
+      preview_id: input.preview_id,
+      workspace_id: input.workspace_id,
+      launch_url: launchUrl,
+      ...(input.supports_iframe ? { embed_url: launchUrl } : {}),
+      delivery_mode: input.delivery_mode,
+      supports_iframe: input.supports_iframe,
+      supports_new_tab: input.supports_new_tab,
+      reused_tunnel: input.reused_tunnel,
+      service_status: input.service_status,
+      expires_at: input.expires_at,
+    };
   }
 }
 
@@ -198,6 +300,78 @@ const shouldOfferIframe = (preview: PreviewDescriptor, request?: PreviewLaunchRe
   }
 
   return request?.launch_mode_hint !== "new_tab" && request?.launch_mode_hint !== "external_browser";
+};
+
+const normalizeOrigin = (origin: string | undefined): string => {
+  const trimmed = origin?.trim() ?? "";
+  return trimmed === "" ? "http://localhost" : trimmed;
+};
+
+const normalizeAbsolutePath = (value: string): string => {
+  const normalized = pathPosix.normalize(value.startsWith("/") ? value : `/${value}`);
+  return normalized.startsWith("/") ? normalized : `/${normalized}`;
+};
+
+const looksLikeFilePath = (value: string): boolean => pathPosix.basename(value).includes(".");
+
+const resolvePreviewRootPath = (preview: PreviewDescriptor): string => {
+  if (preview.path !== undefined) {
+    const normalizedPath = normalizeAbsolutePath(preview.path);
+    if (preview.entry_path !== undefined || !looksLikeFilePath(normalizedPath)) {
+      return normalizedPath;
+    }
+    return pathPosix.dirname(normalizedPath);
+  }
+
+  if (preview.entry_path !== undefined) {
+    return pathPosix.dirname(normalizeAbsolutePath(preview.entry_path));
+  }
+
+  throw new PreviewStateError(403, "file-backed preview is missing a target path");
+};
+
+const resolvePreviewDefaultFilePath = (preview: PreviewDescriptor): string => {
+  if (preview.entry_path !== undefined) {
+    return normalizeAbsolutePath(preview.entry_path);
+  }
+
+  if (preview.path !== undefined) {
+    const normalizedPath = normalizeAbsolutePath(preview.path);
+    return looksLikeFilePath(normalizedPath) ? normalizedPath : pathPosix.join(normalizedPath, "index.html");
+  }
+
+  throw new PreviewStateError(403, "file-backed preview is missing a target path");
+};
+
+const buildFileLaunchUrl = (origin: string | undefined, token: string, rootPath: string, defaultFilePath: string): string => {
+  const relativePath = pathPosix.relative(rootPath, defaultFilePath);
+  const encodedRelativePath = relativePath
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  const pathname = encodedRelativePath === "" ? `/v1/launch/${token}` : `/v1/launch/${token}/${encodedRelativePath}`;
+  return new URL(pathname, normalizeOrigin(origin)).toString();
+};
+
+const resolveCapabilityFilePath = (rootPath: string, defaultFilePath: string, requestedPath?: string): string => {
+  if (requestedPath === undefined || requestedPath.trim() === "") {
+    return defaultFilePath;
+  }
+
+  const normalizedRoot = normalizeAbsolutePath(rootPath);
+  const candidate = pathPosix.resolve(normalizedRoot, requestedPath);
+  if (!isPathWithinRoot(normalizedRoot, candidate)) {
+    throw new PreviewStateError(403, "launch capability path is outside the preview root");
+  }
+  return candidate;
+};
+
+const isPathWithinRoot = (rootPath: string, candidatePath: string): boolean => {
+  if (rootPath === "/") {
+    return candidatePath.startsWith("/");
+  }
+  return candidatePath === rootPath || candidatePath.startsWith(`${rootPath}/`);
 };
 
 const resolveDeliveryMode = (

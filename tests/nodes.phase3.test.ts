@@ -370,7 +370,7 @@ describe("phase 3 node control plane", () => {
         result: { output_text: "remote wss", artifacts: [], meta: { transport: "outbound-wss" } },
       });
     });
-    registry.registerNodeTransport("node_wss", transport);
+    registry.registerNodeTransport("ws_nodes", "node_wss", transport);
     const jobService = new LocalJobService({
       database,
       internClient: new NoopInternClient(),
@@ -381,6 +381,7 @@ describe("phase 3 node control plane", () => {
     const created = jobService.submitJob("ws_nodes", {
       session_key: "svc:wss",
       message: "run remote",
+      execution_target: "remote",
     });
 
     await waitFor(() => {
@@ -567,7 +568,7 @@ describe("phase 3 node control plane", () => {
     });
 
     const transportRegistry = new NodeTransportRegistry();
-    transportRegistry.registerNodeTransport("node_https_only", { kind: "outbound-wss", startExecution: async () => ({ nodeId: "node_https_only", result: Promise.resolve({ output_text: "bad", artifacts: [], meta: {} }), abort: async () => {} }) });
+    transportRegistry.registerNodeTransport("ws_nodes", "node_https_only", { kind: "outbound-wss", startExecution: async () => ({ nodeId: "node_https_only", result: Promise.resolve({ output_text: "bad", artifacts: [], meta: {} }), abort: async () => {} }) });
     const scheduler = new LeaseScheduler({ database, transportRegistry });
 
     expect(() => scheduler.issueLease({ workspace_id: "ws_nodes", job_id: "job_transport_policy", task_package: workspaceStore.getJob("job_transport_policy").task_package })).toThrow(

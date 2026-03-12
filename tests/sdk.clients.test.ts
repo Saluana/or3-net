@@ -36,6 +36,48 @@ describe("HTTP SDK clients", () => {
     expect(requests[0]?.headers.get("Authorization")).toMatch(/^Bearer /);
     expect(requests[0]?.headers.get("Accept")).toBe("text/event-stream");
     expect(requests[0]?.headers.get("Content-Type")).toBe("application/json");
+    await expect(requests[0]?.clone().json()).resolves.toEqual({
+      session_key: "svc:test",
+      message: "hello",
+    });
+  });
+
+  test("intern client serializes subagent requests in snake_case", async () => {
+    const requests: Request[] = [];
+    const client = new HttpInternClient({
+      baseUrl: "https://intern.test",
+      secret: "intern-secret",
+      fetch: ((input: FetchInput, init?: RequestInit) => {
+        requests.push(toRequest(input, init));
+        return Promise.resolve(new Response(
+          JSON.stringify({ job_id: "sub_1", child_session_key: "svc:child", status: "queued" }),
+          { status: 202, headers: { "Content-Type": "application/json" } },
+        ));
+      }) as unknown as typeof fetch,
+    });
+
+    await client.spawnSubagent({
+      parentSessionKey: "svc:parent",
+      task: "do the thing",
+      promptSnapshot: [{ role: "user", content: "hi" }],
+      allowedTools: ["shell"],
+      timeoutSeconds: 30,
+      profileName: "fast",
+      channel: "service",
+      replyTo: "job_1",
+    });
+
+    expect(requests).toHaveLength(1);
+    await expect(requests[0]?.clone().json()).resolves.toEqual({
+      parent_session_key: "svc:parent",
+      task: "do the thing",
+      prompt_snapshot: [{ role: "user", content: "hi" }],
+      allowed_tools: ["shell"],
+      timeout_seconds: 30,
+      profile_name: "fast",
+      channel: "service",
+      reply_to: "job_1",
+    });
   });
 
   test("intern client rejects stream responses without a body", () => {
@@ -82,7 +124,7 @@ describe("HTTP SDK clients", () => {
     expect(requests[0]?.url).toContain("/v1/sandboxes/sbx_1/exec?stream=1");
   });
 
-  test("sandbox client exposes file, runtime, and tunnel helper methods", async () => {
+  test("sandbox client exposes file, runtime, tunnel, and signed-url helper methods", async () => {
     const requests: Request[] = [];
     const fetchImpl = ((input: FetchInput, init?: RequestInit) => {
       const request = toRequest(input, init);
@@ -109,8 +151,14 @@ describe("HTTP SDK clients", () => {
       if (url.pathname === "/metrics") {
         return Promise.resolve(new Response("sandbox_up 1\n", { status: 200, headers: { "Content-Type": "text/plain" } }));
       }
+      if (url.pathname.endsWith("/tunnels") && request.method === "POST") {
+        return Promise.resolve(new Response(JSON.stringify({ id: "tun_1", sandbox_id: "sbx_1", target_port: 3000, endpoint: "https://sandbox.test/v1/tunnels/tun_1/proxy", auth_mode: "token", visibility: "private" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
       if (url.pathname.endsWith("/tunnels/tun_1") && request.method === "DELETE") {
         return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.pathname.endsWith("/tunnels/tun_1/signed-url") && request.method === "POST") {
+        return Promise.resolve(new Response(JSON.stringify({ url: "https://sandbox.test/v1/tunnels/tun_1/proxy?or3_sig=abc", expires_at: "2099-01-01T00:00:00.000Z" }), { status: 200, headers: { "Content-Type": "application/json" } }));
       }
       return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
     }) as unknown as typeof fetch;
@@ -119,6 +167,8 @@ describe("HTTP SDK clients", () => {
     const file = await client.readFile("sbx_1", "/workspace.txt");
     expect(file.content).toBe("hello");
     await client.mkdir("sbx_1", "/workspace");
+    const tunnel = await client.createTunnel("sbx_1", { target_port: 3000, protocol: "http", auth_mode: "token", visibility: "private" });
+    const signedUrl = await client.createSignedTunnelUrl("tun_1", { path: "/", ttl_seconds: 300 });
     expect(await client.runtimeHealth()).toEqual({ status: "ok" });
     expect(await client.runtimeInfo()).toEqual({ runtime: "docker" });
     expect(await client.runtimeCapacity()).toEqual({ total: 2, available: 1 });
@@ -126,7 +176,11 @@ describe("HTTP SDK clients", () => {
     expect(await client.getMetrics()).toBe("sandbox_up 1\n");
     await client.revokeTunnel("tun_1");
 
+    expect(tunnel).toEqual({ id: "tun_1", sandbox_id: "sbx_1", target_port: 3000, endpoint: "https://sandbox.test/v1/tunnels/tun_1/proxy", auth_mode: "token", visibility: "private" });
+    expect(signedUrl).toEqual({ url: "https://sandbox.test/v1/tunnels/tun_1/proxy?or3_sig=abc", expires_at: "2099-01-01T00:00:00.000Z" });
     expect(requests.some((request) => request.url.includes("/v1/sandboxes/sbx_1/files/workspace.txt") && request.method === "GET")).toBeTrue();
+    expect(requests.some((request) => request.url.includes("/v1/sandboxes/sbx_1/tunnels") && request.method === "POST")).toBeTrue();
+    expect(requests.some((request) => request.url.includes("/v1/tunnels/tun_1/signed-url") && request.method === "POST")).toBeTrue();
     expect(requests.some((request) => request.url.includes("/v1/runtime/health"))).toBeTrue();
     expect(requests.some((request) => request.url.includes("/metrics"))).toBeTrue();
   });

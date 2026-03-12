@@ -1,6 +1,7 @@
 import type {
   CreateSandboxRequest,
   CreateTunnelRequest,
+  CreateTunnelSignedUrlRequest,
   SandboxClient,
   SandboxExecEvent,
   SandboxExecRequest,
@@ -12,6 +13,7 @@ import type {
   RuntimeInfo,
   SandboxQuota,
   SandboxTunnel,
+  SandboxTunnelSignedUrl,
   SandboxWriteFileRequest,
 } from "./types.ts";
 
@@ -109,9 +111,9 @@ export class HttpSandboxClient implements SandboxClient {
   }
 
   public async mkdir(sandboxId: string, path: string): Promise<void> {
-    await this.request(`/v1/sandboxes/${sandboxId}/files${normalizeFilePath(path)}`, {
+    await this.request(`/v1/sandboxes/${sandboxId}/mkdir`, {
       method: "POST",
-      body: {},
+      body: { path },
     });
   }
 
@@ -125,6 +127,10 @@ export class HttpSandboxClient implements SandboxClient {
 
   public async revokeTunnel(tunnelId: string): Promise<void> {
     await this.request(`/v1/tunnels/${tunnelId}`, { method: "DELETE" });
+  }
+
+  public async createSignedTunnelUrl(tunnelId: string, request: CreateTunnelSignedUrlRequest = {}): Promise<SandboxTunnelSignedUrl> {
+    return this.requestJson<SandboxTunnelSignedUrl>(`/v1/tunnels/${tunnelId}/signed-url`, { method: "POST", body: request });
   }
 
   public async runtimeInfo(): Promise<RuntimeInfo> {

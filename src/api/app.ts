@@ -55,6 +55,14 @@ export class Or3NetApp {
       return this.handleLaunchCapability(requireGroup(launchCapabilityMatch.pathname.groups, "token"));
     }
 
+    const launchCapabilityAssetMatch = new URLPattern({ pathname: "/v1/launch/:token/:path*" }).exec(url);
+    if (request.method === "GET" && launchCapabilityAssetMatch !== null) {
+      return this.handleLaunchCapability(
+        requireGroup(launchCapabilityAssetMatch.pathname.groups, "token"),
+        requireGroup(launchCapabilityAssetMatch.pathname.groups, "path"),
+      );
+    }
+
     if (request.method === "POST" && url.pathname === "/v1/auth/exchange") {
       return this.handleExchange(request);
     }
@@ -456,6 +464,7 @@ export class Or3NetApp {
     ensureLaunchableNode(node);
     const internalLaunch = await adapter.prepareServiceLaunch(principal.workspace_id, node, serviceId);
     const launch = previewService.mintLaunchCapability({
+      origin: new URL(request.url).origin,
       workspace_id: principal.workspace_id,
       scope_key: buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId),
       target_url: internalLaunch.target_url,
@@ -477,8 +486,9 @@ export class Or3NetApp {
       throw new HttpError(404, "node not found");
     }
     ensureLaunchableNode(node);
-    const revoked = previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
-    return jsonResponse(200, { ok: true, revoked });
+    const revokedLaunches = previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
+    const revokedTunnels = await requireSandboxAdapter(this.services.sandboxNodeAdapter).revokeServiceLaunch(principal.workspace_id, node, serviceId);
+    return jsonResponse(200, { ok: true, revoked: revokedLaunches + revokedTunnels });
   }
 
   private async handleRestartNodeService(request: Request, workspaceId: string, nodeId: string, serviceId: string): Promise<Response> {
@@ -518,7 +528,7 @@ export class Or3NetApp {
     const principal = await this.requirePrincipal(request, workspaceId, "previews:read");
     const previewService = requirePreviewService(this.services.previewService);
     const launchRequest = previewLaunchRequestSchema.parse(await readOptionalJson(request));
-    const launch = previewService.launchPreview(principal.workspace_id, previewId, launchRequest);
+    const launch = previewService.launchPreview(principal.workspace_id, previewId, launchRequest, new URL(request.url).origin);
     return jsonResponse(200, launch as unknown as Record<string, unknown>);
   }
 
@@ -553,9 +563,19 @@ export class Or3NetApp {
     });
   }
 
-  private handleLaunchCapability(token: string): Response {
+  private handleLaunchCapability(token: string, requestedPath?: string): Response {
     const previewService = requirePreviewService(this.services.previewService);
-    const resolved = previewService.resolveLaunchCapability(token);
+    const resolved = previewService.resolveLaunchCapability(token, requestedPath);
+    if (resolved.kind === "files") {
+      const file = requireWorkspaceFileService(this.services.workspaceFileService).readFile(resolved.workspace_id, resolved.file_path);
+      return new Response(file.content, {
+        status: 200,
+        headers: {
+          "Content-Type": file.entry.mime_type ?? "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
     return Response.redirect(resolved.target_url, 302);
   }
 

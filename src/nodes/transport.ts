@@ -1,4 +1,4 @@
-import type { JobError, JobResult, JobStreamEvent, NodeEvent, NodeRequest, NodeResponse, TaskPackage } from "../contracts/index.ts";
+import type { JobError, JobResult, JobStreamEvent, NodeEvent, NodeResponse, TaskPackage } from "../contracts/index.ts";
 
 export interface NodeRpcTransport {
   readonly kind: "https" | "outbound-wss";
@@ -72,7 +72,7 @@ export const remoteExecutionErrorToJobError = (error: RemoteExecutionError): Job
   code: error.code,
   message: error.message,
   retriable: error.retriable,
-  details: error.details,
+  details: toJsonRecord(error.details),
 });
 
 export const normalizeNodeEvent = (event: NodeEvent): JobStreamEvent | null => {
@@ -116,4 +116,21 @@ export const parseNodeResponseResult = (response: NodeResponse): JobResult => {
   }
 
   return response.result;
-}
+};
+
+const toJsonRecord = (value: Record<string, unknown>): JobError["details"] => {
+  const record: JobError["details"] = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (
+      typeof entry === "string" ||
+      typeof entry === "number" ||
+      typeof entry === "boolean" ||
+      entry === null ||
+      Array.isArray(entry) ||
+      (typeof entry === "object" && entry !== null)
+    ) {
+      record[key] = entry as JobError["details"][string];
+    }
+  }
+  return record;
+};

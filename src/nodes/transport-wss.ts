@@ -61,7 +61,7 @@ export class OutboundWssNodeTransport implements NodeRpcTransport {
 
     return {
       nodeId: context.nodeId,
-      stream: trackedStream?.stream,
+      ...(trackedStream === undefined ? {} : { stream: trackedStream.stream }),
       result: trackedStream?.result ?? Promise.resolve(parseNodeResponseResult(response)),
       abort: async () => {
         await handler(
@@ -77,16 +77,7 @@ export class OutboundWssNodeTransport implements NodeRpcTransport {
   }
 }
 
-const createNormalizedStream = async function* (stream: AsyncIterable<NodeEvent>) {
-  for await (const event of stream) {
-    const normalized = normalizeNodeEvent(event);
-    if (normalized !== null) {
-      yield normalized;
-    }
-  }
-};
-
-const trackExecutionStream = (stream: AsyncIterable<NodeEvent>, fallback: NodeResponse extends never ? never : ReturnType<typeof parseNodeResponseResult>) => {
+const trackExecutionStream = (stream: AsyncIterable<NodeEvent>, fallback: ReturnType<typeof parseNodeResponseResult>) => {
   const queue: StreamQueueEntry[] = [];
   let pendingResolve: ((entry: StreamQueueEntry) => void) | null = null;
 

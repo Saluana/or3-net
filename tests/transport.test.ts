@@ -24,7 +24,7 @@ describe("node transport abstraction", () => {
       fetch: ((_input, init) => {
         const payload = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as NodeRequest;
         seenMethods.push(`https:${payload.method}`);
-        seenAuth.push(init?.headers instanceof Headers ? (init.headers.get("Authorization") ?? "") : String((init?.headers as Record<string, string> | undefined)?.Authorization ?? ""));
+        seenAuth.push(init?.headers instanceof Headers ? (init.headers.get("Authorization") ?? "") : String((init?.headers as Record<string, string> | undefined)?.["Authorization"] ?? ""));
         return Promise.resolve(new Response(
           JSON.stringify({
             id: payload.id,
@@ -46,7 +46,7 @@ describe("node transport abstraction", () => {
 
     const registry = new NodeTransportRegistry();
     registry.registerKindTransport("https", fetchTransport);
-    registry.registerNodeTransport("node_wss", wssTransport);
+    registry.registerNodeTransport("ws_transport", "node_wss", wssTransport);
     const executor = new RemoteNodeExecutor(registry);
 
     const taskPackage = taskPackageSchema.parse({
@@ -118,7 +118,7 @@ describe("node transport abstraction", () => {
 
     const httpsTransport = new HttpsNodeTransport({
       endpoint: "https://node.example/rpc",
-      fetch: ((_input, init) => {
+      fetch: ((_input) => {
         const url = typeof _input === "string" ? _input : String(_input);
         if (url.includes("/abort")) {
           return Promise.resolve(new Response(null, { status: 204 }));
@@ -230,6 +230,84 @@ describe("node transport abstraction", () => {
     expect(await collect(run.stream ?? emptyAsync())).toEqual([{ event: "text.delta", data: { text: "warming" } }]);
     expect((await run.result).output_text).toBe("done");
     expect(streamStarts).toBe(1);
+  });
+
+  test("uses workspace-scoped node transport registrations for the same node_id", async () => {
+    const registry = new NodeTransportRegistry();
+    registry.registerNodeTransport("ws_alpha", "node_shared", {
+      kind: "outbound-wss",
+      startExecution: async () => ({
+        nodeId: "node_shared",
+        result: Promise.resolve({ output_text: "alpha", artifacts: [], meta: {} }),
+        abort: async () => {},
+      }),
+    });
+    registry.registerNodeTransport("ws_beta", "node_shared", {
+      kind: "outbound-wss",
+      startExecution: async () => ({
+        nodeId: "node_shared",
+        result: Promise.resolve({ output_text: "beta", artifacts: [], meta: {} }),
+        abort: async () => {},
+      }),
+    });
+    const executor = new RemoteNodeExecutor(registry);
+    const taskPackage = taskPackageSchema.parse({
+      workspace_id: "ws_alpha",
+      job_id: "job_scoped",
+      kind: "turn",
+      instructions: "echo scoped",
+      artifacts: [],
+      tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+      timeout: { soft_ms: 1000 },
+      lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+      subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+      metadata: {},
+    });
+
+    const alphaRun = await executor.startExecution(
+      {
+        ...baseNode,
+        workspace_id: "ws_alpha",
+        manifest: {
+          node_id: "node_shared",
+          pubkey: "pub",
+          signature: "sig",
+          adapter_kind: "remote",
+          capabilities: ["exec"],
+          isolation_class: "docker-trusted",
+          supports_transports: ["outbound-wss"],
+          resource_limits: { max_concurrent_jobs: 1, cpu_cores: 1, memory_mb: 512, disk_mb: 512 },
+          lease_policy: { max_ttl_seconds: 60, supports_warm_pool: false, reset_methods: ["process_kill"] },
+          version: "1.0.0",
+        },
+      },
+      taskPackage,
+      { token: "cred_alpha", expires_at: "2099-01-01T00:00:00.000Z" },
+    );
+
+    const betaRun = await executor.startExecution(
+      {
+        ...baseNode,
+        workspace_id: "ws_beta",
+        manifest: {
+          node_id: "node_shared",
+          pubkey: "pub",
+          signature: "sig",
+          adapter_kind: "remote",
+          capabilities: ["exec"],
+          isolation_class: "docker-trusted",
+          supports_transports: ["outbound-wss"],
+          resource_limits: { max_concurrent_jobs: 1, cpu_cores: 1, memory_mb: 512, disk_mb: 512 },
+          lease_policy: { max_ttl_seconds: 60, supports_warm_pool: false, reset_methods: ["process_kill"] },
+          version: "1.0.0",
+        },
+      },
+      { ...taskPackage, workspace_id: "ws_beta", job_id: "job_scoped_beta" },
+      { token: "cred_beta", expires_at: "2099-01-01T00:00:00.000Z" },
+    );
+
+    expect((await alphaRun.result).output_text).toBe("alpha");
+    expect((await betaRun.result).output_text).toBe("beta");
   });
 });
 

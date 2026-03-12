@@ -7,7 +7,6 @@ import type { RemoteNodeExecutor } from "../nodes/executor.ts";
 import type { SandboxNodeAdapter } from "../nodes/adapter-sandbox.ts";
 import type { LeaseScheduler } from "../scheduler/scheduler.ts";
 import {
-  RemoteExecutionError,
   isRemoteExecutionError,
   remoteExecutionErrorToJobError,
   toRemoteExecutionError,
@@ -26,6 +25,7 @@ export const createJobRequestSchema = z.object({
   allowed_tools: z.array(z.string().trim().min(1)).default([]),
   meta: z.record(z.string(), z.unknown()).default({}),
   profile_name: z.string().trim().min(1).optional(),
+  execution_target: z.enum(["local", "remote"]).default("local"),
 }).superRefine((value, ctx) => {
   if (value.network_session_id === undefined && value.session_key === undefined && value.client_session_id === undefined) {
     ctx.addIssue({
@@ -78,11 +78,11 @@ export class LocalJobService {
     const now = new Date().toISOString();
     const sessionBinding = this.sessionBindingService.resolveBinding({
       workspace_id: workspaceId,
-      network_session_id: request.network_session_id,
-      client_kind: request.client_kind,
-      client_session_id: request.client_session_id,
-      session_key: request.session_key,
-      initiator_subject: options.initiator_subject,
+      ...(request.network_session_id === undefined ? {} : { network_session_id: request.network_session_id }),
+      ...(request.client_kind === undefined ? {} : { client_kind: request.client_kind }),
+      ...(request.client_session_id === undefined ? {} : { client_session_id: request.client_session_id }),
+      ...(request.session_key === undefined ? {} : { session_key: request.session_key }),
+      ...(options.initiator_subject === undefined ? {} : { initiator_subject: options.initiator_subject }),
     });
     const taskPackage = this.buildTaskPackage(workspaceId, jobId, sessionBinding, request);
 
@@ -111,8 +111,20 @@ export class LocalJobService {
       });
     }
 
-    if (this.shouldUseRemoteExecution(workspaceId)) {
+    if (this.shouldUseRemoteExecution(workspaceId, request.execution_target)) {
       void this.runRemoteTask(jobId, workspaceId, taskPackage);
+    } else if (request.execution_target === "remote") {
+      this.publishIfApplied(workspaceId, jobId, taskPackage, {
+        event: "job.failed",
+        data: jobErrorSchema.parse({
+          code: "remote_execution_start_failed",
+          message: "no eligible remote node is available for this workspace",
+          retriable: true,
+          details: {
+            workspace_id: workspaceId,
+          },
+        }),
+      });
     } else {
       void this.runLocalTurn(jobId, workspaceId, sessionBinding.intern_session_key, request, taskPackage);
     }
@@ -230,6 +242,7 @@ export class LocalJobService {
         ...request.meta,
         network_session_id: sessionBinding.network_session_id,
         intern_session_key: sessionBinding.intern_session_key,
+        execution_target: request.execution_target,
         ...(request.client_kind === undefined ? {} : { client_kind: request.client_kind }),
         ...(request.client_session_id === undefined ? {} : { client_session_id: request.client_session_id }),
       },
@@ -499,14 +512,17 @@ export class LocalJobService {
     if (stored.network_session_id !== null) {
       this.sessionBindingService.touchBinding(workspaceId, stored.network_session_id, {
         last_job_id: jobId,
-        status: isTerminalEvent(event) ? "active" : undefined,
+        ...(isTerminalEvent(event) ? { status: "active" } : {}),
       });
     }
 
     return true;
   }
 
-  private shouldUseRemoteExecution(workspaceId: string): boolean {
+  private shouldUseRemoteExecution(workspaceId: string, executionTarget: "local" | "remote"): boolean {
+    if (executionTarget !== "remote") {
+      return false;
+    }
     if (this.options.leaseScheduler === undefined) {
       return false;
     }
