@@ -25,7 +25,7 @@ export const renderConsoleHtml = (): string => `<!doctype html>
 	<body>
 		<main>
 			<h1>OR3 Net Console</h1>
-			<p>Minimal authenticated operator console for nodes, jobs, previews, and service actions.</p>
+			<p>Minimal authenticated operator console for jobs, nodes, API keys, sessions, previews, and service actions.</p>
 			<div class="grid">
 				<section class="card">
 					<h2>Session</h2>
@@ -36,18 +36,46 @@ export const renderConsoleHtml = (): string => `<!doctype html>
 					<label for="token">Workspace token or API key</label>
 					<textarea id="token"></textarea>
 					<div class="actions">
+						<button id="loadJobs">List Jobs</button>
 						<button id="loadNodes">List Nodes</button>
+						<button id="loadApiKeys" class="secondary">List API Keys</button>
+						<button id="loadSessions" class="secondary">List Sessions</button>
 						<button id="loadAgents" class="secondary">List Agents</button>
 						<button id="loadPreviews" class="secondary">List Previews</button>
 					</div>
 				</section>
 				<section class="card">
-					<h2>Job Submit</h2>
+					<h2>Jobs</h2>
 					<label for="sessionKey">Session key</label>
 					<input id="sessionKey" value="svc:console" />
+					<label for="clientSessionId">Client session ID</label>
+					<input id="clientSessionId" value="thread_console" />
 					<label for="jobMessage">Message</label>
 					<textarea id="jobMessage">say hello from the console</textarea>
-					<button id="submitJob">Submit Job</button>
+					<div class="actions">
+						<button id="submitJob">Submit Job</button>
+						<button id="loadSessionEvents" class="secondary">Load Session Events</button>
+					</div>
+				</section>
+				<section class="card">
+					<h2>API Keys</h2>
+					<label for="apiKeyName">Key name</label>
+					<input id="apiKeyName" value="console-operator" />
+					<label for="apiKeyScopes">Scopes (comma-separated)</label>
+					<input id="apiKeyScopes" value="jobs:read,jobs:write" />
+					<div class="actions">
+						<button id="createApiKey">Create API Key</button>
+						<button id="loadApiKeysPanel" class="secondary">Refresh API Keys</button>
+					</div>
+				</section>
+				<section class="card">
+					<h2>Sessions</h2>
+					<label for="sessionId">Network session ID</label>
+					<input id="sessionId" value="" />
+					<div class="actions">
+						<button id="loadSessionDetail">Load Session</button>
+						<button id="loadSessionsPanel" class="secondary">Refresh Sessions</button>
+					</div>
 				</section>
 				<section class="card">
 					<h2>Service Actions</h2>
@@ -90,9 +118,22 @@ export const renderConsoleHtml = (): string => `<!doctype html>
 				try { return { status: response.status, body: JSON.parse(text) }; } catch { return { status: response.status, body: text }; }
 			};
 
+			document.getElementById('loadJobs').onclick = async () => {
+				const { workspaceId } = getConfig();
+				write(await call('/v1/workspaces/' + workspaceId + '/jobs'));
+			};
+
 			document.getElementById('loadNodes').onclick = async () => {
 				const { workspaceId } = getConfig();
 				write(await call('/v1/workspaces/' + workspaceId + '/nodes'));
+			};
+			document.getElementById('loadApiKeys').onclick = async () => {
+				const { workspaceId } = getConfig();
+				write(await call('/v1/workspaces/' + workspaceId + '/api-keys'));
+			};
+			document.getElementById('loadSessions').onclick = async () => {
+				const { workspaceId } = getConfig();
+				write(await call('/v1/workspaces/' + workspaceId + '/sessions'));
 			};
 			document.getElementById('loadAgents').onclick = async () => {
 				const { workspaceId } = getConfig();
@@ -107,10 +148,40 @@ export const renderConsoleHtml = (): string => `<!doctype html>
 				write(await call('/v1/workspaces/' + workspaceId + '/jobs', {
 					method: 'POST',
 					body: JSON.stringify({
+						client_kind: 'console',
+						client_session_id: document.getElementById('clientSessionId').value,
 						session_key: document.getElementById('sessionKey').value,
 						message: document.getElementById('jobMessage').value,
 					}),
 				}));
+			};
+			document.getElementById('loadSessionEvents').onclick = async () => {
+				const { workspaceId } = getConfig();
+				const sessionId = document.getElementById('sessionId').value;
+				write(await call('/v1/workspaces/' + workspaceId + '/sessions/' + sessionId + '/events'));
+			};
+			document.getElementById('createApiKey').onclick = async () => {
+				const { workspaceId } = getConfig();
+				write(await call('/v1/workspaces/' + workspaceId + '/api-keys', {
+					method: 'POST',
+					body: JSON.stringify({
+						name: document.getElementById('apiKeyName').value,
+						scopes: document.getElementById('apiKeyScopes').value.split(',').map((item) => item.trim()).filter(Boolean),
+					}),
+				}));
+			};
+			document.getElementById('loadApiKeysPanel').onclick = async () => {
+				const { workspaceId } = getConfig();
+				write(await call('/v1/workspaces/' + workspaceId + '/api-keys'));
+			};
+			document.getElementById('loadSessionDetail').onclick = async () => {
+				const { workspaceId } = getConfig();
+				const sessionId = document.getElementById('sessionId').value;
+				write(await call('/v1/workspaces/' + workspaceId + '/sessions/' + sessionId));
+			};
+			document.getElementById('loadSessionsPanel').onclick = async () => {
+				const { workspaceId } = getConfig();
+				write(await call('/v1/workspaces/' + workspaceId + '/sessions'));
 			};
 			document.getElementById('openDashboard').onclick = async () => {
 				const { workspaceId, nodeId, serviceId } = getConfig();

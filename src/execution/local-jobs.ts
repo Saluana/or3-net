@@ -15,13 +15,33 @@ import {
 } from "../nodes/transport.ts";
 import type { InternClient, InternJobEvent } from "../../sdk/intern/index.ts";
 import { JobStreamBroker } from "./job-streams.ts";
+import { SessionBindingService } from "../session/service.ts";
 
 export const createJobRequestSchema = z.object({
-  session_key: z.string().trim().min(1),
+  session_key: z.string().trim().min(1).optional(),
+  network_session_id: z.string().trim().min(1).optional(),
+  client_kind: z.string().trim().min(1).optional(),
+  client_session_id: z.string().trim().min(1).optional(),
   message: z.string().trim().min(1),
   allowed_tools: z.array(z.string().trim().min(1)).default([]),
   meta: z.record(z.string(), z.unknown()).default({}),
   profile_name: z.string().trim().min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (value.network_session_id === undefined && value.session_key === undefined && value.client_session_id === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["session_key"],
+      message: "job submission requires network_session_id, client_session_id, or session_key",
+    });
+  }
+
+  if (value.client_session_id !== undefined && value.client_kind === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["client_kind"],
+      message: "client_kind is required when client_session_id is provided",
+    });
+  }
 });
 
 export interface LocalJobServiceOptions {
@@ -31,28 +51,40 @@ export interface LocalJobServiceOptions {
   readonly leaseScheduler?: LeaseScheduler;
   readonly sandboxNodeAdapter?: SandboxNodeAdapter;
   readonly remoteNodeExecutor?: RemoteNodeExecutor;
+  readonly sessionBindingService?: SessionBindingService;
 }
 
 const terminalStatuses = new Set<Job["status"]>(["completed", "failed", "aborted"]);
 
 export class LocalJobService {
   private readonly streamBroker: JobStreamBroker;
+  private readonly sessionBindingService: SessionBindingService;
   private readonly backendJobIds = new Map<string, string>();
   private readonly pendingAbortJobs = new Set<string>();
   private readonly activeRemoteRuns = new Map<string, { workspaceId: string; leaseId: string; run: NodeExecutionHandle }>();
 
   public constructor(private readonly options: LocalJobServiceOptions) {
     this.streamBroker = options.streamBroker ?? new JobStreamBroker();
+    this.sessionBindingService = options.sessionBindingService ?? new SessionBindingService(options.database);
   }
 
   public submitJob(
     workspaceId: string,
     requestInput: z.input<typeof createJobRequestSchema>,
+    options: { initiator_subject?: string } = {},
   ): { job_id: string; status: Job["status"]; workspace_id: string } {
     const request = createJobRequestSchema.parse(requestInput);
     const jobId = createId("job");
     const now = new Date().toISOString();
-    const taskPackage = this.buildTaskPackage(workspaceId, jobId, request);
+    const sessionBinding = this.sessionBindingService.resolveBinding({
+      workspace_id: workspaceId,
+      network_session_id: request.network_session_id,
+      client_kind: request.client_kind,
+      client_session_id: request.client_session_id,
+      session_key: request.session_key,
+      initiator_subject: options.initiator_subject,
+    });
+    const taskPackage = this.buildTaskPackage(workspaceId, jobId, sessionBinding, request);
 
     this.options.database.workspace(workspaceId).saveJob({
       job: {
@@ -62,6 +94,10 @@ export class LocalJobService {
         created_at: now,
       },
       task_package: taskPackage,
+      network_session_id: sessionBinding.network_session_id,
+    });
+    this.sessionBindingService.touchBinding(workspaceId, sessionBinding.network_session_id, {
+      last_job_id: jobId,
     });
 
     const accepted = this.applyEvent(workspaceId, jobId, taskPackage, {
@@ -78,7 +114,7 @@ export class LocalJobService {
     if (this.shouldUseRemoteExecution(workspaceId)) {
       void this.runRemoteTask(jobId, workspaceId, taskPackage);
     } else {
-      void this.runLocalTurn(jobId, workspaceId, request, taskPackage);
+      void this.runLocalTurn(jobId, workspaceId, sessionBinding.intern_session_key, request, taskPackage);
     }
 
     return {
@@ -90,6 +126,26 @@ export class LocalJobService {
 
   public getJob(workspaceId: string, jobId: string): StoredJobWithDiagnostics {
     return this.options.database.workspace(workspaceId).getJob(jobId);
+  }
+
+  public listJobs(workspaceId: string, input: { status?: "running" | "terminal" | "all"; network_session_id?: string } = {}): StoredJobWithDiagnostics[] {
+    return this.options.database.workspace(workspaceId).listJobsByFilter(input.status, input.network_session_id);
+  }
+
+  public listSessions(workspaceId: string) {
+    return this.sessionBindingService.listBindings(workspaceId);
+  }
+
+  public getSession(workspaceId: string, sessionId: string) {
+    return this.sessionBindingService.getBinding(workspaceId, sessionId);
+  }
+
+  public listSessionJobs(workspaceId: string, sessionId: string): StoredJobWithDiagnostics[] {
+    return this.options.database.workspace(workspaceId).listJobsByFilter("all", sessionId);
+  }
+
+  public listSessionEvents(workspaceId: string, sessionId: string) {
+    return this.options.database.workspace(workspaceId).listJobEvents({ network_session_id: sessionId });
   }
 
   public streamJob(workspaceId: string, jobId: string): ReadableStream<Uint8Array> {
@@ -143,6 +199,7 @@ export class LocalJobService {
   private buildTaskPackage(
     workspaceId: string,
     jobId: string,
+    sessionBinding: ReturnType<SessionBindingService["resolveBinding"]>,
     request: z.output<typeof createJobRequestSchema>,
   ): TaskPackage {
     return taskPackageSchema.parse({
@@ -169,20 +226,27 @@ export class LocalJobService {
         max_depth: 0,
         max_jobs: 0,
       },
-      metadata: request.meta,
+      metadata: {
+        ...request.meta,
+        network_session_id: sessionBinding.network_session_id,
+        intern_session_key: sessionBinding.intern_session_key,
+        ...(request.client_kind === undefined ? {} : { client_kind: request.client_kind }),
+        ...(request.client_session_id === undefined ? {} : { client_session_id: request.client_session_id }),
+      },
     });
   }
 
   private async runLocalTurn(
     jobId: string,
     workspaceId: string,
+    internSessionKey: string,
     request: z.output<typeof createJobRequestSchema>,
     taskPackage: TaskPackage,
   ): Promise<void> {
     let sawTerminalEvent = false;
     try {
       for await (const event of this.options.internClient.submitTurnStream({
-        sessionKey: request.session_key,
+        sessionKey: internSessionKey,
         message: request.message,
         allowedTools: request.allowed_tools,
         meta: request.meta,
@@ -362,6 +426,7 @@ export class LocalJobService {
       return false;
     }
     const now = new Date().toISOString();
+    let applied = true;
 
     switch (event.event) {
       case "job.accepted":
@@ -372,7 +437,7 @@ export class LocalJobService {
           },
           task_package: taskPackage,
         });
-        return true;
+        break;
       case "job.started":
         workspaceStore.saveJob({
           job: {
@@ -382,7 +447,7 @@ export class LocalJobService {
           },
           task_package: taskPackage,
         });
-        return true;
+        break;
       case "job.completed":
         workspaceStore.saveJob({
           job: {
@@ -394,7 +459,7 @@ export class LocalJobService {
           },
           task_package: taskPackage,
         });
-        return true;
+        break;
       case "job.aborted":
         workspaceStore.saveJob({
           job: {
@@ -405,7 +470,7 @@ export class LocalJobService {
           },
           task_package: taskPackage,
         });
-        return true;
+        break;
       case "job.failed":
         workspaceStore.saveJob({
           job: {
@@ -417,14 +482,28 @@ export class LocalJobService {
           },
           task_package: taskPackage,
         });
-        return true;
+        break;
       case "text.delta":
       case "tool.call":
       case "tool.result":
-        return true;
+        break;
       default:
-        return false;
+        applied = false;
     }
+
+    if (!applied) {
+      return false;
+    }
+
+    this.persistDurableEvent(workspaceId, stored.network_session_id, jobId, event);
+    if (stored.network_session_id !== null) {
+      this.sessionBindingService.touchBinding(workspaceId, stored.network_session_id, {
+        last_job_id: jobId,
+        status: isTerminalEvent(event) ? "active" : undefined,
+      });
+    }
+
+    return true;
   }
 
   private shouldUseRemoteExecution(workspaceId: string): boolean {
@@ -490,7 +569,9 @@ export class LocalJobService {
       },
       task_package: stored.task_package,
     });
-    this.streamBroker.publish(jobId, { event: "job.aborted", data: { job_id: jobId } });
+    const event: JobStreamEvent = { event: "job.aborted", data: { job_id: jobId } };
+    this.persistDurableEvent(workspaceId, stored.network_session_id, jobId, event);
+    this.streamBroker.publish(jobId, event);
   }
 
   private finalizeUnexpectedEof(workspaceId: string, jobId: string, taskPackage: TaskPackage): void {
@@ -515,7 +596,23 @@ export class LocalJobService {
       },
       task_package: taskPackage,
     });
-    this.streamBroker.publish(jobId, { event: "job.failed", data: failure });
+    const event: JobStreamEvent = { event: "job.failed", data: failure };
+    this.persistDurableEvent(workspaceId, stored.network_session_id, jobId, event);
+    this.streamBroker.publish(jobId, event);
+  }
+
+  private persistDurableEvent(
+    workspaceId: string,
+    networkSessionId: string | null,
+    jobId: string,
+    event: JobStreamEvent,
+  ): void {
+    this.options.database.workspace(workspaceId).appendJobEvent({
+      job_id: jobId,
+      ...(networkSessionId === null ? {} : { network_session_id: networkSessionId }),
+      event_type: event.event,
+      payload: summarizeEventData(event),
+    });
   }
 }
 
@@ -616,4 +713,31 @@ const filterRecordValues = (record: Record<string, unknown>): Record<string, str
     }
   }
   return filtered;
+};
+
+const summarizeEventData = (event: JobStreamEvent): Record<string, unknown> => {
+  switch (event.event) {
+    case "job.accepted":
+    case "job.started":
+    case "job.aborted":
+      return { job_id: event.data.job_id };
+    case "text.delta":
+      return { text: event.data.text };
+    case "tool.call":
+      return { name: event.data.name };
+    case "tool.result":
+      return { name: event.data.name, result: event.data.result };
+    case "job.completed":
+      return {
+        output_text: event.data.output_text ?? "",
+        artifact_count: event.data.artifacts.length,
+        meta: event.data.meta,
+      };
+    case "job.failed":
+      return {
+        code: event.data.code,
+        message: event.data.message,
+        retriable: event.data.retriable,
+      };
+  }
 };

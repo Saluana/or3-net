@@ -20,14 +20,18 @@ import type {
   AgentRow,
   ApiKeyRow,
   JobRow,
+  JobEventRow,
   LeaseRow,
   NodeRow,
   NodeCredentialRow,
+  NetworkSessionRow,
   PreviewRow,
   StoredAgent,
   StoredApiKey,
+  StoredJobEvent,
   StoredJobWithDiagnostics,
   StoredLease,
+  StoredNetworkSession,
   StoredNodeCredential,
   StoredNode,
   StoredPreview,
@@ -48,6 +52,7 @@ export interface StartupReconciliationSummary {
 export interface DatabaseOptions {
   readonly path?: string;
   readonly staleNodeThresholdMs?: number;
+  readonly jobEventRetentionPerJob?: number;
 }
 
 export interface SaveNodeInput {
@@ -65,6 +70,42 @@ export interface SaveNodeInput {
 export interface SaveJobInput {
   readonly job: Parameters<typeof jobSchema.parse>[0];
   readonly task_package: Parameters<typeof taskPackageSchema.parse>[0];
+  readonly network_session_id?: string;
+}
+
+export interface SaveNetworkSessionInput {
+  readonly network_session_id: string;
+  readonly client_kind: string;
+  readonly client_session_id?: string;
+  readonly intern_session_key: string;
+  readonly initiator_subject?: string;
+  readonly status: string;
+  readonly created_at?: string;
+  readonly updated_at?: string;
+  readonly last_job_id?: string;
+  readonly last_activity_at?: string;
+  readonly closed_at?: string;
+}
+
+export interface TouchNetworkSessionInput {
+  readonly status?: string;
+  readonly last_job_id?: string;
+  readonly last_activity_at?: string;
+  readonly closed_at?: string;
+}
+
+export interface AppendJobEventInput {
+  readonly job_id: string;
+  readonly network_session_id?: string;
+  readonly event_type: string;
+  readonly payload: Record<string, unknown>;
+  readonly created_at?: string;
+}
+
+export interface ListJobEventsInput {
+  readonly job_id?: string;
+  readonly network_session_id?: string;
+  readonly limit?: number;
 }
 
 export interface SaveLeaseInput {
@@ -126,6 +167,7 @@ const parseJobRow = (row: JobRow): StoredJobWithDiagnostics => {
   const error = parseOptionalWithSchema(jobErrorSchema, row.error_json);
   const taskPackage = parseWithSchema(taskPackageSchema, row.task_package_json);
   return {
+    network_session_id: row.network_session_id,
     job: jobSchema.parse({
       job_id: row.id,
       workspace_id: row.workspace_id,
@@ -142,6 +184,32 @@ const parseJobRow = (row: JobRow): StoredJobWithDiagnostics => {
     error,
   };
 };
+
+const parseNetworkSessionRow = (row: NetworkSessionRow): StoredNetworkSession => ({
+  network_session_id: row.id,
+  workspace_id: row.workspace_id,
+  client_kind: row.client_kind,
+  client_session_id: row.client_session_id,
+  intern_session_key: row.intern_session_key,
+  initiator_subject: row.initiator_subject,
+  status: row.status,
+  created_at: toIsoDateTime(row.created_at),
+  updated_at: toIsoDateTime(row.updated_at),
+  last_job_id: row.last_job_id,
+  last_activity_at: toIsoDateTime(row.last_activity_at),
+  closed_at: row.closed_at === null ? null : toIsoDateTime(row.closed_at),
+});
+
+const parseJobEventRow = (row: JobEventRow): StoredJobEvent => ({
+  event_id: row.id,
+  workspace_id: row.workspace_id,
+  job_id: row.job_id,
+  network_session_id: row.network_session_id,
+  event_type: row.event_type,
+  sequence: row.sequence,
+  payload_json: row.payload_json,
+  created_at: toIsoDateTime(row.created_at),
+});
 
 const parseLeaseRow = (row: LeaseRow): StoredLease => ({
   workspace_id: row.workspace_id,
@@ -192,6 +260,7 @@ export class WorkspaceStore {
   public constructor(
     private readonly db: Database,
     public readonly workspaceId: string,
+    private readonly jobEventRetentionPerJob: number,
   ) {}
 
   public saveAgent(agentInput: Parameters<typeof agentSchema.parse>[0], nowIso = new Date().toISOString()): StoredAgent {
@@ -394,6 +463,12 @@ export class WorkspaceStore {
         job.completed_at === undefined ? null : fromIsoDateTime(job.completed_at),
       );
 
+    if (jobInput.network_session_id !== undefined) {
+      this.db
+        .prepare("UPDATE jobs SET network_session_id = ? WHERE workspace_id = ? AND id = ?")
+        .run(jobInput.network_session_id, this.workspaceId, job.job_id);
+    }
+
     return this.getJob(job.job_id);
   }
 
@@ -420,6 +495,191 @@ export class WorkspaceStore {
       .query<JobRow, [string]>("SELECT * FROM jobs WHERE workspace_id = ? ORDER BY created_at DESC")
       .all(this.workspaceId)
       .map(parseJobRow);
+  }
+
+  public listJobsByFilter(status?: "running" | "terminal" | "all", networkSessionId?: string): StoredJobWithDiagnostics[] {
+    const clauses = ["workspace_id = ?"];
+    const params: Array<string> = [this.workspaceId];
+
+    if (status === "running") {
+      clauses.push("status IN ('pending', 'scheduled', 'running')");
+    } else if (status === "terminal") {
+      clauses.push("status IN ('completed', 'failed', 'aborted')");
+    }
+
+    if (networkSessionId !== undefined) {
+      clauses.push("network_session_id = ?");
+      params.push(networkSessionId);
+    }
+
+    return this.db
+      .query<JobRow, string[]>(`SELECT * FROM jobs WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC`)
+      .all(...params)
+      .map(parseJobRow);
+  }
+
+  public saveNetworkSession(input: SaveNetworkSessionInput): StoredNetworkSession {
+    const createdAt = input.created_at ?? new Date().toISOString();
+    const updatedAt = input.updated_at ?? createdAt;
+    const lastActivityAt = input.last_activity_at ?? updatedAt;
+
+    this.db
+      .prepare(
+        "INSERT INTO network_sessions (workspace_id, id, client_kind, client_session_id, intern_session_key, initiator_subject, status, created_at, updated_at, last_job_id, last_activity_at, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET client_kind = excluded.client_kind, client_session_id = excluded.client_session_id, intern_session_key = excluded.intern_session_key, initiator_subject = excluded.initiator_subject, status = excluded.status, updated_at = excluded.updated_at, last_job_id = excluded.last_job_id, last_activity_at = excluded.last_activity_at, closed_at = excluded.closed_at",
+      )
+      .run(
+        this.workspaceId,
+        input.network_session_id,
+        input.client_kind,
+        input.client_session_id ?? null,
+        input.intern_session_key,
+        input.initiator_subject ?? null,
+        input.status,
+        fromIsoDateTime(createdAt),
+        fromIsoDateTime(updatedAt),
+        input.last_job_id ?? null,
+        fromIsoDateTime(lastActivityAt),
+        input.closed_at === undefined ? null : fromIsoDateTime(input.closed_at),
+      );
+
+    return this.getNetworkSession(input.network_session_id);
+  }
+
+  public getNetworkSession(networkSessionId: string): StoredNetworkSession {
+    const row = this.db
+      .query<NetworkSessionRow, [string, string]>(
+        "SELECT * FROM network_sessions WHERE workspace_id = ? AND id = ? LIMIT 1",
+      )
+      .get(this.workspaceId, networkSessionId);
+
+    if (row === null) {
+      throw new Error(`Network session ${networkSessionId} was not found in workspace ${this.workspaceId}`);
+    }
+
+    return parseNetworkSessionRow(row);
+  }
+
+  public listNetworkSessions(): StoredNetworkSession[] {
+    return this.db
+      .query<NetworkSessionRow, [string]>(
+        "SELECT * FROM network_sessions WHERE workspace_id = ? ORDER BY updated_at DESC",
+      )
+      .all(this.workspaceId)
+      .map(parseNetworkSessionRow);
+  }
+
+  public findNetworkSessionByClient(clientKind: string, clientSessionId: string): StoredNetworkSession | null {
+    const row = this.db
+      .query<NetworkSessionRow, [string, string, string]>(
+        "SELECT * FROM network_sessions WHERE workspace_id = ? AND client_kind = ? AND client_session_id = ? ORDER BY updated_at DESC LIMIT 1",
+      )
+      .get(this.workspaceId, clientKind, clientSessionId);
+
+    return row === null ? null : parseNetworkSessionRow(row);
+  }
+
+  public findNetworkSessionByInternSessionKey(internSessionKey: string): StoredNetworkSession | null {
+    const row = this.db
+      .query<NetworkSessionRow, [string, string]>(
+        "SELECT * FROM network_sessions WHERE workspace_id = ? AND intern_session_key = ? ORDER BY updated_at DESC LIMIT 1",
+      )
+      .get(this.workspaceId, internSessionKey);
+
+    return row === null ? null : parseNetworkSessionRow(row);
+  }
+
+  public touchNetworkSession(networkSessionId: string, input: TouchNetworkSessionInput): StoredNetworkSession {
+    const existing = this.getNetworkSession(networkSessionId);
+    const lastActivityAt = input.last_activity_at ?? new Date().toISOString();
+
+    this.db
+      .prepare(
+        "UPDATE network_sessions SET status = ?, updated_at = ?, last_job_id = ?, last_activity_at = ?, closed_at = ? WHERE workspace_id = ? AND id = ?",
+      )
+      .run(
+        input.status ?? existing.status,
+        fromIsoDateTime(lastActivityAt),
+        input.last_job_id ?? existing.last_job_id,
+        fromIsoDateTime(lastActivityAt),
+        input.closed_at === undefined
+          ? existing.closed_at === null
+            ? null
+            : fromIsoDateTime(existing.closed_at)
+          : fromIsoDateTime(input.closed_at),
+        this.workspaceId,
+        networkSessionId,
+      );
+
+    return this.getNetworkSession(networkSessionId);
+  }
+
+  public appendJobEvent(input: AppendJobEventInput): StoredJobEvent {
+    const createdAt = input.created_at ?? new Date().toISOString();
+    const eventId = createEventId();
+    const nextSequence =
+      (this.db
+        .query<{ sequence: number }, [string, string]>(
+          "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM job_events WHERE workspace_id = ? AND job_id = ?",
+        )
+        .get(this.workspaceId, input.job_id)?.sequence ?? 0) + 1;
+
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          "INSERT INTO job_events (workspace_id, id, job_id, network_session_id, event_type, sequence, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          this.workspaceId,
+          eventId,
+          input.job_id,
+          input.network_session_id ?? null,
+          input.event_type,
+          nextSequence,
+          sanitizePayloadJson(input.payload),
+          fromIsoDateTime(createdAt),
+        );
+
+      this.db
+        .prepare(
+          "DELETE FROM job_events WHERE workspace_id = ? AND job_id = ? AND id NOT IN (SELECT id FROM job_events WHERE workspace_id = ? AND job_id = ? ORDER BY sequence DESC LIMIT ?)",
+        )
+        .run(this.workspaceId, input.job_id, this.workspaceId, input.job_id, this.jobEventRetentionPerJob);
+    })();
+
+    const row = this.db
+      .query<JobEventRow, [string, string]>("SELECT * FROM job_events WHERE workspace_id = ? AND id = ? LIMIT 1")
+      .get(this.workspaceId, eventId);
+
+    if (row === null) {
+      throw new Error(`Job event ${eventId} was not found in workspace ${this.workspaceId}`);
+    }
+
+    return parseJobEventRow(row);
+  }
+
+  public listJobEvents(input: ListJobEventsInput = {}): StoredJobEvent[] {
+    const clauses = ["workspace_id = ?"];
+    const params: Array<string | number> = [this.workspaceId];
+
+    if (input.job_id !== undefined) {
+      clauses.push("job_id = ?");
+      params.push(input.job_id);
+    }
+    if (input.network_session_id !== undefined) {
+      clauses.push("network_session_id = ?");
+      params.push(input.network_session_id);
+    }
+
+    params.push(input.limit ?? 100);
+
+    return this.db
+      .query<JobEventRow, Array<string | number>>(
+        `SELECT * FROM (
+          SELECT * FROM job_events WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC, sequence DESC LIMIT ?
+        ) ORDER BY created_at ASC, sequence ASC`,
+      )
+      .all(...params)
+      .map(parseJobEventRow);
   }
 
   public saveLease(leaseInput: SaveLeaseInput): StoredLease {
@@ -543,10 +803,12 @@ export class WorkspaceStore {
 export class ControlPlaneDatabase {
   public readonly sqlite: Database;
   private readonly staleNodeThresholdMs: number;
+  private readonly jobEventRetentionPerJob: number;
 
   public constructor(options: DatabaseOptions = {}) {
     this.sqlite = new Database(options.path ?? ":memory:");
     this.staleNodeThresholdMs = options.staleNodeThresholdMs ?? 60_000;
+    this.jobEventRetentionPerJob = options.jobEventRetentionPerJob ?? 200;
     this.sqlite.run("PRAGMA journal_mode = WAL;");
     this.sqlite.run("PRAGMA foreign_keys = ON;");
   }
@@ -620,7 +882,7 @@ export class ControlPlaneDatabase {
   }
 
   public workspace(workspaceId: string): WorkspaceStore {
-    return new WorkspaceStore(this.sqlite, workspaceId);
+    return new WorkspaceStore(this.sqlite, workspaceId, this.jobEventRetentionPerJob);
   }
 
   public saveApiKey(input: {
@@ -677,6 +939,25 @@ export class ControlPlaneDatabase {
     return row === null ? null : parseApiKeyRow(row);
   }
 
+  public listApiKeys(workspaceId: string): StoredApiKey[] {
+    return this.sqlite
+      .query<ApiKeyRow, [string]>("SELECT * FROM api_keys WHERE workspace_id = ? ORDER BY created_at DESC")
+      .all(workspaceId)
+      .map(parseApiKeyRow);
+  }
+
+  public revokeApiKey(workspaceId: string, apiKeyId: string, revokedAt = new Date().toISOString()): StoredApiKey {
+    const result = this.sqlite
+      .prepare("UPDATE api_keys SET revoked_at = ? WHERE workspace_id = ? AND id = ?")
+      .run(fromIsoDateTime(revokedAt), workspaceId, apiKeyId);
+
+    if (result.changes === 0) {
+      throw new Error(`API key ${apiKeyId} was not found in workspace ${workspaceId}`);
+    }
+
+    return this.getApiKey(workspaceId, apiKeyId);
+  }
+
   public reconcileStartupState(nowMs = Date.now()): StartupReconciliationSummary {
     const failableStates = runningJobStatuses.map(() => "?").join(", ");
     const failedJobs = this.sqlite
@@ -722,4 +1003,25 @@ const assertWorkspaceMatch = (label: string, expectedWorkspaceId: string, actual
   if (expectedWorkspaceId !== actualWorkspaceId) {
     throw new Error(`${label} workspace mismatch`);
   }
+};
+
+const createEventId = (): string => `evt_${crypto.randomUUID().replace(/-/g, "")}`;
+
+const sanitizePayloadJson = (payload: Record<string, unknown>): string => JSON.stringify(sanitizeValue(payload));
+
+const sanitizeValue = (value: unknown): unknown => {
+  if (typeof value === "string") {
+    return value.length > 2048 ? `${value.slice(0, 2048)}…` : value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 25).map((entry) => sanitizeValue(entry));
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).slice(0, 50);
+    return Object.fromEntries(entries.map(([key, entry]) => [key, sanitizeValue(entry)]));
+  }
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return value;
+  }
+  return String(value);
 };

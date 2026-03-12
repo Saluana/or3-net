@@ -65,6 +65,7 @@ export interface NodeCredentialRow {
 export interface JobRow {
   readonly id: string;
   readonly workspace_id: string;
+  readonly network_session_id: string | null;
   readonly agent_id: string | null;
   readonly node_id: string | null;
   readonly lease_id: string | null;
@@ -100,6 +101,32 @@ export interface AgentRow {
   readonly node_requirements_json: string;
   readonly created_at: number;
   readonly updated_at: number;
+}
+
+export interface NetworkSessionRow {
+  readonly workspace_id: string;
+  readonly id: string;
+  readonly client_kind: string;
+  readonly client_session_id: string | null;
+  readonly intern_session_key: string;
+  readonly initiator_subject: string | null;
+  readonly status: string;
+  readonly created_at: number;
+  readonly updated_at: number;
+  readonly last_job_id: string | null;
+  readonly last_activity_at: number;
+  readonly closed_at: number | null;
+}
+
+export interface JobEventRow {
+  readonly workspace_id: string;
+  readonly id: string;
+  readonly job_id: string;
+  readonly network_session_id: string | null;
+  readonly event_type: string;
+  readonly sequence: number;
+  readonly payload_json: string;
+  readonly created_at: number;
 }
 
 export interface PreviewRow {
@@ -140,6 +167,7 @@ export interface StoredJob {
 }
 
 export interface StoredJobWithDiagnostics extends StoredJob {
+  readonly network_session_id: string | null;
   readonly error: JobError | null;
   readonly result: JobResult | null;
 }
@@ -190,6 +218,32 @@ export interface StoredNodeCredential {
   readonly issued_at: string;
   readonly expires_at: string;
   readonly rotated_at: string | null;
+}
+
+export interface StoredNetworkSession {
+  readonly network_session_id: string;
+  readonly workspace_id: string;
+  readonly client_kind: string;
+  readonly client_session_id: string | null;
+  readonly intern_session_key: string;
+  readonly initiator_subject: string | null;
+  readonly status: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly last_job_id: string | null;
+  readonly last_activity_at: string;
+  readonly closed_at: string | null;
+}
+
+export interface StoredJobEvent {
+  readonly event_id: string;
+  readonly workspace_id: string;
+  readonly job_id: string;
+  readonly network_session_id: string | null;
+  readonly event_type: string;
+  readonly sequence: number;
+  readonly payload_json: string;
+  readonly created_at: string;
 }
 
 export const schemaMigrations: readonly Migration[] = [
@@ -270,6 +324,20 @@ export const schemaMigrations: readonly Migration[] = [
     name: "node-credential-runtime-token",
     statements: [
       "ALTER TABLE node_credentials ADD COLUMN token_ciphertext TEXT",
+    ],
+  },
+  {
+    version: 4,
+    name: "network-sessions-and-job-events",
+    statements: [
+      "CREATE TABLE IF NOT EXISTS network_sessions (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, id TEXT NOT NULL, client_kind TEXT NOT NULL, client_session_id TEXT, intern_session_key TEXT NOT NULL, initiator_subject TEXT, status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_job_id TEXT, last_activity_at INTEGER NOT NULL, closed_at INTEGER, PRIMARY KEY (workspace_id, id), FOREIGN KEY (workspace_id, last_job_id) REFERENCES jobs(workspace_id, id) ON DELETE SET NULL)",
+      "CREATE INDEX IF NOT EXISTS idx_network_sessions_workspace_updated ON network_sessions(workspace_id, updated_at DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_network_sessions_workspace_client ON network_sessions(workspace_id, client_kind, client_session_id)",
+      "CREATE INDEX IF NOT EXISTS idx_network_sessions_workspace_intern_key ON network_sessions(workspace_id, intern_session_key)",
+      "ALTER TABLE jobs ADD COLUMN network_session_id TEXT",
+      "CREATE TABLE IF NOT EXISTS job_events (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, id TEXT NOT NULL, job_id TEXT NOT NULL, network_session_id TEXT, event_type TEXT NOT NULL, sequence INTEGER NOT NULL, payload_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, id), FOREIGN KEY (workspace_id, job_id) REFERENCES jobs(workspace_id, id) ON DELETE CASCADE, FOREIGN KEY (workspace_id, network_session_id) REFERENCES network_sessions(workspace_id, id) ON DELETE SET NULL)",
+      "CREATE INDEX IF NOT EXISTS idx_job_events_workspace_job_sequence ON job_events(workspace_id, job_id, sequence)",
+      "CREATE INDEX IF NOT EXISTS idx_job_events_workspace_session_created ON job_events(workspace_id, network_session_id, created_at)",
     ],
   },
 ];

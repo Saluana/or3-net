@@ -544,4 +544,204 @@ describe("control plane database", () => {
     expect(alpha.getLease("lease_same").job_id).toBe("job_same");
     expect(beta.getLease("lease_same").job_id).toBe("job_same");
   });
+
+  test("creates durable network sessions and resolves legacy session keys", () => {
+    database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
+    const store = database.workspace("ws_alpha");
+
+    store.saveJob({
+      job: {
+        job_id: "job_1",
+        workspace_id: "ws_alpha",
+        status: "pending",
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+      task_package: {
+        workspace_id: "ws_alpha",
+        job_id: "job_1",
+        kind: "turn",
+        instructions: "alpha",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+    });
+
+    const created = store.saveNetworkSession({
+      network_session_id: "sess_1",
+      client_kind: "or3-chat",
+      client_session_id: "thread_1",
+      intern_session_key: "svc:thread_1",
+      initiator_subject: "user_1",
+      status: "active",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+      last_activity_at: "2024-01-01T00:00:00.000Z",
+    });
+
+    expect(created.network_session_id).toBe("sess_1");
+    expect(store.getNetworkSession("sess_1").client_session_id).toBe("thread_1");
+    expect(store.findNetworkSessionByClient("or3-chat", "thread_1")?.network_session_id).toBe("sess_1");
+    expect(store.findNetworkSessionByInternSessionKey("svc:thread_1")?.network_session_id).toBe("sess_1");
+
+    const touched = store.touchNetworkSession("sess_1", {
+      last_job_id: "job_1",
+      last_activity_at: "2024-01-01T00:01:00.000Z",
+    });
+    expect(touched.last_job_id).toBe("job_1");
+    expect(touched.last_activity_at).toBe("2024-01-01T00:01:00.000Z");
+  });
+
+  test("stores bounded job events and keeps them workspace-scoped", () => {
+    database.close();
+    database = createControlPlaneDatabase({ jobEventRetentionPerJob: 3 });
+    database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
+    database.saveWorkspace({ workspace_id: "ws_beta", name: "Beta", created_at: "2024-01-01T00:00:00.000Z" });
+
+    const alpha = database.workspace("ws_alpha");
+    const beta = database.workspace("ws_beta");
+
+    alpha.saveJob({
+      job: {
+        job_id: "job_alpha",
+        workspace_id: "ws_alpha",
+        status: "pending",
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+      task_package: {
+        workspace_id: "ws_alpha",
+        job_id: "job_alpha",
+        kind: "turn",
+        instructions: "alpha",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+    });
+    beta.saveJob({
+      job: {
+        job_id: "job_beta",
+        workspace_id: "ws_beta",
+        status: "pending",
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+      task_package: {
+        workspace_id: "ws_beta",
+        job_id: "job_beta",
+        kind: "turn",
+        instructions: "beta",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+    });
+
+    alpha.saveNetworkSession({
+      network_session_id: "sess_alpha",
+      client_kind: "cli",
+      intern_session_key: "svc:alpha",
+      status: "active",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+      last_activity_at: "2024-01-01T00:00:00.000Z",
+    });
+    beta.saveNetworkSession({
+      network_session_id: "sess_beta",
+      client_kind: "cli",
+      intern_session_key: "svc:beta",
+      status: "active",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+      last_activity_at: "2024-01-01T00:00:00.000Z",
+    });
+
+    for (const eventType of ["job.accepted", "job.started", "text.delta", "job.completed"] as const) {
+      alpha.appendJobEvent({
+        job_id: "job_alpha",
+        network_session_id: "sess_alpha",
+        event_type: eventType,
+        payload: { eventType, text: "x".repeat(5000) },
+        created_at: "2024-01-01T00:00:00.000Z",
+      });
+    }
+
+    beta.appendJobEvent({
+      job_id: "job_beta",
+      network_session_id: "sess_beta",
+      event_type: "job.accepted",
+      payload: { ok: true },
+      created_at: "2024-01-01T00:00:00.000Z",
+    });
+
+    const alphaEvents = alpha.listJobEvents({ job_id: "job_alpha" });
+    const sessionEvents = alpha.listJobEvents({ network_session_id: "sess_alpha" });
+    const betaEvents = beta.listJobEvents({ network_session_id: "sess_beta" });
+
+    expect(alphaEvents.map((event) => event.sequence)).toEqual([2, 3, 4]);
+    expect(alphaEvents[0]?.payload_json.length ?? 0).toBeLessThan(3000);
+    expect(sessionEvents).toHaveLength(3);
+    expect(betaEvents).toHaveLength(1);
+    expect(betaEvents[0]?.job_id).toBe("job_beta");
+  });
+
+  test("lists the newest bounded event tail in chronological order", () => {
+    database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
+    const store = database.workspace("ws_alpha");
+
+    store.saveJob({
+      job: {
+        job_id: "job_tail",
+        workspace_id: "ws_alpha",
+        status: "pending",
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+      task_package: {
+        workspace_id: "ws_alpha",
+        job_id: "job_tail",
+        kind: "turn",
+        instructions: "tail",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+    });
+
+    store.saveNetworkSession({
+      network_session_id: "sess_tail",
+      client_kind: "cli",
+      intern_session_key: "svc:tail",
+      status: "active",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+      last_activity_at: "2024-01-01T00:00:00.000Z",
+    });
+
+    for (let index = 1; index <= 150; index += 1) {
+      store.appendJobEvent({
+        job_id: "job_tail",
+        network_session_id: "sess_tail",
+        event_type: "text.delta",
+        payload: { index },
+        created_at: new Date(Date.UTC(2024, 0, 1, 0, 0, index)).toISOString(),
+      });
+    }
+
+    const events = store.listJobEvents({ network_session_id: "sess_tail", limit: 100 });
+    expect(events).toHaveLength(100);
+    expect(events[0]?.sequence).toBe(51);
+    expect(events.at(-1)?.sequence).toBe(150);
+    expect(events.map((event) => event.sequence)).toEqual([...events.map((event) => event.sequence)].sort((left, right) => left - right));
+  });
 });

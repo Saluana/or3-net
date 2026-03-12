@@ -190,13 +190,24 @@ Likely routes:
 - `POST /v1/workspaces/:workspaceId/api-keys`
 - `POST /v1/workspaces/:workspaceId/api-keys/:apiKeyId/revoke`
 
+Implemented shape in this pass:
+
+- `GET /v1/workspaces/:workspaceId/jobs?status=running|terminal|all&network_session_id=...`
+- `GET /v1/workspaces/:workspaceId/sessions`
+- `GET /v1/workspaces/:workspaceId/sessions/:sessionId`
+- `GET /v1/workspaces/:workspaceId/sessions/:sessionId/events`
+- `GET|POST /v1/workspaces/:workspaceId/api-keys`
+- `POST /v1/workspaces/:workspaceId/api-keys/:apiKeyId/revoke`
+
+The durable `job_events` projection currently assigns per-job monotonic `sequence` values, stores bounded JSON payload summaries, and keeps the newest 200 events per job by default.
+
 Job submission can remain on the current route with additive fields:
 
 ```ts
 interface CreateJobRequest {
   session_key?: string;
   network_session_id?: string;
-  client_kind?: "or3-chat" | "cli" | "sdk";
+  client_kind?: "or3-chat" | "cli" | "sdk" | "console" | string;
   client_session_id?: string;
   message: string;
   allowed_tools?: string[];

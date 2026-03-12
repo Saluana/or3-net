@@ -91,6 +91,14 @@ export class AuthService {
     return { api_key: rawToken, record };
   }
 
+  public listApiKeys(workspaceId: string): StoredApiKey[] {
+    return this.options.database.listApiKeys(workspaceId);
+  }
+
+  public revokeApiKey(workspaceId: string, apiKeyId: string): StoredApiKey {
+    return this.options.database.revokeApiKey(workspaceId, apiKeyId);
+  }
+
   private async authenticateApiKey(rawToken: string): Promise<StoredApiKey> {
     const keyHash = await hashApiKey(rawToken);
     const apiKey = this.options.database.findActiveApiKeyByHash(keyHash);

@@ -27,6 +27,30 @@ export const runCli = async (argv: string[], deps: CliDependencies): Promise<num
 			case "auth:exchange":
 				await handleAuthExchange(parsed.flags, deps);
 				return 0;
+			case "api-keys:list":
+				await handleJsonRequest("GET", buildWorkspacePath(parsed.flags, "/api-keys"), parsed.flags, deps);
+				return 0;
+			case "api-keys:create":
+				await handleJsonRequest(
+					"POST",
+					buildWorkspacePath(parsed.flags, "/api-keys"),
+					parsed.flags,
+					deps,
+					{
+						name: requireFlag(parsed.flags, "name"),
+						scopes: splitCsv(requireFlag(parsed.flags, "scopes")),
+						...(parsed.flags["expires-at"] === undefined ? {} : { expires_at: parsed.flags["expires-at"] }),
+					},
+				);
+				return 0;
+			case "api-keys:revoke":
+				await handleJsonRequest(
+					"POST",
+					buildWorkspacePath(parsed.flags, `/api-keys/${requireFlag(parsed.flags, "api-key-id")}/revoke`),
+					parsed.flags,
+					deps,
+				);
+				return 0;
 			case "nodes:list":
 				await handleJsonRequest("GET", buildWorkspacePath(parsed.flags, "/nodes"), parsed.flags, deps);
 				return 0;
@@ -55,11 +79,45 @@ export const runCli = async (argv: string[], deps: CliDependencies): Promise<num
 					},
 				);
 				return 0;
+			case "jobs:list": {
+				const search = new URLSearchParams();
+				if (parsed.flags["status"] !== undefined) {
+					search.set("status", parsed.flags["status"]);
+				}
+				if (parsed.flags["session-id"] !== undefined) {
+					search.set("network_session_id", parsed.flags["session-id"]);
+				}
+				const path = `${buildWorkspacePath(parsed.flags, "/jobs")}${search.size === 0 ? "" : `?${search.toString()}`}`;
+				await handleJsonRequest("GET", path, parsed.flags, deps);
+				return 0;
+			}
 			case "jobs:get":
 				await handleJsonRequest("GET", `/v1/jobs/${requireFlag(parsed.flags, "job-id")}`, parsed.flags, deps);
 				return 0;
+			case "jobs:abort":
+				await handleJsonRequest("POST", `/v1/jobs/${requireFlag(parsed.flags, "job-id")}/abort`, parsed.flags, deps);
+				return 0;
 			case "jobs:stream":
 				await handleStreamRequest(`/v1/jobs/${requireFlag(parsed.flags, "job-id")}/stream`, parsed.flags, deps);
+				return 0;
+			case "sessions:list":
+				await handleJsonRequest("GET", buildWorkspacePath(parsed.flags, "/sessions"), parsed.flags, deps);
+				return 0;
+			case "sessions:get":
+				await handleJsonRequest(
+					"GET",
+					buildWorkspacePath(parsed.flags, `/sessions/${requireFlag(parsed.flags, "session-id")}`),
+					parsed.flags,
+					deps,
+				);
+				return 0;
+			case "sessions:events":
+				await handleJsonRequest(
+					"GET",
+					buildWorkspacePath(parsed.flags, `/sessions/${requireFlag(parsed.flags, "session-id")}/events`),
+					parsed.flags,
+					deps,
+				);
 				return 0;
 			case "agents:list":
 				await handleJsonRequest("GET", buildWorkspacePath(parsed.flags, "/agents"), parsed.flags, deps);
@@ -178,12 +236,20 @@ const formatJson = (text: string): string => {
 
 const renderHelp = (): string => `${cliName} commands:
 	auth exchange --workspace-id <id> [--provider test] [--proof-json '{"ok":true}'] [--base-url <url>]
+	api-keys list --workspace-id <id> --token <token> [--base-url <url>]
+	api-keys create --workspace-id <id> --token <token> --name <name> --scopes jobs:read,jobs:write [--expires-at <iso>] [--base-url <url>]
+	api-keys revoke --workspace-id <id> --api-key-id <id> --token <token> [--base-url <url>]
 	nodes list --workspace-id <id> --token <token> [--base-url <url>]
 	nodes enroll --workspace-id <id> --token <token> --manifest-json '<json>' [--base-url <url>]
 	nodes approve --workspace-id <id> --node-id <id> --token <token> [--base-url <url>]
 	jobs submit --workspace-id <id> --session-key <key> --message <text> --token <token> [--allowed-tools a,b]
+	jobs list --workspace-id <id> --token <token> [--status running|terminal|all] [--session-id <id>] [--base-url <url>]
 	jobs get --job-id <id> --token <token> [--base-url <url>]
+	jobs abort --job-id <id> --token <token> [--base-url <url>]
 	jobs stream --job-id <id> --token <token> [--base-url <url>]
+	sessions list --workspace-id <id> --token <token> [--base-url <url>]
+	sessions get --workspace-id <id> --session-id <id> --token <token> [--base-url <url>]
+	sessions events --workspace-id <id> --session-id <id> --token <token> [--base-url <url>]
 	agents list --workspace-id <id> --token <token> [--base-url <url>]
 `;
 

@@ -14,5 +14,6 @@ export * from "./nodes/adapter-sandbox.ts";
 export * from "./previews/service.ts";
 export * from "./scheduler/index.ts";
 export * from "./scheduler/warmpool.ts";
+export * from "./session/index.ts";
 export * from "./server.ts";
 export * from "./workspace/files.ts";

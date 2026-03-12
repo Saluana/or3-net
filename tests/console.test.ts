@@ -9,7 +9,7 @@ class ConsoleValidator implements SessionProofValidator {
     return Promise.resolve({
       user_id: "console_admin",
       workspace_id: "ws_console",
-      scopes: ["agents:read", "agents:write", "jobs:read", "jobs:write", "nodes:read", "services:write", "previews:read"],
+      scopes: ["agents:read", "agents:write", "jobs:read", "jobs:write", "nodes:read", "services:write", "previews:read", "api-keys:read", "sessions:read"],
     });
   }
 }
@@ -46,8 +46,14 @@ describe("console route", () => {
     expect(response.headers.get("Content-Type")).toContain("text/html");
     const html = await response.text();
     expect(html).toContain("OR3 Net Console");
+    expect(html).toContain("Jobs");
+    expect(html).toContain("API Keys");
+    expect(html).toContain("Sessions");
     expect(html).toContain("Open Dashboard");
     expect(html).toContain("Revoke Access");
     expect(html).toContain("Restart Service");
+    expect(html).toContain("/v1/workspaces/' + workspaceId + '/jobs");
+    expect(html).toContain("/v1/workspaces/' + workspaceId + '/api-keys");
+    expect(html).toContain("/v1/workspaces/' + workspaceId + '/sessions");
   });
 });

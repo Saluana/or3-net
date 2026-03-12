@@ -19,6 +19,17 @@ const exchangeSessionRequestSchema = z.object({
   workspace_id: z.string().trim().min(1).optional(),
 });
 
+const createApiKeyRequestSchema = z.object({
+  name: z.string().trim().min(1),
+  scopes: z.array(z.string().trim().min(1)).min(1),
+  expires_at: z
+    .string()
+    .trim()
+    .min(1)
+    .refine((value) => !Number.isNaN(Date.parse(value)), "invalid expires_at")
+    .optional(),
+});
+
 interface AppServices {
   readonly authService: AuthService;
   readonly localJobService: LocalJobService;
@@ -49,9 +60,57 @@ export class Or3NetApp {
     }
 
     const createJobMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/jobs" }).exec(url);
-    if (request.method === "POST" && createJobMatch !== null) {
+    if (createJobMatch !== null) {
       const workspaceId = requireGroup(createJobMatch.pathname.groups, "workspaceId");
-      return this.handleCreateJob(request, workspaceId);
+      if (request.method === "POST") {
+        return this.handleCreateJob(request, workspaceId);
+      }
+      if (request.method === "GET") {
+        return this.handleListJobs(request, workspaceId, url);
+      }
+    }
+
+    const apiKeysMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/api-keys" }).exec(url);
+    if (apiKeysMatch !== null) {
+      const workspaceId = requireGroup(apiKeysMatch.pathname.groups, "workspaceId");
+      if (request.method === "GET") {
+        return this.handleListApiKeys(request, workspaceId);
+      }
+      if (request.method === "POST") {
+        return this.handleCreateApiKey(request, workspaceId);
+      }
+    }
+
+    const revokeApiKeyMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/api-keys/:apiKeyId/revoke" }).exec(url);
+    if (request.method === "POST" && revokeApiKeyMatch !== null) {
+      return this.handleRevokeApiKey(
+        request,
+        requireGroup(revokeApiKeyMatch.pathname.groups, "workspaceId"),
+        requireGroup(revokeApiKeyMatch.pathname.groups, "apiKeyId"),
+      );
+    }
+
+    const sessionsMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/sessions" }).exec(url);
+    if (request.method === "GET" && sessionsMatch !== null) {
+      return this.handleListSessions(request, requireGroup(sessionsMatch.pathname.groups, "workspaceId"));
+    }
+
+    const sessionMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/sessions/:sessionId" }).exec(url);
+    if (request.method === "GET" && sessionMatch !== null) {
+      return this.handleGetSession(
+        request,
+        requireGroup(sessionMatch.pathname.groups, "workspaceId"),
+        requireGroup(sessionMatch.pathname.groups, "sessionId"),
+      );
+    }
+
+    const sessionEventsMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/sessions/:sessionId/events" }).exec(url);
+    if (request.method === "GET" && sessionEventsMatch !== null) {
+      return this.handleListSessionEvents(
+        request,
+        requireGroup(sessionEventsMatch.pathname.groups, "workspaceId"),
+        requireGroup(sessionEventsMatch.pathname.groups, "sessionId"),
+      );
     }
 
     const jobMatch = new URLPattern({ pathname: "/v1/jobs/:jobId" }).exec(url);
@@ -206,8 +265,31 @@ export class Or3NetApp {
   private async handleCreateJob(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "jobs:write");
     const payload = createJobRequestSchema.parse(await request.json());
-    const job = this.services.localJobService.submitJob(principal.workspace_id, payload);
+    const job = this.services.localJobService.submitJob(principal.workspace_id, payload, {
+      initiator_subject: principal.subject,
+    });
     return jsonResponse(202, job);
+  }
+
+  private async handleListJobs(request: Request, workspaceId: string, url: URL): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "jobs:read");
+    const status = parseJobStatusFilter(url.searchParams.get("status"));
+    const networkSessionId = url.searchParams.get("network_session_id") ?? undefined;
+    const items = this.services.localJobService.listJobs(principal.workspace_id, {
+      ...(status === undefined ? {} : { status }),
+      ...(networkSessionId === undefined ? {} : { network_session_id: networkSessionId }),
+    });
+    return jsonResponse(200, {
+      items: items.map((item) => ({
+        job_id: item.job.job_id,
+        status: item.job.status,
+        node_id: item.job.node_id ?? null,
+        created_at: item.job.created_at,
+        started_at: item.job.started_at ?? null,
+        completed_at: item.job.completed_at ?? null,
+        network_session_id: item.network_session_id,
+      })),
+    });
   }
 
   private async handleGetJob(request: Request, jobId: string): Promise<Response> {
@@ -233,6 +315,59 @@ export class Or3NetApp {
     const principal = await this.requirePrincipal(request, undefined, "jobs:write");
     const response = await this.services.localJobService.abortJob(principal.workspace_id, jobId);
     return jsonResponse(200, response);
+  }
+
+  private async handleListApiKeys(request: Request, workspaceId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "api-keys:read");
+    return jsonResponse(200, { items: this.services.authService.listApiKeys(principal.workspace_id).map(toApiKeyResponse) });
+  }
+
+  private async handleCreateApiKey(request: Request, workspaceId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "api-keys:write");
+    const payload = createApiKeyRequestSchema.parse(await request.json());
+    const created = await this.services.authService.createApiKey({
+      workspace_id: principal.workspace_id,
+      name: payload.name,
+      scopes: payload.scopes,
+      ...(payload.expires_at === undefined ? {} : { expires_at: payload.expires_at }),
+    });
+    return jsonResponse(201, {
+      api_key: created.api_key,
+      record: toApiKeyResponse(created.record),
+    });
+  }
+
+  private async handleRevokeApiKey(request: Request, workspaceId: string, apiKeyId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "api-keys:write");
+    return jsonResponse(200, {
+      record: toApiKeyResponse(this.services.authService.revokeApiKey(principal.workspace_id, apiKeyId)),
+    });
+  }
+
+  private async handleListSessions(request: Request, workspaceId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "sessions:read");
+    return jsonResponse(200, {
+      items: this.services.localJobService.listSessions(principal.workspace_id),
+    } as unknown as Record<string, unknown>);
+  }
+
+  private async handleGetSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "sessions:read");
+    return jsonResponse(200, {
+      session: this.services.localJobService.getSession(principal.workspace_id, sessionId),
+      jobs: this.services.localJobService.listSessionJobs(principal.workspace_id, sessionId).map((item) => ({
+        job_id: item.job.job_id,
+        status: item.job.status,
+        created_at: item.job.created_at,
+      })),
+    } as unknown as Record<string, unknown>);
+  }
+
+  private async handleListSessionEvents(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "sessions:read");
+    return jsonResponse(200, {
+      items: this.services.localJobService.listSessionEvents(principal.workspace_id, sessionId),
+    } as unknown as Record<string, unknown>);
   }
 
   private async handleListAgents(request: Request, workspaceId: string): Promise<Response> {
@@ -531,6 +666,26 @@ const readOptionalJson = async (request: Request): Promise<unknown> => {
   }
   return JSON.parse(text) as unknown;
 };
+
+const parseJobStatusFilter = (value: string | null): "running" | "terminal" | "all" | undefined => {
+  if (value === null || value === "") {
+    return undefined;
+  }
+  if (value === "running" || value === "terminal" || value === "all") {
+    return value;
+  }
+  throw new HttpError(400, "invalid status filter");
+};
+
+const toApiKeyResponse = (record: ReturnType<AuthService["listApiKeys"]>[number]): Record<string, unknown> => ({
+  api_key_id: record.api_key_id,
+  workspace_id: record.workspace_id,
+  name: record.name,
+  scopes: record.scopes,
+  created_at: record.created_at,
+  expires_at: record.expires_at,
+  revoked_at: record.revoked_at,
+});
 
 export const handleAppRequest = async (app: Or3NetApp, request: Request): Promise<Response> => {
   try {

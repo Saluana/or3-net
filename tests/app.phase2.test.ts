@@ -11,7 +11,7 @@ class StaticSessionProofValidator implements SessionProofValidator {
     return Promise.resolve({
       user_id: "user_1",
       workspace_id: "ws_test",
-      scopes: ["jobs:read", "jobs:write"],
+      scopes: ["jobs:read", "jobs:write", "api-keys:read", "api-keys:write", "sessions:read"],
     });
   }
 }
@@ -209,6 +209,205 @@ describe("phase 2 host API", () => {
       const payload = (await getJobResponse.json()) as { status: string };
       expect(payload.status).toBe("aborted");
     });
+  });
+
+  test("lists jobs, manages api keys, and replays durable session history", async () => {
+    const tokenResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/auth/exchange", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "test",
+          session_proof: { session: "ok" },
+          workspace_id: "ws_test",
+        }),
+      }),
+    );
+    const tokenPayload = (await tokenResponse.json()) as { token: string };
+
+    const createJobResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/jobs", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tokenPayload.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_kind: "or3-chat",
+          client_session_id: "thread_1",
+          message: "say hello again",
+        }),
+      }),
+    );
+
+    expect(createJobResponse.status).toBe(202);
+    const createdJob = (await createJobResponse.json()) as { job_id: string };
+
+    await waitFor(async () => {
+      const getJobResponse = await handleAppRequest(
+        app,
+        new Request(`http://or3.test/v1/jobs/${createdJob.job_id}`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${tokenPayload.token}` },
+        }),
+      );
+      const payload = (await getJobResponse.json()) as { status: string };
+      expect(payload.status).toBe("completed");
+    });
+
+    const jobsResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/jobs?status=terminal", {
+        headers: { Authorization: `Bearer ${tokenPayload.token}` },
+      }),
+    );
+    expect(jobsResponse.status).toBe(200);
+    const jobsPayload = (await jobsResponse.json()) as {
+      items: Array<{ job_id: string; status: string; network_session_id: string | null }>;
+    };
+    expect(jobsPayload.items).toHaveLength(1);
+    expect(jobsPayload.items[0]?.job_id).toBe(createdJob.job_id);
+    expect(jobsPayload.items[0]?.status).toBe("completed");
+    expect(jobsPayload.items[0]?.network_session_id).toBeString();
+
+    const sessionId = jobsPayload.items[0]?.network_session_id ?? "";
+
+    const sessionsResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/sessions", {
+        headers: { Authorization: `Bearer ${tokenPayload.token}` },
+      }),
+    );
+    expect(sessionsResponse.status).toBe(200);
+    const sessionsPayload = (await sessionsResponse.json()) as {
+      items: Array<{ network_session_id: string; client_kind: string; client_session_id: string | null }>;
+    };
+    expect(sessionsPayload.items).toHaveLength(1);
+    expect(sessionsPayload.items[0]?.network_session_id).toBe(sessionId);
+    expect(sessionsPayload.items[0]?.client_kind).toBe("or3-chat");
+    expect(sessionsPayload.items[0]?.client_session_id).toBe("thread_1");
+
+    const sessionDetailResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/sessions/${sessionId}`, {
+        headers: { Authorization: `Bearer ${tokenPayload.token}` },
+      }),
+    );
+    expect(sessionDetailResponse.status).toBe(200);
+    const sessionDetailPayload = (await sessionDetailResponse.json()) as {
+      session: { network_session_id: string; intern_session_key: string };
+      jobs: Array<{ job_id: string }>;
+    };
+    expect(sessionDetailPayload.session.network_session_id).toBe(sessionId);
+    expect(sessionDetailPayload.session.intern_session_key).toBeString();
+    expect(sessionDetailPayload.jobs[0]?.job_id).toBe(createdJob.job_id);
+
+    const sessionEventsResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/sessions/${sessionId}/events`, {
+        headers: { Authorization: `Bearer ${tokenPayload.token}` },
+      }),
+    );
+    expect(sessionEventsResponse.status).toBe(200);
+    const sessionEventsPayload = (await sessionEventsResponse.json()) as {
+      items: Array<{ event_type: string; sequence: number; job_id: string }>;
+    };
+    expect(sessionEventsPayload.items.map((item) => item.event_type)).toContain("job.completed");
+    expect(sessionEventsPayload.items.every((item) => item.job_id === createdJob.job_id)).toBeTrue();
+    expect(sessionEventsPayload.items[0]?.sequence ?? 0).toBeGreaterThan(0);
+    expect(sessionEventsPayload.items.map((item) => item.sequence)).toEqual(
+      [...sessionEventsPayload.items.map((item) => item.sequence)].sort((left, right) => left - right),
+    );
+
+    const createKeyResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/api-keys", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tokenPayload.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "operator",
+          scopes: ["jobs:read"],
+        }),
+      }),
+    );
+    expect(createKeyResponse.status).toBe(201);
+    const createKeyPayload = (await createKeyResponse.json()) as {
+      api_key: string;
+      record: { api_key_id: string; revoked_at: string | null };
+    };
+    expect(createKeyPayload.api_key.startsWith("or3k_")).toBeTrue();
+    expect(createKeyPayload.record.revoked_at).toBeNull();
+    expect(createKeyPayload.record).not.toHaveProperty("key_hash");
+
+    const listKeysResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/api-keys", {
+        headers: { Authorization: `Bearer ${tokenPayload.token}` },
+      }),
+    );
+    expect(listKeysResponse.status).toBe(200);
+    const listKeysPayload = (await listKeysResponse.json()) as {
+      items: Array<{ api_key_id: string; name: string; revoked_at: string | null }>;
+    };
+    expect(listKeysPayload.items).toHaveLength(1);
+    expect(listKeysPayload.items[0]?.api_key_id).toBe(createKeyPayload.record.api_key_id);
+    expect(listKeysPayload.items[0]?.name).toBe("operator");
+    expect(listKeysPayload.items[0]).not.toHaveProperty("key_hash");
+
+    const revokeKeyResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/api-keys/${createKeyPayload.record.api_key_id}/revoke`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tokenPayload.token}` },
+      }),
+    );
+    expect(revokeKeyResponse.status).toBe(200);
+    const revokeKeyPayload = (await revokeKeyResponse.json()) as {
+      record: { api_key_id: string; revoked_at: string | null };
+    };
+    expect(revokeKeyPayload.record.api_key_id).toBe(createKeyPayload.record.api_key_id);
+    expect(revokeKeyPayload.record.revoked_at).toBeString();
+    expect(revokeKeyPayload.record).not.toHaveProperty("key_hash");
+  });
+
+  test("rejects invalid api key expiry timestamps", async () => {
+    const tokenResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/auth/exchange", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "test",
+          session_proof: { session: "ok" },
+          workspace_id: "ws_test",
+        }),
+      }),
+    );
+    const tokenPayload = (await tokenResponse.json()) as { token: string };
+
+    const response = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/api-keys", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tokenPayload.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "bad-expiry",
+          scopes: ["jobs:read"],
+          expires_at: "definitely-not-a-timestamp",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid expires_at" });
   });
 
   test("keeps remaining subscribers active when one stream cancels", async () => {
