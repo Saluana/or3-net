@@ -1,0 +1,8 @@
+{
+  "subject": "user_123",
+  "workspace_id": "ws_demo",
+  "scopes": ["jobs:read", "jobs:write"],
+  "auth_type": "workspace-token",
+  "issued_at": 4102444800,
+  "expires_at": 4102445700
+}

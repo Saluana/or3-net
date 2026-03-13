@@ -27,65 +27,65 @@ Tasks are organized by project in execution order. `or3-net` goes first as the b
 
 ### 1. Platform standards ADR and vocabulary (or3-net)
 
-- [ ] [Req 1] Write the platform standards ADR in `or3-net/planning/platform-standardization/adr-platform-contracts.md` defining the canonical vocabulary: `workspace_id`, `subject`, `client_session_id`, `network_session_id`, `session_key`, `tenant_id` (internal-only).
-- [ ] [Req 1] Add a platform glossary section to the ADR mapping each canonical term to its owner repo and usage context.
-- [ ] [Req 1] Document the `tenant_id` ↔ `workspace_id` mapping rule: `tenant_id` is internal to `or3-sandbox`; `or3-net` maps at the SDK adapter layer.
-- [ ] [Req 1] Document the `session_key` ↔ `network_session_id` binding rule: `session_key` is internal to `or3-intern`; `or3-net` binds in `PlatformSessionRef`.
+- [x] [Req 1] Write the platform standards ADR in `or3-net/planning/platform-standardization/adr-platform-contracts.md` defining the canonical vocabulary: `workspace_id`, `subject`, `client_session_id`, `network_session_id`, `session_key`, `tenant_id` (internal-only).
+- [x] [Req 1] Add a platform glossary section to the ADR mapping each canonical term to its owner repo and usage context.
+- [x] [Req 1] Document the `tenant_id` ↔ `workspace_id` mapping rule: `tenant_id` is internal to `or3-sandbox`; `or3-net` maps at the SDK adapter layer.
+- [x] [Req 1] Document the `session_key` ↔ `network_session_id` binding rule: `session_key` is internal to `or3-intern`; `or3-net` binds in `PlatformSessionRef`.
 
 ### 2. Canonical platform types (or3-net)
 
-- [ ] [Req 1, 2] Define `WorkspacePrincipal` in `src/contracts/platform/types.ts` with frozen fields: `subject`, `workspace_id`, `scopes`, `auth_type`, `issued_at`, `expires_at`.
-- [ ] [Req 2] Define `PlatformSessionRef` in `src/contracts/platform/types.ts` with fields: `workspace_id`, `client_kind`, `client_session_id`, `network_session_id`, `session_key`.
-- [ ] [Req 4] Define `CapabilityGrant` in `src/contracts/platform/types.ts` with fields: `capability_id`, `workspace_id`, `kind`, `scope`, `expires_at`, `revoked_at`.
-- [ ] [Req 3] Define `SecretRef` in `src/contracts/platform/types.ts` with fields: `secret_id`, `class`, `owner_scope`, `created_at`, `rotated_at`.
-- [ ] [Req 5] Define `ErrorEnvelope` in `src/contracts/platform/types.ts` with fields: `error`, `code`, `status`, `request_id`, optional `retry_after_ms`.
-- [ ] [Req 8] Define `AuditContext` in `src/contracts/platform/types.ts` with fields: `request_id`, `workspace_id`, `subject`, optional `network_session_id`, `job_id`, `session_key`, `sandbox_id`.
-- [ ] [Req 5] Define the initial error code registry as a `const` map in `src/contracts/platform/error-codes.ts`.
+- [x] [Req 1, 2] Define `WorkspacePrincipal` in `src/contracts/platform/types.ts` with frozen fields: `subject`, `workspace_id`, `scopes`, `auth_type`, `issued_at`, `expires_at`.
+- [x] [Req 2] Define `PlatformSessionRef` in `src/contracts/platform/types.ts` with fields: `workspace_id`, `client_kind`, `client_session_id`, `network_session_id`, `session_key`.
+- [x] [Req 4] Define `CapabilityGrant` in `src/contracts/platform/types.ts` with fields: `capability_id`, `workspace_id`, `kind`, `scope`, `expires_at`, `revoked_at`.
+- [x] [Req 3] Define `SecretRef` in `src/contracts/platform/types.ts` with fields: `secret_id`, `class`, `owner_scope`, `created_at`, `rotated_at`.
+- [x] [Req 5] Define `ErrorEnvelope` in `src/contracts/platform/types.ts` with fields: `error`, `code`, `status`, `request_id`, optional `retry_after_ms`.
+- [x] [Req 8] Define `AuditContext` in `src/contracts/platform/types.ts` with fields: `request_id`, `workspace_id`, `subject`, optional `network_session_id`, `job_id`, `session_key`, `sandbox_id`.
+- [x] [Req 5] Define the initial error code registry as a `const` map in `src/contracts/platform/error-codes.ts`.
 
 ### 3. Normalized stream event types (or3-net)
 
-- [ ] [Req 6] Define `PlatformStreamEvent` union type in `src/contracts/platform/stream-events.ts` covering: `job.accepted`, `job.started`, `text.delta`, `tool.call`, `tool.result`, `job.completed`, `job.failed`, `job.aborted`, `error`.
-- [ ] [Req 6] Document the translation mapping from `or3-intern` SSE events to platform events.
-- [ ] [Req 6] Document the translation mapping from `or3-sandbox` exec events to platform events.
-- [ ] [Req 6] Document the terminal event constraint: exactly one terminal event per stream.
+- [x] [Req 6] Define `PlatformStreamEvent` union type in `src/contracts/platform/stream-events.ts` covering: `job.accepted`, `job.started`, `text.delta`, `tool.call`, `tool.result`, `job.completed`, `job.failed`, `job.aborted`, `error`.
+- [x] [Req 6] Document the translation mapping from `or3-intern` SSE events to platform events.
+- [x] [Req 6] Document the translation mapping from `or3-sandbox` exec events to platform events.
+- [x] [Req 6] Document the terminal event constraint: exactly one terminal event per stream.
 
 ### 4. Secret and capability lifecycle doc (or3-net)
 
-- [ ] [Req 3] Write `or3-net/planning/platform-standardization/secret-capability-lifecycle.md` defining the four secret classes and their transfer rules.
-- [ ] [Req 3] Document which secrets belong to which class in each repo.
-- [ ] [Req 4] Document the capability grant lifecycle: mint → resolve → revoke/expire → prune.
-- [ ] [Req 3] Document the redaction requirements for logs, error payloads, SSE streams, and audit summaries.
+- [x] [Req 3] Write `or3-net/planning/platform-standardization/secret-capability-lifecycle.md` defining the four secret classes and their transfer rules.
+- [x] [Req 3] Document which secrets belong to which class in each repo.
+- [x] [Req 4] Document the capability grant lifecycle: mint → resolve → revoke/expire → prune.
+- [x] [Req 3] Document the redaction requirements for logs, error payloads, SSE streams, and audit summaries.
 
 ### 5. Error/SSE/idempotency contract doc (or3-net)
 
-- [ ] [Req 5, 6, 7] Write `or3-net/planning/platform-standardization/wire-contracts.md` covering: `snake_case` rule, ISO timestamps, ID prefixes, error envelope, streaming event set, retry/idempotency rules.
-- [ ] [Req 5] Document stable `4xx`/`5xx` semantics for each error code.
-- [ ] [Req 6] Document resume/reconnect semantics per streaming endpoint.
-- [ ] [Req 7] Document which operations are safe to retry and how idempotency is enforced.
+- [x] [Req 5, 6, 7] Write `or3-net/planning/platform-standardization/wire-contracts.md` covering: `snake_case` rule, ISO timestamps, ID prefixes, error envelope, streaming event set, retry/idempotency rules.
+- [x] [Req 5] Document stable `4xx`/`5xx` semantics for each error code.
+- [x] [Req 6] Document resume/reconnect semantics per streaming endpoint.
+- [x] [Req 7] Document which operations are safe to retry and how idempotency is enforced.
 
 ### 6. Compatibility matrix (or3-net)
 
-- [ ] [Req 10] Write `or3-net/planning/platform-standardization/compatibility-matrix.md` listing every boundary, its consumer/provider pair, contract version, and fixture file references.
-- [ ] [Req 10] Define the versioning policy: additive changes are minor, breaking changes require a new version.
+- [x] [Req 10] Write `or3-net/planning/platform-standardization/compatibility-matrix.md` listing every boundary, its consumer/provider pair, contract version, and fixture file references.
+- [x] [Req 10] Define the versioning policy: additive changes are minor, breaking changes require a new version.
 
 ### 7. Contract test fixtures (or3-net)
 
-- [ ] [Req 10] Create `tests/contracts/fixtures/` directory structure.
-- [ ] [Req 2, 10] Create `auth-exchange.request.json` and `auth-exchange.response.json` fixtures matching the frozen exchange contract.
-- [ ] [Req 5, 10] Create `error-envelope.401.json`, `error-envelope.403.json`, `error-envelope.404.json`, `error-envelope.409.json`, `error-envelope.429.json` fixtures.
-- [ ] [Req 6, 10] Create `job-stream-events.jsonl` fixture with one example of each platform stream event type.
-- [ ] [Req 2, 10] Create `workspace-principal.json` and `platform-session-ref.json` fixtures.
-- [ ] [Req 4, 10] Create `capability-grant.json` fixture for each capability kind.
-- [ ] [Req 8, 10] Create `audit-context.json` fixture with all optional fields populated.
+- [x] [Req 10] Create `tests/contracts/fixtures/` directory structure.
+- [x] [Req 2, 10] Create `auth-exchange.request.json` and `auth-exchange.response.json` fixtures matching the frozen exchange contract.
+- [x] [Req 5, 10] Create `error-envelope.401.json`, `error-envelope.403.json`, `error-envelope.404.json`, `error-envelope.409.json`, `error-envelope.429.json` fixtures.
+- [x] [Req 6, 10] Create `job-stream-events.jsonl` fixture with one example of each platform stream event type.
+- [x] [Req 2, 10] Create `workspace-principal.json` and `platform-session-ref.json` fixtures.
+- [x] [Req 4, 10] Create `capability-grant.json` fixture for each capability kind.
+- [x] [Req 8, 10] Create `audit-context.json` fixture with all optional fields populated.
 
 ### 8. Contract tests (or3-net)
 
-- [ ] [Req 10] Write `tests/contracts/auth-exchange.contract.test.ts` validating request/response fixtures against the frozen type.
-- [ ] [Req 10] Write `tests/contracts/error-envelope.contract.test.ts` validating all error fixture files parse to `ErrorEnvelope`.
-- [ ] [Req 10] Write `tests/contracts/stream-events.contract.test.ts` validating stream event fixtures parse to `PlatformStreamEvent`.
-- [ ] [Req 10] Write `tests/contracts/sandbox-sdk.contract.test.ts` validating SDK types against sandbox API fixtures.
-- [ ] [Req 10] Write `tests/contracts/intern-sdk.contract.test.ts` validating SDK types against intern API fixtures.
-- [ ] [Req 1, 10] Write vocabulary contract tests checking that exported types use canonical field names and no banned aliases.
+- [x] [Req 10] Write `tests/contracts/auth-exchange.contract.test.ts` validating request/response fixtures against the frozen type.
+- [x] [Req 10] Write `tests/contracts/error-envelope.contract.test.ts` validating all error fixture files parse to `ErrorEnvelope`.
+- [x] [Req 10] Write `tests/contracts/stream-events.contract.test.ts` validating stream event fixtures parse to `PlatformStreamEvent`.
+- [x] [Req 10] Write `tests/contracts/sandbox-sdk.contract.test.ts` validating SDK types against sandbox API fixtures.
+- [x] [Req 10] Write `tests/contracts/intern-sdk.contract.test.ts` validating SDK types against intern API fixtures.
+- [x] [Req 1, 10] Write vocabulary contract tests checking that exported types use canonical field names and no banned aliases.
 
 ---
 
@@ -93,7 +93,7 @@ Tasks are organized by project in execution order. `or3-net` goes first as the b
 
 ### 9. Error envelope adoption (or3-net)
 
-- [ ] [Req 5] Implement `errorResponse()` helper in `src/api/` that produces `ErrorEnvelope` with `request_id` and optional `retry_after_ms`.
+- [x] [Req 5] Implement `errorResponse()` helper in `src/api/` that produces `ErrorEnvelope` with `request_id` and optional `retry_after_ms`.
 - [ ] [Req 5] Migrate `handleAppRequest()` error catch block from `{ error }` to `ErrorEnvelope` using `errorResponse()`.
 - [ ] [Req 5] Migrate `HttpError` usage to carry a `code` field from the error code registry.
 - [ ] [Req 5] Update `readOptionalJson()` malformed body error to use `input.malformed_body` code.
@@ -110,9 +110,9 @@ Tasks are organized by project in execution order. `or3-net` goes first as the b
 
 ### 11. WorkspacePrincipal freeze (or3-net)
 
-- [ ] [Req 2] Update the existing `WorkspacePrincipal` in `src/contracts/auth.ts` to include `issued_at` and `expires_at` fields from the canonical type.
-- [ ] [Req 2] Update workspace token claims to use `subject` (verify alignment with existing `sub` claim).
-- [ ] [Req 2] Ensure API key auth path also produces a `WorkspacePrincipal` with all canonical fields.
+- [x] [Req 2] Update the existing `WorkspacePrincipal` in `src/auth/tokens.ts` to include `issued_at` and `expires_at` fields from the canonical type.
+- [x] [Req 2] Update workspace token claims to use `subject` (verify alignment with existing `sub` claim).
+- [x] [Req 2] Ensure API key auth path also produces a `WorkspacePrincipal` with all canonical fields.
 
 ### 12. PlatformSessionRef binding (or3-net)
 

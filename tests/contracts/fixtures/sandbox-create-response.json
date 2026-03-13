@@ -1,0 +1,7 @@
+{
+  "id": "sbx_demo",
+  "status": "running",
+  "workspace_id": "ws_demo",
+  "runtime_backend": "docker",
+  "network_mode": "private"
+}

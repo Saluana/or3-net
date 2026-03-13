@@ -1,0 +1,7 @@
+{
+  "workspace_id": "ws_demo",
+  "base_image_ref": "ghcr.io/or3/base:latest",
+  "start": true,
+  "allow_tunnels": true,
+  "network_mode": "private"
+}

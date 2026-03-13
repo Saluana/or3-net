@@ -63,11 +63,17 @@ export class AuthService {
       return await validateWorkspaceToken(this.options.secret, value);
     } catch {
       const apiKey = await this.authenticateApiKey(value);
+      const issuedAt = Math.floor(Date.parse(apiKey.created_at) / 1000);
+      const expiresAt = apiKey.expires_at === null
+        ? MAX_API_KEY_EXPIRY_SECONDS
+        : Math.floor(Date.parse(apiKey.expires_at) / 1000);
       return {
         subject: apiKey.api_key_id,
         workspace_id: apiKey.workspace_id,
         scopes: apiKey.scopes,
         auth_type: "api-key",
+        issued_at: issuedAt,
+        expires_at: expiresAt,
       };
     }
   }
@@ -108,3 +114,5 @@ export class AuthService {
     return apiKey;
   }
 }
+
+const MAX_API_KEY_EXPIRY_SECONDS = 253402300799;

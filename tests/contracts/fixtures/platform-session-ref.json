@@ -1,0 +1,7 @@
+{
+  "workspace_id": "ws_demo",
+  "client_kind": "chat",
+  "client_session_id": "chat-tab-1",
+  "network_session_id": "sess_demo",
+  "session_key": "svc:sess_demo"
+}

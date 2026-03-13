@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { AuthService } from "../auth/service.ts";
 import type { AgentService } from "../agents/index.ts";
 import { agentSchema, previewDescriptorSchema, previewLaunchRequestSchema } from "../contracts/index.ts";
+import { exchangeSessionRequestSchema } from "../contracts/platform/auth.ts";
 import type { WorkspacePrincipal } from "../auth/tokens.ts";
 import { consoleEntryPath, renderConsoleHtml } from "../console/index.ts";
 import type { LocalJobService } from "../execution/local-jobs.ts";
@@ -12,12 +13,6 @@ import type { NodeRegistryService } from "../nodes/index.ts";
 import { enrollNodeRequestSchema } from "../nodes/index.ts";
 import { PreviewStateError, type PreviewService } from "../previews/service.ts";
 import type { InMemoryWorkspaceFileService } from "../workspace/files.ts";
-
-const exchangeSessionRequestSchema = z.object({
-  provider: z.string().trim().min(1),
-  session_proof: z.record(z.string(), z.unknown()),
-  workspace_id: z.string().trim().min(1).optional(),
-});
 
 const createApiKeyRequestSchema = z.object({
   name: z.string().trim().min(1),

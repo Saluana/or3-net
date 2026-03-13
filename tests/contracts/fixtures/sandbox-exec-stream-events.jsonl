@@ -1,0 +1,3 @@
+{"event":"stdout","data":{"chunk":"hello"}}
+{"event":"stderr","data":{"chunk":"warning"}}
+{"event":"result","data":{"exit_code":0}}

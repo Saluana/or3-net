@@ -1,3 +1,6 @@
+import { z } from "zod";
+import { isoDateTimeSchema, jsonObjectSchema, nonEmptyStringSchema } from "../../src/contracts/shared.ts";
+
 export interface SandboxInfo {
   readonly id: string;
   readonly status: string;
@@ -112,3 +115,57 @@ export interface SandboxClient {
   getQuota(): Promise<SandboxQuota>;
   getMetrics(): Promise<string>;
 }
+
+export const createSandboxRequestSchema = z.object({
+  workspace_id: nonEmptyStringSchema.optional(),
+  base_image_ref: nonEmptyStringSchema.optional(),
+  start: z.boolean().optional(),
+  allow_tunnels: z.boolean().optional(),
+  network_mode: nonEmptyStringSchema.optional(),
+});
+
+export const sandboxInfoSchema = z.object({
+  id: nonEmptyStringSchema,
+  status: nonEmptyStringSchema,
+  workspace_id: nonEmptyStringSchema.optional(),
+  runtime_backend: nonEmptyStringSchema.optional(),
+  network_mode: nonEmptyStringSchema.optional(),
+});
+
+export const sandboxExecRequestSchema = z.object({
+  command: z.array(nonEmptyStringSchema).min(1),
+  cwd: nonEmptyStringSchema.optional(),
+});
+
+export const sandboxExecEventSchema = z.object({
+  event: nonEmptyStringSchema,
+  data: jsonObjectSchema,
+});
+
+export const sandboxExecResultSchema = z.object({
+  exit_code: z.number().int(),
+  stdout: z.string().optional(),
+  stderr: z.string().optional(),
+  status: nonEmptyStringSchema.optional(),
+});
+
+export const sandboxTunnelSchema = z.object({
+  id: nonEmptyStringSchema,
+  sandbox_id: nonEmptyStringSchema,
+  target_port: z.number().int().positive(),
+  endpoint: nonEmptyStringSchema,
+  access_token: nonEmptyStringSchema.optional(),
+  auth_mode: nonEmptyStringSchema.optional(),
+  visibility: nonEmptyStringSchema.optional(),
+});
+
+export const sandboxTunnelSignedUrlSchema = z.object({
+  url: nonEmptyStringSchema,
+  expires_at: isoDateTimeSchema,
+});
+
+export const sandboxErrorResponseSchema = z.object({
+  error: nonEmptyStringSchema,
+  code: nonEmptyStringSchema,
+  status: z.number().int().positive(),
+});

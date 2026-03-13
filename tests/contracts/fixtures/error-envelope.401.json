@@ -1,0 +1,6 @@
+{
+  "error": "unauthorized",
+  "code": "auth.token_invalid",
+  "status": 401,
+  "request_id": "req_401"
+}

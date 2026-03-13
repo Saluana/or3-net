@@ -3,6 +3,7 @@ export * from "./agents/index.ts";
 export * from "./auth/service.ts";
 export * from "./auth/tokens.ts";
 export * from "./api/app.ts";
+export * from "./api/index.ts";
 export * from "./db/index.ts";
 export * from "./execution/job-streams.ts";
 export * from "./execution/local-jobs.ts";

@@ -1,0 +1,4 @@
+{"event":"text_delta","data":{"job_id":"job_intern_1","delta":"hello"}}
+{"event":"tool_call","data":{"job_id":"job_intern_1","name":"read_file"}}
+{"event":"tool_result","data":{"job_id":"job_intern_1","name":"read_file","result":{"text":"ok"}}}
+{"event":"completion","data":{"job_id":"job_intern_1","status":"completed","final_text":"done"}}

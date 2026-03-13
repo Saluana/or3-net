@@ -1,0 +1,34 @@
+[
+  {
+    "capability_id": "cap_preview",
+    "workspace_id": "ws_demo",
+    "kind": "preview-launch",
+    "scope": {"preview_id": "preview_1"},
+    "expires_at": "2099-01-01T00:10:00.000Z",
+    "revoked_at": null
+  },
+  {
+    "capability_id": "cap_service",
+    "workspace_id": "ws_demo",
+    "kind": "service-launch",
+    "scope": {"node_id": "node_1", "service_id": "openclaw"},
+    "expires_at": "2099-01-01T00:10:00.000Z",
+    "revoked_at": null
+  },
+  {
+    "capability_id": "cap_tunnel",
+    "workspace_id": "ws_demo",
+    "kind": "tunnel-access",
+    "scope": {"tunnel_id": "tun_1"},
+    "expires_at": "2099-01-01T00:10:00.000Z",
+    "revoked_at": null
+  },
+  {
+    "capability_id": "cap_file",
+    "workspace_id": "ws_demo",
+    "kind": "file-download",
+    "scope": {"path": "/workspace/report.md"},
+    "expires_at": "2099-01-01T00:10:00.000Z",
+    "revoked_at": null
+  }
+]

@@ -1,24 +1,29 @@
 import { z } from "zod";
 
 import type { AuthToken } from "../contracts/index.ts";
+import type { WorkspacePrincipalContract } from "../contracts/platform/types.ts";
 import { authTokenSchema, nonEmptyStringSchema } from "../contracts/index.ts";
 import { decodeBase64Url, encodeBase64Url, hmacSha256Hex } from "../lib/crypto.ts";
 
 const workspaceTokenClaimsSchema = z.object({
-  sub: nonEmptyStringSchema,
+  subject: nonEmptyStringSchema.optional(),
+  sub: nonEmptyStringSchema.optional(),
   workspace_id: nonEmptyStringSchema,
   scopes: z.array(nonEmptyStringSchema).min(1),
   iat: z.number().int().positive(),
   exp: z.number().int().positive(),
   kind: z.literal("workspace-token"),
+}).superRefine((value, context) => {
+  if (value.subject === undefined && value.sub === undefined) {
+    context.addIssue({
+      code: "custom",
+      message: "workspace token requires subject",
+      path: ["subject"],
+    });
+  }
 });
 
-export interface WorkspacePrincipal {
-  readonly subject: string;
-  readonly workspace_id: string;
-  readonly scopes: string[];
-  readonly auth_type: "workspace-token" | "api-key";
-}
+export type WorkspacePrincipal = WorkspacePrincipalContract;
 
 export interface IssueWorkspaceTokenInput {
   readonly secret: string;
@@ -33,6 +38,7 @@ export const issueWorkspaceToken = async (input: IssueWorkspaceTokenInput): Prom
   const now = input.now ?? new Date();
   const expiresAt = new Date(now.getTime() + (input.ttlMs ?? 15 * 60_000));
   const claims = workspaceTokenClaimsSchema.parse({
+    subject: input.subject,
     sub: input.subject,
     workspace_id: input.workspace_id,
     scopes: input.scopes,
@@ -73,9 +79,11 @@ export const validateWorkspaceToken = async (
   }
 
   return {
-    subject: claims.sub,
+    subject: claims.subject ?? claims.sub ?? "",
     workspace_id: claims.workspace_id,
     scopes: claims.scopes,
     auth_type: "workspace-token",
+    issued_at: claims.iat,
+    expires_at: claims.exp,
   };
 };

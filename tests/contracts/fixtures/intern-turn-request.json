@@ -1,0 +1,7 @@
+{
+  "session_key": "svc:sess_demo",
+  "message": "hello world",
+  "allowed_tools": ["read_file"],
+  "meta": {"source": "contract-test"},
+  "profile_name": "fast"
+}

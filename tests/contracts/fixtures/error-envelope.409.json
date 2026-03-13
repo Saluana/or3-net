@@ -1,0 +1,6 @@
+{
+  "error": "duplicate idempotency key",
+  "code": "resource.conflict",
+  "status": 409,
+  "request_id": "req_409"
+}

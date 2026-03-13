@@ -1,0 +1,9 @@
+{
+  "request_id": "req_demo",
+  "workspace_id": "ws_demo",
+  "subject": "user_123",
+  "network_session_id": "sess_demo",
+  "job_id": "job_demo",
+  "session_key": "svc:sess_demo",
+  "sandbox_id": "sbx_demo"
+}

@@ -1,0 +1,7 @@
+{
+  "provider": "clerk",
+  "session_proof": {
+    "jwt": "header.payload.signature"
+  },
+  "workspace_id": "ws_demo"
+}

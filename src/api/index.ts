@@ -3,3 +3,5 @@ export interface RouteDescriptor {
   readonly path: string;
   readonly summary: string;
 }
+
+export * from "./response-helpers.ts";
