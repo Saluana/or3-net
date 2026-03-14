@@ -111,27 +111,27 @@ This task list owns the reusable runtime substrate only.
 
 ### 13. Runtime registry (`src/runtime/registry.ts`) [Req 1]
 
-- [ ] Implement `RuntimeRegistry` class with `register()`, `get()`, `list()`, `health()`.
-- [ ] `register()` validates manifest via Zod, rejects duplicate `adapter_id`.
-- [ ] `health()` calls `adapter.health()` for each registered adapter and returns aggregated map.
+- [x] Implement `RuntimeRegistry` class with `register()`, `get()`, `list()`, `health()`.
+- [x] `register()` validates manifest via Zod, rejects duplicate `adapter_id`.
+- [x] `health()` calls `adapter.health()` for each registered adapter and returns aggregated map.
 
 ### 14. Runtime selection service (`src/runtime/selection.ts`) [Req 3, 4]
 
-- [ ] Implement `RuntimeSelectionService` class with `select(workspaceId, criteria)`.
-- [ ] Filter adapters by: required capabilities, health, trust tier, isolation class, locality, preset eligibility.
-- [ ] If multiple candidates, prefer: healthy > degraded, matching isolation > any, local > remote.
-- [ ] Return selected adapter and optional node descriptor.
-- [ ] Throw `RuntimeError("policy_denied")` if no adapter matches.
+- [x] Implement `RuntimeSelectionService` class with `select(workspaceId, criteria)`.
+- [x] Filter adapters by: required capabilities, health, trust tier, isolation class, locality, preset eligibility.
+- [x] If multiple candidates, prefer: healthy > degraded, matching isolation > any, local > remote.
+- [x] Return selected adapter and optional node descriptor.
+- [x] Throw `RuntimeError("policy_denied")` if no adapter matches.
 
 ### 15. Registry and selection tests (`tests/runtime/`) [Req 1, 3]
 
-- [ ] Test registry rejects duplicate adapter IDs.
-- [ ] Test registry rejects invalid manifests.
-- [ ] Test registry health aggregation.
-- [ ] Test selection by capability match.
-- [ ] Test selection excludes degraded adapters.
-- [ ] Test selection by trust tier, isolation class, locality, and preset.
-- [ ] Test selection throws policy_denied when no match.
+- [x] Test registry rejects duplicate adapter IDs.
+- [x] Test registry rejects invalid manifests.
+- [x] Test registry health aggregation.
+- [x] Test selection by capability match.
+- [x] Test selection excludes degraded adapters.
+- [x] Test selection by trust tier, isolation class, locality, and preset.
+- [x] Test selection throws policy_denied when no match.
 
 ---
 
