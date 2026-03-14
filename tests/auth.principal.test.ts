@@ -91,4 +91,25 @@ describe("auth principal canonical fields", () => {
       expires_at: expiresAtSeconds,
     });
   });
+
+  test("rejects tokens with nearly-correct signatures", async () => {
+    const token = await issueWorkspaceToken({
+      secret,
+      subject: "user_1",
+      workspace_id: "ws_test",
+      scopes: ["jobs:read"],
+      now: issuedAtDate,
+      ttlMs: 60_000,
+    });
+
+    const [payload, signature] = token.token.split(".", 2);
+    const payloadValue = payload ?? "";
+    const signatureValue = signature ?? "";
+    const tamperedSuffix = signatureValue.endsWith("0") ? "1" : "0";
+    const tamperedSignature = `${signatureValue.slice(0, -1)}${tamperedSuffix}`;
+
+    expect(validateWorkspaceToken(secret, `${payloadValue}.${tamperedSignature}`, new Date(issuedAtDate.getTime() + 30_000))).rejects.toThrow(
+      "invalid workspace token signature",
+    );
+  });
 });

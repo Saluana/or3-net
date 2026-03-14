@@ -1,4 +1,5 @@
 import { z } from "zod";
+import nacl from "tweetnacl";
 
 import type { AuthToken } from "../contracts/index.ts";
 import type { WorkspacePrincipalContract } from "../contracts/platform/types.ts";
@@ -68,7 +69,13 @@ export const validateWorkspaceToken = async (
   }
 
   const expectedSignature = await hmacSha256Hex(secret, payloadPart);
-  if (expectedSignature !== signaturePart) {
+  const expectedSignatureBytes = hexToBytes(expectedSignature);
+  const providedSignatureBytes = hexToBytes(signaturePart);
+  const signaturesMatch =
+    expectedSignatureBytes !== null &&
+    expectedSignatureBytes.length === providedSignatureBytes?.length &&
+    nacl.verify(expectedSignatureBytes, providedSignatureBytes);
+  if (!signaturesMatch) {
     throw new Error("invalid workspace token signature");
   }
 
@@ -86,4 +93,16 @@ export const validateWorkspaceToken = async (
     issued_at: claims.iat,
     expires_at: claims.exp,
   };
+};
+
+const hexToBytes = (value: string): Uint8Array | null => {
+  if (value.length === 0 || value.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(value)) {
+    return null;
+  }
+
+  const bytes = new Uint8Array(value.length / 2);
+  for (let index = 0; index < value.length; index += 2) {
+    bytes[index / 2] = Number.parseInt(value.slice(index, index + 2), 16);
+  }
+  return bytes;
 };

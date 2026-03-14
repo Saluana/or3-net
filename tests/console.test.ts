@@ -55,5 +55,7 @@ describe("console route", () => {
     expect(html).toContain("/v1/workspaces/' + workspaceId + '/jobs");
     expect(html).toContain("/v1/workspaces/' + workspaceId + '/api-keys");
     expect(html).toContain("/v1/workspaces/' + workspaceId + '/sessions");
+    expect(html).toContain("const safeLaunchUrl = (value)");
+    expect(html).toContain("Blocked non-HTTP launch URL");
   });
 });

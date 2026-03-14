@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "cli": "bun run cli/index.ts",
-    "lint": "bunx eslint .",
+    "lint": "bunx eslint . --max-warnings 0",
     "test:contracts": "bun test tests/contracts/*.test.ts tests/sdk.clients.test.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"

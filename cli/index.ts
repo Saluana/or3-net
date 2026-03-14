@@ -9,6 +9,7 @@ interface CliDependencies {
 interface ParsedArgs {
 	readonly commandPath: string[];
 	readonly flags: Record<string, string>;
+	readonly booleanFlags: ReadonlySet<string>;
 }
 
 const defaultBaseUrl = "http://127.0.0.1:3001";
@@ -17,7 +18,7 @@ export const runCli = async (argv: string[], deps: CliDependencies): Promise<num
 	const parsed = parseArgs(argv);
 	const [section, action] = parsed.commandPath;
 
-	if (section === undefined || section === "help" || parsed.flags["help"] !== undefined) {
+	if (section === undefined || section === "help" || parsed.booleanFlags.has("help")) {
 		deps.stdout.write(renderHelp());
 		return 0;
 	}
@@ -170,6 +171,7 @@ export const runCli = async (argv: string[], deps: CliDependencies): Promise<num
 const parseArgs = (argv: string[]): ParsedArgs => {
 	const commandPath: string[] = [];
 	const flags: Record<string, string> = {};
+	const booleanFlags = new Set<string>();
 
 	for (let index = 0; index < argv.length; index += 1) {
 		const value = argv[index];
@@ -180,7 +182,7 @@ const parseArgs = (argv: string[]): ParsedArgs => {
 			const key = value.slice(2);
 			const next = argv[index + 1];
 			if (next === undefined || next.startsWith("--")) {
-				flags[key] = "true";
+				booleanFlags.add(key);
 				continue;
 			}
 			flags[key] = next;
@@ -191,7 +193,7 @@ const parseArgs = (argv: string[]): ParsedArgs => {
 		commandPath.push(value);
 	}
 
-	return { commandPath, flags };
+	return { commandPath, flags, booleanFlags };
 };
 
 const buildWorkspacePath = (flags: Record<string, string>, suffix: string): string =>

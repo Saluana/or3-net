@@ -118,6 +118,7 @@ export class AuthService {
   }
 }
 
+/** Unix timestamp for 9999-12-31T23:59:59Z — effectively "never expires" for API keys. */
 const MAX_API_KEY_EXPIRY_SECONDS = 253402300799;
 
 const isExpiredWorkspaceTokenError = (error: unknown): boolean =>

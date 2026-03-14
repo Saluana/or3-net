@@ -40,15 +40,15 @@ export class WarmPoolManager {
   }
 
   public async release(workspaceId: string, sandbox: SandboxInfo): Promise<void> {
-    const replacement = await this.resetForReuse(sandbox, workspaceId);
-    if (replacement === null) {
-      await this.quarantine(sandbox);
+    const pool = this.readySandboxes.get(workspaceId) ?? [];
+    if (pool.length >= this.maxPoolSizePerWorkspace) {
+      await this.sandboxClient.delete(sandbox.id).catch(() => undefined);
       return;
     }
 
-    const pool = this.readySandboxes.get(workspaceId) ?? [];
-    if (pool.length >= this.maxPoolSizePerWorkspace) {
-      await this.sandboxClient.delete(replacement.id);
+    const replacement = await this.resetForReuse(sandbox, workspaceId);
+    if (replacement === null) {
+      await this.quarantine(sandbox);
       return;
     }
 

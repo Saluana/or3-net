@@ -1,7 +1,6 @@
 import nacl from "tweetnacl";
 
 import type { NodeManifest } from "../contracts/index.ts";
-import { nodeManifestSchema } from "../contracts/index.ts";
 
 const encoder = new TextEncoder();
 
@@ -20,17 +19,15 @@ const sortJson = (value: unknown): unknown => {
 };
 
 export const canonicalizeManifestPayload = (manifestInput: NodeManifest): Uint8Array => {
-  const manifest = nodeManifestSchema.parse(manifestInput);
-  const { signature, ...unsignedManifest } = manifest;
+  const { signature, ...unsignedManifest } = manifestInput;
   void signature;
   return encoder.encode(JSON.stringify(sortJson(unsignedManifest)));
 };
 
 export const verifyNodeManifestSignature = (manifestInput: NodeManifest): boolean => {
-  const manifest = nodeManifestSchema.parse(manifestInput);
-  const payload = canonicalizeManifestPayload(manifest);
-  const publicKey = Buffer.from(manifest.pubkey, "base64");
-  const signature = Buffer.from(manifest.signature, "base64");
+  const payload = canonicalizeManifestPayload(manifestInput);
+  const publicKey = Buffer.from(manifestInput.pubkey, "base64");
+  const signature = Buffer.from(manifestInput.signature, "base64");
   return nacl.sign.detached.verify(payload, new Uint8Array(signature), new Uint8Array(publicKey));
 };
 

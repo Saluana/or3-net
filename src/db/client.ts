@@ -1093,14 +1093,37 @@ const sanitizePayloadJson = (payload: Record<string, unknown>): string => JSON.s
 
 const sanitizeValue = (value: unknown): unknown => {
   if (typeof value === "string") {
-    return value.length > 2048 ? `${value.slice(0, 2048)}…` : value;
+    if (value.length > 2048) {
+      return {
+        _truncated: true,
+        _original_length: value.length,
+        value: value.slice(0, 2048),
+      };
+    }
+    return value;
   }
   if (Array.isArray(value)) {
-    return value.slice(0, 25).map((entry) => sanitizeValue(entry));
+    const items = value.slice(0, 25).map((entry) => sanitizeValue(entry));
+    if (value.length > 25) {
+      return {
+        _truncated: true,
+        _original_length: value.length,
+        items,
+      };
+    }
+    return items;
   }
   if (value !== null && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>).slice(0, 50);
-    return Object.fromEntries(entries.map(([key, entry]) => [key, sanitizeValue(entry)]));
+    const mapped = Object.fromEntries(entries.map(([key, entry]) => [key, sanitizeValue(entry)]));
+    if (Object.keys(value as Record<string, unknown>).length > 50) {
+      return {
+        _truncated: true,
+        _original_length: Object.keys(value as Record<string, unknown>).length,
+        entries: mapped,
+      };
+    }
+    return mapped;
   }
   if (typeof value === "number" || typeof value === "boolean" || value === null) {
     return value;

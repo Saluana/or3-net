@@ -220,8 +220,8 @@ describe("warm pool manager", () => {
     const extra = await sandboxClient.create({ workspace_id: "ws_pool" });
     await manager.release("ws_pool", extra);
 
-    expect(sandboxClient.created).toEqual(["sbx_1", "sbx_2", "sbx_3", "sbx_4"]);
-    expect(sandboxClient.deleted).toContain("sbx_4");
+    expect(sandboxClient.created).toEqual(["sbx_1", "sbx_2", "sbx_3"]);
+    expect(sandboxClient.deleted).toContain("sbx_3");
   });
 
   test("quarantines sandboxes when reset-for-reuse cannot create a healthy replacement", async () => {

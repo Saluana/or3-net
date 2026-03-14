@@ -60,8 +60,11 @@ class FakeSandboxClient implements SandboxClient {
   public deleteCalls: string[] = [];
   public getCalls: string[] = [];
   public tunnelCreateCalls: string[] = [];
+  public execCalls: { sandboxId: string; request: SandboxExecRequest }[] = [];
   public failExecFor = new Set<string>();
   public failNextExecCount = 0;
+  public failNextExecStreamCount = 0;
+  public omitNextResultEvent = false;
   private nextSandboxId = 1;
 
   public create(request: CreateSandboxRequest): Promise<SandboxInfo> {
@@ -101,6 +104,7 @@ class FakeSandboxClient implements SandboxClient {
     return this.get(sandboxId);
   }
   public exec(sandboxId: string, request: SandboxExecRequest): Promise<SandboxExecResult> {
+    this.execCalls.push({ sandboxId, request });
     if (this.failNextExecCount > 0) {
       this.failNextExecCount -= 1;
       return Promise.reject(new Error("sandbox exec failed"));
@@ -114,8 +118,17 @@ class FakeSandboxClient implements SandboxClient {
   public async *execStream(sandboxId: string, request: SandboxExecRequest): AsyncIterable<SandboxExecEvent> {
     void sandboxId;
     void request;
+    if (this.failNextExecStreamCount > 0) {
+      this.failNextExecStreamCount -= 1;
+      throw new Error("sandbox exec failed");
+    }
     await Promise.resolve();
     yield { event: "stdout", data: { chunk: "ok" } };
+    if (this.omitNextResultEvent) {
+      this.omitNextResultEvent = false;
+      return;
+    }
+    yield { event: "result", data: { exit_code: 0 } };
   }
   public writeFile(sandboxId: string, request: SandboxWriteFileRequest): Promise<void> {
     void sandboxId;
@@ -516,7 +529,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
 
   test("recycles sandbox-backed task execution safely when execution fails", async () => {
     const adapter = new SandboxNodeAdapter(sandboxClient);
-    sandboxClient.failNextExecCount = 1;
+    sandboxClient.failNextExecStreamCount = 1;
 
     let failure: Error | null = null;
     try {
@@ -540,6 +553,72 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
 
     expect(sandboxClient.deleteCalls.length).toBeGreaterThan(0);
     expect(sandboxClient.createCalls.length).toBeGreaterThan(1);
+  });
+
+  test("does not rerun sandbox exec when the stream ends without a result event", () => {
+    const adapter = new SandboxNodeAdapter(sandboxClient);
+    sandboxClient.omitNextResultEvent = true;
+    const execution = adapter.executeTask("ws_preview", {
+      workspace_id: "ws_preview",
+      job_id: "job_missing_result",
+      kind: "turn",
+      instructions: "echo missing-result",
+      artifacts: [],
+      tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+      timeout: { soft_ms: 1000 },
+      lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+      subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+      metadata: {},
+    });
+
+    expect(execution).rejects.toThrow("sandbox exec stream ended without exit code");
+
+    expect(sandboxClient.execCalls).toHaveLength(0);
+  });
+
+  test("enforces in-memory workspace file size and count limits", () => {
+    expect(() => {
+      fileService.putFile(
+        "ws_preview",
+        {
+          workspace_id: "ws_preview",
+          path: "/too-large.txt",
+          kind: "file",
+          size_bytes: 10 * 1024 * 1024 + 1,
+          modified_at: "2024-01-01T00:00:00.000Z",
+        },
+        "x".repeat(10 * 1024 * 1024 + 1),
+      );
+    }).toThrow("file exceeds maximum size");
+
+    const limitedService = new InMemoryWorkspaceFileService();
+    for (let index = 0; index < 500; index += 1) {
+      limitedService.putFile(
+        "ws_preview",
+        {
+          workspace_id: "ws_preview",
+          path: `/file-${String(index)}.txt`,
+          kind: "file",
+          size_bytes: 1,
+          modified_at: "2024-01-01T00:00:00.000Z",
+        },
+        "x",
+      );
+    }
+
+    expect(() => {
+      limitedService.putFile(
+        "ws_preview",
+        {
+          workspace_id: "ws_preview",
+          path: "/overflow.txt",
+          kind: "file",
+          size_bytes: 1,
+          modified_at: "2024-01-01T00:00:00.000Z",
+        },
+        "x",
+      );
+    }).toThrow("workspace file limit");
   });
 
   test("only requests tunnel-capable sandboxes for service launches", async () => {

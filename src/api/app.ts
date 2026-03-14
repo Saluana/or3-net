@@ -6,7 +6,7 @@ import { agentSchema, previewDescriptorSchema, previewLaunchRequestSchema } from
 import { exchangeSessionRequestSchema } from "../contracts/platform/auth.ts";
 import { platformErrorCodes, type PlatformErrorCode } from "../contracts/platform/error-codes.ts";
 import type { AuditContext } from "../contracts/platform/types.ts";
-import { normalizeInternError, normalizeSandboxError } from "../contracts/platform/compat.ts";
+import { defaultErrorCodeForStatus, normalizeInternError, normalizeSandboxError } from "../contracts/platform/compat.ts";
 import type { WorkspacePrincipal } from "../auth/tokens.ts";
 import { consoleEntryPath, renderConsoleHtml } from "../console/index.ts";
 import type { LocalJobService } from "../execution/local-jobs.ts";
@@ -19,6 +19,7 @@ import { errorResponse, resolveRequestId } from "./response-helpers.ts";
 import type { InMemoryWorkspaceFileService } from "../workspace/files.ts";
 import type { ControlPlaneDatabase } from "../db/index.ts";
 import type { StoredIdempotencyRecord } from "../db/schema.ts";
+import { sha256Hex } from "../lib/crypto.ts";
 import { InternRequestError } from "../../sdk/intern/types.ts";
 import type { SandboxRequestContext } from "../../sdk/sandbox/types.ts";
 import { SandboxRequestError } from "../../sdk/sandbox/types.ts";
@@ -45,216 +46,34 @@ interface AppServices {
   readonly sandboxNodeAdapter?: SandboxNodeAdapter;
 }
 
+type RouteGroups = Record<string, string | undefined>;
+type RouteHandler = (request: Request, groups: RouteGroups, url: URL) => Promise<Response> | Response;
+
+interface RouteEntry {
+  readonly pattern: URLPattern;
+  readonly methods: ReadonlyMap<string, RouteHandler>;
+}
+
 export class Or3NetApp {
-  public constructor(private readonly services: AppServices) {}
+  private readonly routes: readonly RouteEntry[];
+
+  public constructor(private readonly services: AppServices) {
+    this.routes = this.createRoutes();
+  }
 
   public async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    if (request.method === "GET" && url.pathname === consoleEntryPath) {
-      return htmlResponse(renderConsoleHtml());
-    }
-
-    const launchCapabilityMatch = new URLPattern({ pathname: "/v1/launch/:token" }).exec(url);
-    if (request.method === "GET" && launchCapabilityMatch !== null) {
-      return this.handleLaunchCapability(requireGroup(launchCapabilityMatch.pathname.groups, "token"));
-    }
-
-    const launchCapabilityAssetMatch = new URLPattern({ pathname: "/v1/launch/:token/:path*" }).exec(url);
-    if (request.method === "GET" && launchCapabilityAssetMatch !== null) {
-      return this.handleLaunchCapability(
-        requireGroup(launchCapabilityAssetMatch.pathname.groups, "token"),
-        requireGroup(launchCapabilityAssetMatch.pathname.groups, "path"),
-      );
-    }
-
-    if (request.method === "POST" && url.pathname === "/v1/auth/exchange") {
-      return this.handleExchange(request);
-    }
-
-    const createJobMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/jobs" }).exec(url);
-    if (createJobMatch !== null) {
-      const workspaceId = requireGroup(createJobMatch.pathname.groups, "workspaceId");
-      if (request.method === "POST") {
-        return this.handleCreateJob(request, workspaceId);
+    for (const route of this.routes) {
+      const match = route.pattern.exec(url);
+      if (match === null) {
+        continue;
       }
-      if (request.method === "GET") {
-        return this.handleListJobs(request, workspaceId, url);
+
+      const handler = route.methods.get(request.method);
+      if (handler !== undefined) {
+        return await handler(request, match.pathname.groups, url);
       }
-    }
-
-    const apiKeysMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/api-keys" }).exec(url);
-    if (apiKeysMatch !== null) {
-      const workspaceId = requireGroup(apiKeysMatch.pathname.groups, "workspaceId");
-      if (request.method === "GET") {
-        return this.handleListApiKeys(request, workspaceId);
-      }
-      if (request.method === "POST") {
-        return this.handleCreateApiKey(request, workspaceId);
-      }
-    }
-
-    const revokeApiKeyMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/api-keys/:apiKeyId/revoke" }).exec(url);
-    if (request.method === "POST" && revokeApiKeyMatch !== null) {
-      return this.handleRevokeApiKey(
-        request,
-        requireGroup(revokeApiKeyMatch.pathname.groups, "workspaceId"),
-        requireGroup(revokeApiKeyMatch.pathname.groups, "apiKeyId"),
-      );
-    }
-
-    const sessionsMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/sessions" }).exec(url);
-    if (request.method === "GET" && sessionsMatch !== null) {
-      return this.handleListSessions(request, requireGroup(sessionsMatch.pathname.groups, "workspaceId"));
-    }
-
-    const sessionMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/sessions/:sessionId" }).exec(url);
-    if (request.method === "GET" && sessionMatch !== null) {
-      return this.handleGetSession(
-        request,
-        requireGroup(sessionMatch.pathname.groups, "workspaceId"),
-        requireGroup(sessionMatch.pathname.groups, "sessionId"),
-      );
-    }
-
-    const sessionEventsMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/sessions/:sessionId/events" }).exec(url);
-    if (request.method === "GET" && sessionEventsMatch !== null) {
-      return this.handleListSessionEvents(
-        request,
-        requireGroup(sessionEventsMatch.pathname.groups, "workspaceId"),
-        requireGroup(sessionEventsMatch.pathname.groups, "sessionId"),
-      );
-    }
-
-    const jobMatch = new URLPattern({ pathname: "/v1/jobs/:jobId" }).exec(url);
-    if (request.method === "GET" && jobMatch !== null) {
-      return this.handleGetJob(request, requireGroup(jobMatch.pathname.groups, "jobId"));
-    }
-
-    const jobStreamMatch = new URLPattern({ pathname: "/v1/jobs/:jobId/stream" }).exec(url);
-    if (request.method === "GET" && jobStreamMatch !== null) {
-      return this.handleStreamJob(request, requireGroup(jobStreamMatch.pathname.groups, "jobId"));
-    }
-
-    const jobAbortMatch = new URLPattern({ pathname: "/v1/jobs/:jobId/abort" }).exec(url);
-    if (request.method === "POST" && jobAbortMatch !== null) {
-      return this.handleAbortJob(request, requireGroup(jobAbortMatch.pathname.groups, "jobId"));
-    }
-
-    const agentsMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/agents" }).exec(url);
-    if (agentsMatch !== null) {
-      const workspaceId = requireGroup(agentsMatch.pathname.groups, "workspaceId");
-      if (request.method === "GET") {
-        return this.handleListAgents(request, workspaceId);
-      }
-      if (request.method === "POST") {
-        return this.handleCreateAgent(request, workspaceId);
-      }
-    }
-
-    const agentMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/agents/:agentId" }).exec(url);
-    if (agentMatch !== null) {
-      const workspaceId = requireGroup(agentMatch.pathname.groups, "workspaceId");
-      const agentId = requireGroup(agentMatch.pathname.groups, "agentId");
-      if (request.method === "GET") {
-        return this.handleGetAgent(request, workspaceId, agentId);
-      }
-      if (request.method === "PUT" || request.method === "PATCH") {
-        return this.handleUpdateAgent(request, workspaceId, agentId);
-      }
-      if (request.method === "DELETE") {
-        return this.handleDeleteAgent(request, workspaceId, agentId);
-      }
-    }
-
-    const nodesMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/nodes" }).exec(url);
-    if (nodesMatch !== null) {
-      const workspaceId = requireGroup(nodesMatch.pathname.groups, "workspaceId");
-      if (request.method === "GET") {
-        return this.handleListNodes(request, workspaceId);
-      }
-    }
-
-    const enrollMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/nodes/enroll" }).exec(url);
-    if (request.method === "POST" && enrollMatch !== null) {
-      return this.handleEnrollNode(request, requireGroup(enrollMatch.pathname.groups, "workspaceId"));
-    }
-
-    const approveMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/nodes/:nodeId/approve" }).exec(url);
-    if (request.method === "POST" && approveMatch !== null) {
-      return this.handleApproveNode(
-        request,
-        requireGroup(approveMatch.pathname.groups, "workspaceId"),
-        requireGroup(approveMatch.pathname.groups, "nodeId"),
-      );
-    }
-
-    const nodeServicesMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/nodes/:nodeId/services" }).exec(url);
-    if (request.method === "GET" && nodeServicesMatch !== null) {
-      return this.handleListNodeServices(
-        request,
-        requireGroup(nodeServicesMatch.pathname.groups, "workspaceId"),
-        requireGroup(nodeServicesMatch.pathname.groups, "nodeId"),
-      );
-    }
-
-    const nodeServiceLaunchMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/nodes/:nodeId/services/:serviceId/launch" }).exec(url);
-    if (request.method === "POST" && nodeServiceLaunchMatch !== null) {
-      return this.handleLaunchNodeService(
-        request,
-        requireGroup(nodeServiceLaunchMatch.pathname.groups, "workspaceId"),
-        requireGroup(nodeServiceLaunchMatch.pathname.groups, "nodeId"),
-        requireGroup(nodeServiceLaunchMatch.pathname.groups, "serviceId"),
-      );
-    }
-
-    const nodeServiceRevokeMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/nodes/:nodeId/services/:serviceId/revoke" }).exec(url);
-    if (request.method === "POST" && nodeServiceRevokeMatch !== null) {
-      return this.handleRevokeNodeService(
-        request,
-        requireGroup(nodeServiceRevokeMatch.pathname.groups, "workspaceId"),
-        requireGroup(nodeServiceRevokeMatch.pathname.groups, "nodeId"),
-        requireGroup(nodeServiceRevokeMatch.pathname.groups, "serviceId"),
-      );
-    }
-
-    const nodeServiceRestartMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/nodes/:nodeId/services/:serviceId/restart" }).exec(url);
-    if (request.method === "POST" && nodeServiceRestartMatch !== null) {
-      return this.handleRestartNodeService(
-        request,
-        requireGroup(nodeServiceRestartMatch.pathname.groups, "workspaceId"),
-        requireGroup(nodeServiceRestartMatch.pathname.groups, "nodeId"),
-        requireGroup(nodeServiceRestartMatch.pathname.groups, "serviceId"),
-      );
-    }
-
-    const previewsMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/previews" }).exec(url);
-    if (previewsMatch !== null) {
-      const workspaceId = requireGroup(previewsMatch.pathname.groups, "workspaceId");
-      if (request.method === "GET") {
-        return this.handleListPreviews(request, workspaceId);
-      }
-      if (request.method === "POST") {
-        return this.handleRegisterPreview(request, workspaceId);
-      }
-    }
-
-    const previewLaunchMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/previews/:previewId/launch" }).exec(url);
-    if (request.method === "POST" && previewLaunchMatch !== null) {
-      return this.handleLaunchPreview(
-        request,
-        requireGroup(previewLaunchMatch.pathname.groups, "workspaceId"),
-        requireGroup(previewLaunchMatch.pathname.groups, "previewId"),
-      );
-    }
-
-    const previewRevokeMatch = new URLPattern({ pathname: "/v1/workspaces/:workspaceId/previews/:previewId/revoke" }).exec(url);
-    if (request.method === "POST" && previewRevokeMatch !== null) {
-      return this.handleRevokePreview(
-        request,
-        requireGroup(previewRevokeMatch.pathname.groups, "workspaceId"),
-        requireGroup(previewRevokeMatch.pathname.groups, "previewId"),
-      );
     }
 
     const filesPrefix = "/v1/workspaces/";
@@ -265,34 +84,119 @@ export class Or3NetApp {
     throw new HttpError(404, "route not found", { code: platformErrorCodes.resourceNotFound });
   }
 
+  private createRoutes(): readonly RouteEntry[] {
+    return [
+      createRoute(consoleEntryPath, {
+        GET: () => htmlResponse(renderConsoleHtml()),
+      }),
+      createRoute("/v1/launch/:token", {
+        GET: (_request, groups) => this.handleLaunchCapability(requireGroup(groups, "token")),
+      }),
+      createRoute("/v1/launch/:token/:path*", {
+        GET: (_request, groups) => this.handleLaunchCapability(requireGroup(groups, "token"), requireGroup(groups, "path")),
+      }),
+      createRoute("/v1/auth/exchange", {
+        POST: (request) => this.handleExchange(request),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/jobs", {
+        GET: (request, groups, url) => this.handleListJobs(request, requireGroup(groups, "workspaceId"), url),
+        POST: (request, groups) => this.handleCreateJob(request, requireGroup(groups, "workspaceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/api-keys", {
+        GET: (request, groups) => this.handleListApiKeys(request, requireGroup(groups, "workspaceId")),
+        POST: (request, groups) => this.handleCreateApiKey(request, requireGroup(groups, "workspaceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/api-keys/:apiKeyId/revoke", {
+        POST: (request, groups) => this.handleRevokeApiKey(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "apiKeyId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/sessions", {
+        GET: (request, groups) => this.handleListSessions(request, requireGroup(groups, "workspaceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/sessions/:sessionId", {
+        GET: (request, groups) => this.handleGetSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/sessions/:sessionId/events", {
+        GET: (request, groups) => this.handleListSessionEvents(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/jobs/:jobId", {
+        GET: (request, groups) => this.handleGetJob(request, requireGroup(groups, "jobId")),
+      }),
+      createRoute("/v1/jobs/:jobId/stream", {
+        GET: (request, groups) => this.handleStreamJob(request, requireGroup(groups, "jobId")),
+      }),
+      createRoute("/v1/jobs/:jobId/abort", {
+        POST: (request, groups) => this.handleAbortJob(request, requireGroup(groups, "jobId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/agents", {
+        GET: (request, groups) => this.handleListAgents(request, requireGroup(groups, "workspaceId")),
+        POST: (request, groups) => this.handleCreateAgent(request, requireGroup(groups, "workspaceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/agents/:agentId", {
+        GET: (request, groups) => this.handleGetAgent(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "agentId")),
+        PATCH: (request, groups) => this.handleUpdateAgent(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "agentId")),
+        PUT: (request, groups) => this.handleUpdateAgent(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "agentId")),
+        DELETE: (request, groups) => this.handleDeleteAgent(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "agentId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/nodes", {
+        GET: (request, groups) => this.handleListNodes(request, requireGroup(groups, "workspaceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/nodes/enroll", {
+        POST: (request, groups) => this.handleEnrollNode(request, requireGroup(groups, "workspaceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/nodes/:nodeId/approve", {
+        POST: (request, groups) => this.handleApproveNode(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "nodeId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/nodes/:nodeId/services", {
+        GET: (request, groups) => this.handleListNodeServices(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "nodeId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/nodes/:nodeId/services/:serviceId/launch", {
+        POST: (request, groups) => this.handleLaunchNodeService(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "nodeId"), requireGroup(groups, "serviceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/nodes/:nodeId/services/:serviceId/revoke", {
+        POST: (request, groups) => this.handleRevokeNodeService(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "nodeId"), requireGroup(groups, "serviceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/nodes/:nodeId/services/:serviceId/restart", {
+        POST: (request, groups) => this.handleRestartNodeService(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "nodeId"), requireGroup(groups, "serviceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/previews", {
+        GET: (request, groups) => this.handleListPreviews(request, requireGroup(groups, "workspaceId")),
+        POST: (request, groups) => this.handleRegisterPreview(request, requireGroup(groups, "workspaceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/previews/:previewId/launch", {
+        POST: (request, groups) => this.handleLaunchPreview(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "previewId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/previews/:previewId/revoke", {
+        POST: (request, groups) => this.handleRevokePreview(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "previewId")),
+      }),
+    ];
+  }
+
   private async handleExchange(request: Request): Promise<Response> {
-    const payload = exchangeSessionRequestSchema.parse(await readJsonBody(request));
+    const { parsed: payload, fingerprint } = await readRequiredJsonPayload(request, exchangeSessionRequestSchema);
     const idempotencyKey = resolveIdempotencyKey(request.headers.get("Idempotency-Key"));
     const idempotencyScope = `auth.exchange:${payload.provider}`;
     const idempotencyOwnerKey = payload.workspace_id ?? payload.provider;
-    const requestBody = stableStringify(payload);
-    const existing = this.readIdempotencyRecord(idempotencyScope, idempotencyOwnerKey, idempotencyKey, requestBody);
+    const existing = this.readIdempotencyRecord(idempotencyScope, idempotencyOwnerKey, idempotencyKey, fingerprint);
     if (existing !== null) {
-      return jsonResponse(existing.status_code, JSON.parse(existing.response_json) as Record<string, unknown>);
+      return jsonResponse(existing.status_code, JSON.parse(existing.response_json) as unknown);
     }
     const token = await this.services.authService.exchangeSessionProof({
       provider: payload.provider,
       session_proof: payload.session_proof,
       ...(payload.workspace_id === undefined ? {} : { workspace_id: payload.workspace_id }),
     });
-    this.saveIdempotencyRecord(idempotencyScope, idempotencyOwnerKey, idempotencyKey, requestBody, token, 200, token.workspace_id, token.expires_at);
+    this.saveIdempotencyRecord(idempotencyScope, idempotencyOwnerKey, idempotencyKey, fingerprint, token, 200, token.workspace_id, token.expires_at);
     return jsonResponse(200, token);
   }
 
   private async handleCreateJob(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "jobs:write");
-    const payload = createJobRequestSchema.parse(await readJsonBody(request));
+    const { parsed: payload, fingerprint } = await readRequiredJsonPayload(request, createJobRequestSchema);
     const auditContext = createRequestAuditContext(request, principal);
     const idempotencyKey = resolveIdempotencyKey(request.headers.get("Idempotency-Key"));
-    const requestBody = stableStringify(payload);
-    const existing = this.readIdempotencyRecord("jobs.create", principal.workspace_id, idempotencyKey, requestBody);
+    const existing = this.readIdempotencyRecord("jobs.create", principal.workspace_id, idempotencyKey, fingerprint);
     if (existing !== null) {
-      return jsonResponse(existing.status_code, JSON.parse(existing.response_json) as Record<string, unknown>);
+      return jsonResponse(existing.status_code, JSON.parse(existing.response_json) as unknown);
     }
     const job = this.services.localJobService.submitJob(principal.workspace_id, payload, {
       initiator_subject: principal.subject,
@@ -302,7 +206,7 @@ export class Or3NetApp {
       "jobs.create",
       principal.workspace_id,
       idempotencyKey,
-      requestBody,
+      fingerprint,
       job,
       202,
       job.job_id,
@@ -388,7 +292,7 @@ export class Or3NetApp {
     const principal = await this.requirePrincipal(request, workspaceId, "sessions:read");
     return jsonResponse(200, {
       items: this.services.localJobService.listSessions(principal.workspace_id),
-    } as unknown as Record<string, unknown>);
+    });
   }
 
   private async handleGetSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
@@ -400,14 +304,14 @@ export class Or3NetApp {
         status: item.job.status,
         created_at: item.job.created_at,
       })),
-    } as unknown as Record<string, unknown>);
+    });
   }
 
   private async handleListSessionEvents(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "sessions:read");
     return jsonResponse(200, {
       items: this.services.localJobService.listSessionEvents(principal.workspace_id, sessionId),
-    } as unknown as Record<string, unknown>);
+    });
   }
 
   private async handleListAgents(request: Request, workspaceId: string): Promise<Response> {
@@ -508,7 +412,7 @@ export class Or3NetApp {
       service_status: internalLaunch.service_status,
       expires_at: internalLaunch.expires_at,
     });
-    return jsonResponse(200, launch as unknown as Record<string, unknown>);
+    return jsonResponse(200, launch);
   }
 
   private async handleRevokeNodeService(request: Request, workspaceId: string, nodeId: string, serviceId: string): Promise<Response> {
@@ -542,7 +446,7 @@ export class Or3NetApp {
     ensureLaunchableNode(node);
     previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
     const result = await adapter.restartService(principal.workspace_id, node, serviceId, toSandboxRequestContext(auditContext));
-    return jsonResponse(200, result as unknown as Record<string, unknown>);
+    return jsonResponse(200, result);
   }
 
   private async handleListPreviews(request: Request, workspaceId: string): Promise<Response> {
@@ -570,7 +474,7 @@ export class Or3NetApp {
     void createRequestAuditContext(request, principal);
     const launchRequest = previewLaunchRequestSchema.parse(await readOptionalJson(request));
     const launch = previewService.launchPreview(principal.workspace_id, previewId, launchRequest, new URL(request.url).origin);
-    return jsonResponse(200, launch as unknown as Record<string, unknown>);
+    return jsonResponse(200, launch);
   }
 
   private async handleRevokePreview(request: Request, workspaceId: string, previewId: string): Promise<Response> {
@@ -670,7 +574,7 @@ export class Or3NetApp {
     ownerKey: string,
     idempotencyKey: string | undefined,
     requestBody: string,
-    responsePayload: Record<string, unknown>,
+    responsePayload: unknown,
     statusCode: number,
     resourceId: string,
     expiresAt: string,
@@ -702,7 +606,7 @@ class HttpError extends Error {
     options: { code?: PlatformErrorCode; retry_after_ms?: number } = {},
   ) {
     super(message);
-    this.code = options.code ?? httpErrorCodeForStatus(status);
+    this.code = options.code ?? defaultErrorCodeForStatus(status);
     this.retry_after_ms = options.retry_after_ms;
   }
 }
@@ -710,7 +614,7 @@ class HttpError extends Error {
 const hasScope = (principal: WorkspacePrincipal, requiredScope: string): boolean =>
   principal.scopes.includes("*") || principal.scopes.includes(requiredScope);
 
-const jsonResponse = (status: number, payload: Record<string, unknown>): Response =>
+const jsonResponse = (status: number, payload: unknown): Response =>
   Response.json(payload, { status });
 
 const htmlResponse = (html: string): Response =>
@@ -890,27 +794,6 @@ const isNotFoundError = (error: Error): boolean => {
   return message.includes("was not found") || message.endsWith("not found");
 };
 
-const httpErrorCodeForStatus = (status: number): PlatformErrorCode => {
-  switch (status) {
-    case 400:
-      return platformErrorCodes.inputInvalidParameter;
-    case 401:
-      return platformErrorCodes.authTokenInvalid;
-    case 403:
-      return platformErrorCodes.authInsufficientScope;
-    case 404:
-      return platformErrorCodes.resourceNotFound;
-    case 409:
-      return platformErrorCodes.resourceConflict;
-    case 429:
-      return platformErrorCodes.rateLimitExceeded;
-    case 503:
-      return platformErrorCodes.serverUnavailable;
-    default:
-      return platformErrorCodes.serverInternal;
-  }
-};
-
 const previewStateErrorCode = (error: PreviewStateError): PlatformErrorCode => {
   const message = error.message.toLowerCase();
   if (message.includes("expired")) {
@@ -922,7 +805,7 @@ const previewStateErrorCode = (error: PreviewStateError): PlatformErrorCode => {
   if (error.status === 403) {
     return platformErrorCodes.inputInvalidParameter;
   }
-  return httpErrorCodeForStatus(error.status);
+  return defaultErrorCodeForStatus(error.status);
 };
 
 const isExpiredAuthError = (error: unknown): boolean =>
@@ -933,20 +816,31 @@ const resolveIdempotencyKey = (value: string | null): string | undefined => {
   return trimmed === "" ? undefined : trimmed;
 };
 
-const stableStringify = (value: unknown): string => JSON.stringify(sortJsonValue(value));
+const createRoute = (pathname: string, methods: Record<string, RouteHandler>): RouteEntry => ({
+  pattern: new URLPattern({ pathname }),
+  methods: new Map(Object.entries(methods)),
+});
 
-const sortJsonValue = (value: unknown): unknown => {
-  if (Array.isArray(value)) {
-    return value.map((entry) => sortJsonValue(entry));
+const readRequiredJsonPayload = async <T>(request: Request, schema: z.ZodType<T>): Promise<{ parsed: T; fingerprint: string }> => {
+  const text = await request.text();
+  if (text.trim() === "") {
+    throw new HttpError(400, "invalid JSON body", { code: platformErrorCodes.inputMalformedBody });
   }
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, sortJsonValue(entry)]),
-    );
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new HttpError(400, "invalid JSON body", { code: platformErrorCodes.inputMalformedBody });
+    }
+    throw error;
   }
-  return value;
+
+  return {
+    parsed: schema.parse(parsed),
+    fingerprint: await sha256Hex(text),
+  };
 };
 
 const createRequestAuditContext = (request: Request, principal: WorkspacePrincipal): AuditContext => ({

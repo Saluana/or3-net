@@ -20,16 +20,7 @@ export interface ServerOptions {
 }
 
 export const createServerApp = (options: ServerOptions): Or3NetApp =>
-  new Or3NetApp({
-    ...(options.database === undefined ? {} : { database: options.database }),
-    authService: options.authService,
-    localJobService: options.localJobService,
-    ...(options.nodeRegistryService === undefined ? {} : { nodeRegistryService: options.nodeRegistryService }),
-    ...(options.agentService === undefined ? {} : { agentService: options.agentService }),
-    ...(options.previewService === undefined ? {} : { previewService: options.previewService }),
-    ...(options.workspaceFileService === undefined ? {} : { workspaceFileService: options.workspaceFileService }),
-    ...(options.sandboxNodeAdapter === undefined ? {} : { sandboxNodeAdapter: options.sandboxNodeAdapter }),
-  });
+  new Or3NetApp(options);
 
 export const startServer = (
   options: ServerOptions & { readonly port?: number },

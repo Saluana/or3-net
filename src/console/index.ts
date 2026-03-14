@@ -97,6 +97,14 @@ export const renderConsoleHtml = (): string => `<!doctype html>
 		</main>
 		<script>
 			const output = document.getElementById('output');
+			const safeLaunchUrl = (value) => {
+				try {
+					const url = new URL(value);
+					return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
+				} catch {
+					return null;
+				}
+			};
 			const getConfig = () => ({
 				baseUrl: document.getElementById('baseUrl').value,
 				workspaceId: document.getElementById('workspaceId').value,
@@ -188,7 +196,12 @@ export const renderConsoleHtml = (): string => `<!doctype html>
 					const result = await call('/v1/workspaces/' + workspaceId + '/nodes/' + nodeId + '/services/' + serviceId + '/launch', { method: 'POST' });
 					write(result);
 					if (result.status === 200 && result.body && result.body.launch_url) {
-						window.open(result.body.launch_url, '_blank', 'noopener');
+						const launchUrl = safeLaunchUrl(result.body.launch_url);
+						if (launchUrl === null) {
+							write('Blocked non-HTTP launch URL: ' + result.body.launch_url);
+							return;
+						}
+						window.open(launchUrl, '_blank', 'noopener');
 					}
 				};
 			document.getElementById('revokeAccess').onclick = async () => {

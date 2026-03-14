@@ -32,4 +32,25 @@ describe("session binding service", () => {
 
     database.close();
   });
+
+  test("uses a single timestamp snapshot when creating a new binding", () => {
+    const database = createControlPlaneDatabase();
+    database.saveWorkspace({
+      workspace_id: "ws_timestamps",
+      name: "Timestamp Workspace",
+      created_at: "2024-01-01T00:00:00.000Z",
+    });
+
+    const service = new SessionBindingService(database);
+    const binding = service.resolveBinding({
+      workspace_id: "ws_timestamps",
+      client_kind: "chat",
+      client_session_id: "thread_same_time",
+    });
+
+    expect(binding.created_at).toBe(binding.updated_at);
+    expect(binding.created_at).toBe(binding.last_activity_at);
+
+    database.close();
+  });
 });

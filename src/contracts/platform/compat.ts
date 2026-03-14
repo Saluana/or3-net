@@ -72,7 +72,7 @@ export const normalizeLegacyJobStreamEvent = (event: JobStreamEvent): PlatformSt
   }
 };
 
-const defaultErrorCodeForStatus = (status: number): PlatformErrorCode => {
+export const defaultErrorCodeForStatus = (status: number): PlatformErrorCode => {
   switch (status) {
     case 400:
       return platformErrorCodes.inputInvalidParameter;

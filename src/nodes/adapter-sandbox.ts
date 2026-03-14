@@ -69,14 +69,7 @@ export class SandboxNodeAdapter {
         }
       }
       if (exitCode === null) {
-        const result = await this.sandboxClient.exec(
-          sandbox.id,
-          {
-            command: ["sh", "-lc", taskPackage.instructions],
-          },
-          requestContext,
-        );
-        exitCode = result.exit_code;
+        throw new Error("sandbox exec stream ended without exit code");
       }
       return { sandbox, exit_code: exitCode };
     } finally {

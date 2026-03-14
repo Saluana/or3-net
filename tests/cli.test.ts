@@ -21,6 +21,18 @@ describe("or3-net CLI", () => {
     expect(stdout.join("")).toContain("auth exchange");
   });
 
+  test("prints help for the boolean --help flag", async () => {
+    const stdout: string[] = [];
+    const exitCode = await runCli(["--help"], {
+      fetch: createFetchMock(() => Promise.reject(new Error("fetch should not be called"))),
+      stdout: { write: (chunk) => stdout.push(chunk) },
+      stderr: { write: () => undefined },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout.join("")).toContain("jobs submit");
+  });
+
   test("submits jobs through the HTTP API", async () => {
     const stdout: string[] = [];
     const requests: Request[] = [];

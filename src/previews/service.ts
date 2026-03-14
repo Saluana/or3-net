@@ -1,5 +1,3 @@
-import { posix as pathPosix } from "node:path";
-
 import type { PreviewDescriptor, PreviewLaunchMetadata, PreviewLaunchRequest } from "../contracts/index.ts";
 import type { CapabilityGrant } from "../contracts/platform/types.ts";
 import type { ControlPlaneDatabase, StoredPreview } from "../db/index.ts";
@@ -414,11 +412,11 @@ const normalizeOrigin = (origin: string | undefined): string => {
 };
 
 const normalizeAbsolutePath = (value: string): string => {
-  const normalized = pathPosix.normalize(value.startsWith("/") ? value : `/${value}`);
+  const normalized = normalizePosixPath(value.startsWith("/") ? value : `/${value}`);
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 };
 
-const looksLikeFilePath = (value: string): boolean => pathPosix.basename(value).includes(".");
+const looksLikeFilePath = (value: string): boolean => getPosixBasename(value).includes(".");
 
 const resolvePreviewRootPath = (preview: PreviewDescriptor): string => {
   if (preview.path !== undefined) {
@@ -426,11 +424,11 @@ const resolvePreviewRootPath = (preview: PreviewDescriptor): string => {
     if (preview.entry_path !== undefined || !looksLikeFilePath(normalizedPath)) {
       return normalizedPath;
     }
-    return pathPosix.dirname(normalizedPath);
+    return getPosixDirname(normalizedPath);
   }
 
   if (preview.entry_path !== undefined) {
-    return pathPosix.dirname(normalizeAbsolutePath(preview.entry_path));
+    return getPosixDirname(normalizeAbsolutePath(preview.entry_path));
   }
 
   throw new PreviewStateError(403, "file-backed preview is missing a target path");
@@ -443,14 +441,14 @@ const resolvePreviewDefaultFilePath = (preview: PreviewDescriptor): string => {
 
   if (preview.path !== undefined) {
     const normalizedPath = normalizeAbsolutePath(preview.path);
-    return looksLikeFilePath(normalizedPath) ? normalizedPath : pathPosix.join(normalizedPath, "index.html");
+    return looksLikeFilePath(normalizedPath) ? normalizedPath : joinPosixPath(normalizedPath, "index.html");
   }
 
   throw new PreviewStateError(403, "file-backed preview is missing a target path");
 };
 
 const buildFileLaunchUrl = (origin: string | undefined, token: string, rootPath: string, defaultFilePath: string): string => {
-  const relativePath = pathPosix.relative(rootPath, defaultFilePath);
+  const relativePath = relativePosixPath(rootPath, defaultFilePath);
   const encodedRelativePath = relativePath
     .split("/")
     .filter((segment) => segment.length > 0)
@@ -466,12 +464,59 @@ const resolveCapabilityFilePath = (rootPath: string, defaultFilePath: string, re
   }
 
   const normalizedRoot = normalizeAbsolutePath(rootPath);
-  const candidate = pathPosix.resolve(normalizedRoot, requestedPath);
+  const candidate = resolvePosixPath(normalizedRoot, requestedPath);
   if (!isPathWithinRoot(normalizedRoot, candidate)) {
     throw new PreviewStateError(403, "launch capability path is outside the preview root");
   }
   return candidate;
 };
+
+const splitPosixSegments = (value: string): string[] =>
+  value
+    .split("/")
+    .filter((segment) => segment !== "" && segment !== ".");
+
+const normalizePosixPath = (value: string): string => {
+  const normalizedSegments: string[] = [];
+  for (const segment of splitPosixSegments(value)) {
+    if (segment === "..") {
+      normalizedSegments.pop();
+      continue;
+    }
+    normalizedSegments.push(segment);
+  }
+  return `/${normalizedSegments.join("/")}`;
+};
+
+const getPosixBasename = (value: string): string => {
+  const normalized = normalizeAbsolutePath(value);
+  const segments = splitPosixSegments(normalized);
+  return segments.at(-1) ?? "";
+};
+
+const getPosixDirname = (value: string): string => {
+  const normalized = normalizeAbsolutePath(value);
+  const segments = splitPosixSegments(normalized);
+  if (segments.length <= 1) {
+    return "/";
+  }
+  return `/${segments.slice(0, -1).join("/")}`;
+};
+
+const joinPosixPath = (...parts: string[]): string => normalizeAbsolutePath(parts.join("/"));
+
+const relativePosixPath = (from: string, to: string): string => {
+  const fromSegments = splitPosixSegments(normalizeAbsolutePath(from));
+  const toSegments = splitPosixSegments(normalizeAbsolutePath(to));
+  let index = 0;
+  while (index < fromSegments.length && index < toSegments.length && fromSegments[index] === toSegments[index]) {
+    index += 1;
+  }
+  return [...Array.from({ length: fromSegments.length - index }, () => ".."), ...toSegments.slice(index)].join("/");
+};
+
+const resolvePosixPath = (root: string, candidate: string): string =>
+  normalizeAbsolutePath(candidate.startsWith("/") ? candidate : `${normalizeAbsolutePath(root)}/${candidate}`);
 
 const isPathWithinRoot = (rootPath: string, candidatePath: string): boolean => {
   if (rootPath === "/") {

@@ -22,11 +22,12 @@ export class SessionBindingService {
 
   public resolveBinding(input: ResolveSessionBindingInput): StoredNetworkSession {
     const store = this.database.workspace(input.workspace_id);
+    const now = new Date().toISOString();
 
     if (input.network_session_id !== undefined) {
       const existing = store.getNetworkSession(input.network_session_id);
       return store.touchNetworkSession(existing.network_session_id, {
-        last_activity_at: new Date().toISOString(),
+        last_activity_at: now,
       });
     }
 
@@ -34,7 +35,7 @@ export class SessionBindingService {
       const existing = store.findNetworkSessionByClient(input.client_kind, input.client_session_id);
       if (existing !== null) {
         return store.touchNetworkSession(existing.network_session_id, {
-          last_activity_at: new Date().toISOString(),
+          last_activity_at: now,
         });
       }
 
@@ -45,9 +46,9 @@ export class SessionBindingService {
         client_session_id: input.client_session_id,
         intern_session_key: input.session_key ?? `svc:${networkSessionId}`,
         status: "active",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        last_activity_at: new Date().toISOString(),
+        created_at: now,
+        updated_at: now,
+        last_activity_at: now,
         ...(input.initiator_subject === undefined ? {} : { initiator_subject: input.initiator_subject }),
       });
     }
@@ -56,7 +57,7 @@ export class SessionBindingService {
       const existing = store.findNetworkSessionByInternSessionKey(input.session_key);
       if (existing !== null) {
         return store.touchNetworkSession(existing.network_session_id, {
-          last_activity_at: new Date().toISOString(),
+          last_activity_at: now,
         });
       }
 
@@ -66,9 +67,9 @@ export class SessionBindingService {
         client_kind: input.client_kind ?? "legacy",
         intern_session_key: input.session_key,
         status: "active",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        last_activity_at: new Date().toISOString(),
+        created_at: now,
+        updated_at: now,
+        last_activity_at: now,
         ...(input.client_session_id === undefined ? {} : { client_session_id: input.client_session_id }),
         ...(input.initiator_subject === undefined ? {} : { initiator_subject: input.initiator_subject }),
       });
@@ -86,9 +87,10 @@ export class SessionBindingService {
   }
 
   public touchBinding(workspaceId: string, networkSessionId: string, input: { last_job_id?: string; status?: string; closed_at?: string } = {}): StoredNetworkSession {
+    const now = new Date().toISOString();
     return this.database.workspace(workspaceId).touchNetworkSession(networkSessionId, {
       ...input,
-      last_activity_at: new Date().toISOString(),
+      last_activity_at: now,
     });
   }
 

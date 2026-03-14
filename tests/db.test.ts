@@ -686,9 +686,15 @@ describe("control plane database", () => {
     const alphaEvents = alpha.listJobEvents({ job_id: "job_alpha" });
     const sessionEvents = alpha.listJobEvents({ network_session_id: "sess_alpha" });
     const betaEvents = beta.listJobEvents({ network_session_id: "sess_beta" });
+    const truncatedPayload = JSON.parse(alphaEvents[0]?.payload_json ?? "{}") as {
+      text?: { _truncated?: boolean; _original_length?: number; value?: string };
+    };
 
     expect(alphaEvents.map((event) => event.sequence)).toEqual([2, 3, 4]);
     expect(alphaEvents[0]?.payload_json.length ?? 0).toBeLessThan(3000);
+    expect(truncatedPayload.text?._truncated).toBeTrue();
+    expect(truncatedPayload.text?._original_length).toBe(5000);
+    expect(truncatedPayload.text?.value?.length).toBe(2048);
     expect(sessionEvents).toHaveLength(3);
     expect(betaEvents).toHaveLength(1);
     expect(betaEvents[0]?.job_id).toBe("job_beta");

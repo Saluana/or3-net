@@ -5,11 +5,20 @@ interface StoredFile {
   readonly content: string;
 }
 
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const MAX_FILES_PER_WORKSPACE = 500;
+
 export class InMemoryWorkspaceFileService {
   private readonly files = new Map<string, Map<string, StoredFile>>();
 
   public putFile(workspaceId: string, entry: WorkspaceFileEntry, content: string): void {
     const workspaceFiles = this.files.get(workspaceId) ?? new Map<string, StoredFile>();
+    if (content.length > MAX_FILE_SIZE_BYTES) {
+      throw new Error(`file exceeds maximum size of ${String(MAX_FILE_SIZE_BYTES)} bytes`);
+    }
+    if (workspaceFiles.size >= MAX_FILES_PER_WORKSPACE && !workspaceFiles.has(entry.path)) {
+      throw new Error(`workspace file limit of ${String(MAX_FILES_PER_WORKSPACE)} reached`);
+    }
     workspaceFiles.set(entry.path, { entry, content });
     this.files.set(workspaceId, workspaceFiles);
   }
