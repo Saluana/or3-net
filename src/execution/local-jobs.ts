@@ -4,6 +4,7 @@ import { jobErrorSchema, type Job, type JobResult, type JobStreamEvent, taskPack
 import { auditContextSchema, type AuditContext, type PlatformSessionRef } from "../contracts/platform/types.ts";
 import type {
   ControlPlaneDatabase,
+  StartupReconciliationSummary,
   StoredJobEvent,
   StoredJobWithDiagnostics,
   StoredNetworkSession,
@@ -61,6 +62,8 @@ export interface LocalJobServiceOptions {
   readonly sandboxNodeAdapter?: SandboxNodeAdapter;
   readonly remoteNodeExecutor?: RemoteNodeExecutor;
   readonly sessionBindingService?: SessionBindingService;
+  readonly reconcileOnStartup?: boolean;
+  readonly startupReconciliationNowMs?: number;
 }
 
 interface SubmitJobOptions {
@@ -76,10 +79,19 @@ export class LocalJobService {
   private readonly backendJobIds = new Map<string, string>();
   private readonly pendingAbortJobs = new Set<string>();
   private readonly activeRemoteRuns = new Map<string, { workspaceId: string; leaseId: string; run: NodeExecutionHandle }>();
+  private readonly startupReconciliationSummary: StartupReconciliationSummary | null;
 
   public constructor(private readonly options: LocalJobServiceOptions) {
     this.streamBroker = options.streamBroker ?? new JobStreamBroker();
     this.sessionBindingService = options.sessionBindingService ?? new SessionBindingService(options.database);
+    this.startupReconciliationSummary =
+      options.reconcileOnStartup === false
+        ? null
+        : options.database.reconcileStartupState(options.startupReconciliationNowMs);
+  }
+
+  public getStartupReconciliationSummary(): StartupReconciliationSummary | null {
+    return this.startupReconciliationSummary;
   }
 
   public submitJob(

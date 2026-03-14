@@ -296,6 +296,34 @@ describe("HTTP SDK clients", () => {
       "Sandbox stream response missing body",
     );
   });
+
+  test("intern client uses documented stream and abort endpoints", async () => {
+    const requests: Request[] = [];
+    const client = new HttpInternClient({
+      baseUrl: "https://intern.test",
+      secret: "intern-secret",
+      fetch: ((input: FetchInput, init?: RequestInit) => {
+        const request = toRequest(input, init);
+        requests.push(request);
+        if (request.url.endsWith("/stream")) {
+          return Promise.resolve(new Response(chunkedStream([
+            "event: queued\ndata: {\"job_id\":\"job_1\",\"status\":\"queued\"}\n\n",
+          ]), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, job_id: "job_1", status: "aborted" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }) as unknown as typeof fetch,
+    });
+
+    expect(await collect(client.streamJob("job_1"))).toEqual([
+      { event: "queued", data: { job_id: "job_1", status: "queued" } },
+    ]);
+    expect(await client.abortJob("job_1")).toEqual({ ok: true, job_id: "job_1", status: "aborted" });
+
+    expect(requests.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      "GET /internal/v1/jobs/job_1/stream",
+      "POST /internal/v1/jobs/job_1/abort",
+    ]);
+  });
 });
 
 const collect = async <T>(iterable: AsyncIterable<T>): Promise<T[]> => {

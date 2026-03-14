@@ -68,6 +68,7 @@ export class PreviewService {
     request?: PreviewLaunchRequest,
     origin = "http://localhost",
   ): PreviewLaunchMetadata {
+    this.pruneExpiredLaunchCapabilities();
     const stored = this.database.workspace(workspaceId).getPreview(previewId);
     if (stored.preview.status === "revoked") {
       throw new PreviewStateError(403, "preview has been revoked");
@@ -132,6 +133,7 @@ export class PreviewService {
     readonly preview_id?: string;
     readonly scope_key?: string;
   }): PreviewLaunchMetadata {
+    this.pruneExpiredLaunchCapabilities();
     const capabilityKind: CapabilityGrant["kind"] = input.preview_id === undefined ? "service-launch" : "preview-launch";
     const capability = createCapabilityGrant({
       workspace_id: input.workspace_id,
@@ -179,14 +181,17 @@ export class PreviewService {
   }
 
   public resolveLaunchCapability(token: string, requestedPath?: string): ResolvedLaunchCapability {
+    this.pruneExpiredLaunchCapabilities();
     const capability = this.launchCapabilities.get(token);
     if (capability === undefined) {
       throw new PreviewStateError(410, "launch capability has expired");
     }
     if (capability.grant.revoked_at !== null) {
+      this.removeCapabilityFromIndexes(token, capability);
       throw new PreviewStateError(403, "launch capability has been revoked");
     }
     if (Date.parse(capability.grant.expires_at) <= Date.now()) {
+      this.deleteLaunchCapability(token, capability);
       throw new PreviewStateError(410, "launch capability has expired");
     }
 
@@ -225,8 +230,10 @@ export class PreviewService {
           revoked_at: new Date().toISOString(),
         },
       });
+      this.removeCapabilityFromIndexes(token, capability);
       revokedCount += 1;
     }
+    this.scopedLaunchTokens.delete(scopeKey);
     return revokedCount;
   }
 
@@ -246,8 +253,11 @@ export class PreviewService {
             revoked_at: new Date().toISOString(),
           },
         });
+        this.removeCapabilityFromIndexes(token, capability);
       }
     }
+
+    this.previewLaunchTokens.delete(previewId);
   }
 
   private buildPreviewTargetUrl(preview: PreviewDescriptor): string {
@@ -270,6 +280,7 @@ export class PreviewService {
     readonly service_status: PreviewLaunchMetadata["service_status"];
     readonly expires_at: string;
   }): PreviewLaunchMetadata {
+    this.pruneExpiredLaunchCapabilities();
     const rootPath = resolvePreviewRootPath(input.preview);
     const defaultFilePath = resolvePreviewDefaultFilePath(input.preview);
     const capability = createCapabilityGrant({
@@ -310,6 +321,37 @@ export class PreviewService {
       service_status: input.service_status,
       expires_at: input.expires_at,
     };
+  }
+
+  private pruneExpiredLaunchCapabilities(nowMs = Date.now()): void {
+    for (const [token, capability] of this.launchCapabilities.entries()) {
+      if (Date.parse(capability.grant.expires_at) <= nowMs) {
+        this.deleteLaunchCapability(token, capability);
+      }
+    }
+  }
+
+  private deleteLaunchCapability(token: string, capability: LaunchCapabilityRecord): void {
+    this.launchCapabilities.delete(token);
+    this.removeCapabilityFromIndexes(token, capability);
+  }
+
+  private removeCapabilityFromIndexes(token: string, capability: LaunchCapabilityRecord): void {
+    if (capability.preview_id !== undefined) {
+      const previewTokens = this.previewLaunchTokens.get(capability.preview_id);
+      previewTokens?.delete(token);
+      if (previewTokens?.size === 0) {
+        this.previewLaunchTokens.delete(capability.preview_id);
+      }
+    }
+
+    if (capability.scope_key !== undefined) {
+      const scopedTokens = this.scopedLaunchTokens.get(capability.scope_key);
+      scopedTokens?.delete(token);
+      if (scopedTokens?.size === 0) {
+        this.scopedLaunchTokens.delete(capability.scope_key);
+      }
+    }
   }
 }
 

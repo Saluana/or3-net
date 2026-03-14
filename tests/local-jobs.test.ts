@@ -801,6 +801,79 @@ describe("local job execution", () => {
       expect(database.workspace("ws_jobs").listLeases()[0]?.lease.state).toBe("released");
     });
   });
+
+  test("repairs startup state by failing orphaned jobs and releasing ghost leases", () => {
+    database.workspace("ws_jobs").saveNode({
+      manifest: {
+        node_id: "node_remote_rpc",
+        pubkey: "pub",
+        signature: "sig",
+        adapter_kind: "remote",
+        capabilities: ["exec"],
+        isolation_class: "docker-trusted",
+        supports_transports: ["outbound-wss"],
+        resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+        lease_policy: { max_ttl_seconds: 300, supports_warm_pool: false, reset_methods: ["process_kill"] },
+        version: "1.0.0",
+      },
+      pubkey_fingerprint: "fp_remote_rpc",
+      status: "approved",
+      health_status: "healthy",
+    });
+
+    database.workspace("ws_jobs").saveJob({
+      job: {
+        job_id: "job_orphaned_remote",
+        workspace_id: "ws_jobs",
+        status: "running",
+        created_at: "2024-01-01T00:00:00.000Z",
+        started_at: "2024-01-01T00:00:01.000Z",
+      },
+      task_package: {
+        workspace_id: "ws_jobs",
+        job_id: "job_orphaned_remote",
+        kind: "turn",
+        instructions: "recover me",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1_000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 300, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+    });
+    database.workspace("ws_jobs").saveLease({
+      workspace_id: "ws_jobs",
+      job_id: "job_orphaned_remote",
+      lease: {
+        lease_id: "lease_orphaned_remote",
+        node_id: "node_remote_rpc",
+        profile: { profile_id: "default", ttl_seconds: 300, required_capabilities: ["exec"] },
+        ttl: 300,
+        reset_required: true,
+        state: "active",
+      },
+      created_at: "2024-01-01T00:00:00.000Z",
+      expires_at: "2099-01-01T00:00:00.000Z",
+    });
+
+    const service = new LocalJobService({
+      database,
+      internClient: new ScriptedInternClient(() => emptyAsyncIterable()),
+      reconcileOnStartup: true,
+      startupReconciliationNowMs: Date.parse("2024-01-01T00:10:00.000Z"),
+    });
+
+    expect(service.getStartupReconciliationSummary()).toEqual({
+      failed_jobs: 1,
+      expired_leases: 0,
+      released_leases: 1,
+      stale_nodes: 0,
+    });
+    expect(service.getJob("ws_jobs", "job_orphaned_remote").job.status).toBe("failed");
+    expect(service.getJob("ws_jobs", "job_orphaned_remote").job.error?.code).toBe("host_restart");
+    expect(database.workspace("ws_jobs").getLease("lease_orphaned_remote").lease.state).toBe("released");
+  });
 });
 
 const parseJsonRecord = (value: string): Record<string, unknown> => {

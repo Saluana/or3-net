@@ -81,6 +81,16 @@ export class HttpsNodeTransport implements NodeRpcTransport {
       },
     };
   }
+
+  public async heartbeat(context: NodeExecutionContext): Promise<void> {
+    await this.request(
+      {
+        id: createId("rpc"),
+        method: "heartbeat",
+      },
+      context,
+    );
+  }
 }
 
 const createNormalizedStream = (events: readonly NodeEvent[]): AsyncIterable<JobStreamEvent> => ({

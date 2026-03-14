@@ -75,6 +75,21 @@ export class OutboundWssNodeTransport implements NodeRpcTransport {
       },
     };
   }
+
+  public async heartbeat(context: NodeExecutionContext): Promise<void> {
+    const handler = this.handlers.get(context.nodeId) ?? this.handlers.get("default");
+    if (handler === undefined) {
+      throw new Error(`no outbound-wss connection is attached for node ${context.nodeId}`);
+    }
+
+    await handler(
+      {
+        id: createId("rpc"),
+        method: "heartbeat",
+      },
+      context,
+    );
+  }
 }
 
 const trackExecutionStream = (

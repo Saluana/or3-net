@@ -48,6 +48,7 @@ const terminalJobStatuses = new Set<JobRow["status"]>(["completed", "failed", "a
 export interface StartupReconciliationSummary {
   readonly failed_jobs: number;
   readonly expired_leases: number;
+  readonly released_leases: number;
   readonly stale_nodes: number;
 }
 
@@ -1051,6 +1052,14 @@ export class ControlPlaneDatabase {
       .prepare("UPDATE leases SET state = 'expired', released_at = ? WHERE state = ? AND expires_at <= ?")
       .run(nowMs, activeLeaseState, nowMs).changes;
 
+    const releasedLeases = this.sqlite
+      .prepare(
+        `UPDATE leases SET state = 'released', released_at = ? WHERE state = ? AND job_id IN (
+          SELECT id FROM jobs WHERE workspace_id = leases.workspace_id AND status IN ('failed', 'aborted', 'completed')
+        )`,
+      )
+      .run(nowMs, activeLeaseState).changes;
+
     const staleNodes = this.sqlite
       .prepare(
         "UPDATE nodes SET health_status = 'stale' WHERE status = 'approved' AND last_seen_at IS NOT NULL AND last_seen_at <= ?",
@@ -1060,6 +1069,7 @@ export class ControlPlaneDatabase {
     return {
       failed_jobs: failedJobs,
       expired_leases: expiredLeases,
+      released_leases: releasedLeases,
       stale_nodes: staleNodes,
     };
   }

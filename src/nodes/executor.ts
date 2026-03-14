@@ -51,6 +51,32 @@ export class RemoteNodeExecutor {
     return run.result;
   }
 
+  public async heartbeat(
+    node: StoredNode,
+    credential?: { token: string; expires_at: string },
+  ): Promise<void> {
+    let transport;
+    try {
+      transport = this.transportRegistry.resolve(node);
+    } catch (error) {
+      throw new RemoteExecutionError(
+        "remote_execution_start_failed",
+        error instanceof Error ? error.message : `no runtime transport is available for node ${node.manifest.node_id}`,
+        { details: { node_id: node.manifest.node_id } },
+      );
+    }
+
+    if (transport.heartbeat === undefined) {
+      return;
+    }
+
+    await transport.heartbeat({
+      workspaceId: node.workspace_id,
+      nodeId: node.manifest.node_id,
+      credential: this.resolveCredential(node, credential),
+    });
+  }
+
   private resolveCredential(node: StoredNode, credential?: { token: string; expires_at: string }): NodeTransportCredential {
     if (credential !== undefined) {
       return {

@@ -57,6 +57,30 @@ export const runCli = async (argv: string[], deps: CliDependencies): Promise<num
 			case "nodes:approve":
 				await handleJsonRequest("POST", buildWorkspacePath(parsed.flags, `/nodes/${requireFlag(parsed.flags, "node-id")}/approve`), parsed.flags, deps);
 				return 0;
+			case "services:list":
+				await handleJsonRequest(
+					"GET",
+					buildWorkspacePath(parsed.flags, `/nodes/${requireFlag(parsed.flags, "node-id")}/services`),
+					parsed.flags,
+					deps,
+				);
+				return 0;
+			case "services:revoke":
+				await handleJsonRequest(
+					"POST",
+					buildWorkspacePath(parsed.flags, `/nodes/${requireFlag(parsed.flags, "node-id")}/services/${requireFlag(parsed.flags, "service-id")}/revoke`),
+					parsed.flags,
+					deps,
+				);
+				return 0;
+			case "services:restart":
+				await handleJsonRequest(
+					"POST",
+					buildWorkspacePath(parsed.flags, `/nodes/${requireFlag(parsed.flags, "node-id")}/services/${requireFlag(parsed.flags, "service-id")}/restart`),
+					parsed.flags,
+					deps,
+				);
+				return 0;
 			case "nodes:enroll":
 				await handleJsonRequest(
 					"POST",
@@ -115,6 +139,17 @@ export const runCli = async (argv: string[], deps: CliDependencies): Promise<num
 				await handleJsonRequest(
 					"GET",
 					buildWorkspacePath(parsed.flags, `/sessions/${requireFlag(parsed.flags, "session-id")}/events`),
+					parsed.flags,
+					deps,
+				);
+				return 0;
+			case "previews:list":
+				await handleJsonRequest("GET", buildWorkspacePath(parsed.flags, "/previews"), parsed.flags, deps);
+				return 0;
+			case "previews:revoke":
+				await handleJsonRequest(
+					"POST",
+					buildWorkspacePath(parsed.flags, `/previews/${requireFlag(parsed.flags, "preview-id")}/revoke`),
 					parsed.flags,
 					deps,
 				);
@@ -242,6 +277,9 @@ const renderHelp = (): string => `${cliName} commands:
 	nodes list --workspace-id <id> --token <token> [--base-url <url>]
 	nodes enroll --workspace-id <id> --token <token> --manifest-json '<json>' [--base-url <url>]
 	nodes approve --workspace-id <id> --node-id <id> --token <token> [--base-url <url>]
+	services list --workspace-id <id> --node-id <id> --token <token> [--base-url <url>]
+	services revoke --workspace-id <id> --node-id <id> --service-id <id> --token <token> [--base-url <url>]
+	services restart --workspace-id <id> --node-id <id> --service-id <id> --token <token> [--base-url <url>]
 	jobs submit --workspace-id <id> --session-key <key> --message <text> --token <token> [--allowed-tools a,b]
 	jobs list --workspace-id <id> --token <token> [--status running|terminal|all] [--session-id <id>] [--base-url <url>]
 	jobs get --job-id <id> --token <token> [--base-url <url>]
@@ -250,6 +288,8 @@ const renderHelp = (): string => `${cliName} commands:
 	sessions list --workspace-id <id> --token <token> [--base-url <url>]
 	sessions get --workspace-id <id> --session-id <id> --token <token> [--base-url <url>]
 	sessions events --workspace-id <id> --session-id <id> --token <token> [--base-url <url>]
+	previews list --workspace-id <id> --token <token> [--base-url <url>]
+	previews revoke --workspace-id <id> --preview-id <id> --token <token> [--base-url <url>]
 	agents list --workspace-id <id> --token <token> [--base-url <url>]
 `;
 

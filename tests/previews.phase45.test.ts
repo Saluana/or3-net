@@ -750,6 +750,58 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     expect(token).toBeDefined();
     expect(token).toStartWith("cap_");
     expect(() => previewService.resolveLaunchCapability(token ?? "")).toThrow("launch capability has expired");
+    expect((previewService as unknown as { launchCapabilities: Map<string, unknown> }).launchCapabilities.size).toBe(0);
+  });
+
+  test("removes reverse-index entries when preview and scoped launch capabilities are revoked", () => {
+    previewService.registerPreview("ws_preview", {
+      preview_id: "preview_cleanup",
+      workspace_id: "ws_preview",
+      kind: "dashboard",
+      delivery_mode: "external",
+      source_type: "live-service",
+      status: "ready",
+      supports_iframe: false,
+      supports_new_tab: true,
+    });
+
+    const previewLaunch = previewService.mintLaunchCapability({
+      workspace_id: "ws_preview",
+      preview_id: "preview_cleanup",
+      target_url: "https://launch.local/preview-cleanup",
+      delivery_mode: "external",
+      supports_iframe: false,
+      supports_new_tab: true,
+      reused_tunnel: false,
+      service_status: "ready",
+      expires_at: "2099-01-01T00:00:00.000Z",
+    });
+    previewService.mintLaunchCapability({
+      workspace_id: "ws_preview",
+      scope_key: "service:node_cleanup:openclaw",
+      target_url: "https://launch.local/service-cleanup",
+      delivery_mode: "external",
+      supports_iframe: false,
+      supports_new_tab: true,
+      reused_tunnel: false,
+      service_status: "ready",
+      expires_at: "2099-01-01T00:00:00.000Z",
+    });
+
+    previewService.revokePreview("ws_preview", "preview_cleanup");
+    previewService.revokeLaunchScope("service:node_cleanup:openclaw");
+
+    const launchState = previewService as unknown as {
+      previewLaunchTokens: Map<string, Set<string>>;
+      scopedLaunchTokens: Map<string, Set<string>>;
+      launchCapabilities: Map<string, { grant: { revoked_at: string | null } }>;
+    };
+    const revokedPreviewToken = previewLaunch.launch_url.split("/").pop();
+
+    expect(launchState.previewLaunchTokens.has("preview_cleanup")).toBeFalse();
+    expect(launchState.scopedLaunchTokens.has("service:node_cleanup:openclaw")).toBeFalse();
+    expect(revokedPreviewToken).toBeDefined();
+    expect(launchState.launchCapabilities.get(revokedPreviewToken ?? "")?.grant.revoked_at).toBeString();
   });
 });
 

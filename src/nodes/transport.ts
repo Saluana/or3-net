@@ -3,6 +3,7 @@ import type { JobError, JobResult, JobStreamEvent, NodeEvent, NodeResponse, Task
 export interface NodeRpcTransport {
   readonly kind: "https" | "outbound-wss";
   startExecution(taskPackage: TaskPackage, context: NodeExecutionContext): Promise<NodeExecutionHandle>;
+  heartbeat?(context: NodeExecutionContext): Promise<void>;
 }
 
 export interface NodeTransportCredential {

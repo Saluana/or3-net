@@ -234,6 +234,41 @@ describe("node transport abstraction", () => {
     expect(streamStarts).toBe(1);
   });
 
+  test("sends heartbeat with issued credentials over https and outbound-wss", async () => {
+    const seenMethods: string[] = [];
+    const seenAuth: string[] = [];
+    const httpsTransport = new HttpsNodeTransport({
+      endpoint: "https://node.example/rpc",
+      fetch: ((_input, init) => {
+        const payload = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as NodeRequest;
+        seenMethods.push(`https:${payload.method}`);
+        seenAuth.push(init?.headers instanceof Headers ? (init.headers.get("Authorization") ?? "") : ((init?.headers as Record<string, string> | undefined)?.["Authorization"] ?? ""));
+        return Promise.resolve(new Response(JSON.stringify({ id: payload.id, result: { output_text: "ok", artifacts: [], meta: {} } }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }) as typeof fetch,
+    });
+
+    const wssTransport = new OutboundWssNodeTransport();
+    wssTransport.attachConnection("node_wss_heartbeat", (request, context) => {
+      seenMethods.push(`outbound-wss:${request.method}`);
+      seenAuth.push(context.credential.token);
+      return Promise.resolve({ id: request.id, result: { output_text: "ok", artifacts: [], meta: {} } });
+    });
+
+    await httpsTransport.heartbeat({
+      workspaceId: "ws_transport",
+      nodeId: "node_https_heartbeat",
+      credential: { token: "cred_https_heartbeat", expiresAt: "2099-01-01T00:00:00.000Z" },
+    });
+    await wssTransport.heartbeat({
+      workspaceId: "ws_transport",
+      nodeId: "node_wss_heartbeat",
+      credential: { token: "cred_wss_heartbeat", expiresAt: "2099-01-01T00:00:00.000Z" },
+    });
+
+    expect(seenMethods).toEqual(["https:heartbeat", "outbound-wss:heartbeat"]);
+    expect(seenAuth).toEqual(["Bearer cred_https_heartbeat", "cred_wss_heartbeat"]);
+  });
+
   test("uses workspace-scoped node transport registrations for the same node_id", async () => {
     const registry = new NodeTransportRegistry();
     registry.registerNodeTransport("ws_alpha", "node_shared", {

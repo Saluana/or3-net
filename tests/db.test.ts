@@ -280,6 +280,7 @@ describe("control plane database", () => {
 
     expect(summary.failed_jobs).toBe(1);
     expect(summary.expired_leases).toBe(1);
+    expect(summary.released_leases).toBe(0);
     expect(summary.stale_nodes).toBe(1);
     expect(store.getJob("job_1").job.status).toBe("failed");
     expect(store.getLease("lease_1").lease.state).toBe("expired");

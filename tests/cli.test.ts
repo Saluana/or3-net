@@ -207,4 +207,76 @@ describe("or3-net CLI", () => {
     expect(stdout.join(" ")).toContain("or3k_secret");
     expect(stdout.join(" ")).toContain("sess_1");
   });
+
+  test("lists previews and service actions through the HTTP API", async () => {
+    const stdout: string[] = [];
+    const requests: Request[] = [];
+    const responses = [
+      new Response(JSON.stringify({ items: [{ preview_id: "preview_1", status: "ready" }] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response(JSON.stringify({ items: [{ service_id: "openclaw", status: "ready" }] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response(JSON.stringify({ ok: true, revoked: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response(JSON.stringify({ service_id: "openclaw", status: "ready" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response(JSON.stringify({ preview: { preview: { preview_id: "preview_1", status: "revoked" } } }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    ];
+
+    const fetchMock = createFetchMock((input, init) => {
+      const request = input instanceof Request ? input : new Request(input.toString(), init);
+      requests.push(request);
+      const response = responses.shift();
+      if (response === undefined) {
+        throw new Error("unexpected request");
+      }
+      return Promise.resolve(response);
+    });
+
+    expect(
+      await runCli(["previews", "list", "--base-url", "http://or3.test", "--workspace-id", "ws_cli", "--token", "token-123"], {
+        fetch: fetchMock,
+        stdout: { write: (chunk) => stdout.push(chunk) },
+        stderr: { write: () => undefined },
+      }),
+    ).toBe(0);
+
+    expect(
+      await runCli(["services", "list", "--base-url", "http://or3.test", "--workspace-id", "ws_cli", "--node-id", "node_1", "--token", "token-123"], {
+        fetch: fetchMock,
+        stdout: { write: (chunk) => stdout.push(chunk) },
+        stderr: { write: () => undefined },
+      }),
+    ).toBe(0);
+
+    expect(
+      await runCli(["services", "revoke", "--base-url", "http://or3.test", "--workspace-id", "ws_cli", "--node-id", "node_1", "--service-id", "openclaw", "--token", "token-123"], {
+        fetch: fetchMock,
+        stdout: { write: (chunk) => stdout.push(chunk) },
+        stderr: { write: () => undefined },
+      }),
+    ).toBe(0);
+
+    expect(
+      await runCli(["services", "restart", "--base-url", "http://or3.test", "--workspace-id", "ws_cli", "--node-id", "node_1", "--service-id", "openclaw", "--token", "token-123"], {
+        fetch: fetchMock,
+        stdout: { write: (chunk) => stdout.push(chunk) },
+        stderr: { write: () => undefined },
+      }),
+    ).toBe(0);
+
+    expect(
+      await runCli(["previews", "revoke", "--base-url", "http://or3.test", "--workspace-id", "ws_cli", "--preview-id", "preview_1", "--token", "token-123"], {
+        fetch: fetchMock,
+        stdout: { write: (chunk) => stdout.push(chunk) },
+        stderr: { write: () => undefined },
+      }),
+    ).toBe(0);
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "http://or3.test/v1/workspaces/ws_cli/previews",
+      "http://or3.test/v1/workspaces/ws_cli/nodes/node_1/services",
+      "http://or3.test/v1/workspaces/ws_cli/nodes/node_1/services/openclaw/revoke",
+      "http://or3.test/v1/workspaces/ws_cli/nodes/node_1/services/openclaw/restart",
+      "http://or3.test/v1/workspaces/ws_cli/previews/preview_1/revoke",
+    ]);
+    expect(stdout.join(" ")).toContain("preview_1");
+    expect(stdout.join(" ")).toContain("openclaw");
+  });
 });
