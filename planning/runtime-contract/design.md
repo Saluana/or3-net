@@ -14,6 +14,15 @@ This design adds a runtime adapter abstraction layer above the existing node RPC
 
 The design wraps rather than replaces the current node protocol, transport registry, executor, sandbox adapter, scheduler, and warm pool. Existing callers (`LocalJobService`, CLI, console) continue to use the current paths unchanged.
 
+### Scope boundary
+
+This design owns the reusable runtime substrate only.
+
+- It defines generic runtime contracts, adapter registration, session lifecycle, persistence, and runtime APIs.
+- It may include generic workspace-related capability and session fields where needed for staged runtime use.
+- It does **not** own canonical host workspace resolution, selected-path manifest capture, stale-write conflict checks, explicit host commit/discard flows, or single-writer coordination for host-backed staged sessions.
+- Those host-specific semantics belong to `planning/host-workspace-staging/design.md` and must layer on this substrate rather than redefine it.
+
 ### Why this fits
 
 - The existing `SandboxNodeAdapter` and `RemoteNodeExecutor` already encapsulate backend-specific logic. The new `RuntimeAdapter` interface is a thin uniform shell around those.
@@ -39,6 +48,8 @@ New contract package defining all runtime-layer types:
 - `sessions.ts` — `RuntimeSessionCreateInput`, `RuntimeSessionState`
 - `adapter.ts` — `RuntimeAdapter` interface
 - `index.ts` — barrel export
+
+Any workspace-related fields added here should remain substrate-oriented and must not hard-code host-root resolution or commit policy.
 
 ### `src/runtime/` (new)
 

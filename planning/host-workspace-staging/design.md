@@ -17,6 +17,15 @@ Why this fits the current architecture:
 - the current runtime-contract plan already anticipates `copy-in`, `copy-out`, and `workspace-materialize`, so this narrows that work instead of inventing a parallel system
 - it avoids turning `or3-net` into a separate blob-store-backed filesystem product
 
+### Scope boundary
+
+This design starts after the reusable runtime substrate from `planning/runtime-contract/design.md` exists.
+
+- It extends runtime sessions with host-owned staging behavior.
+- It owns host-specific semantics only: canonical host root resolution, selected-path staging, base manifest capture, conflict-safe commit, discard, and host-backed write coordination.
+- It does **not** redefine the generic runtime adapter contract, registry, runtime catalog, or baseline runtime session lifecycle.
+- Sandbox import/export remains substrate support; host validation and host writes remain in this design.
+
 ---
 
 ## Affected areas
@@ -24,11 +33,11 @@ Why this fits the current architecture:
 ### `or3-net`
 
 - `planning/runtime-contract/*`
-  - narrow the runtime-contract scope so host-workspace staging becomes the primary file-transfer model
+  - narrow the runtime-contract scope so host-workspace staging becomes the primary staged-workspace model without redefining generic runtime substrate ownership
 - `planning/main/*`
   - align host API and security docs with explicit host-staging terminology
 - `src/contracts/runtime/*`
-  - add or reduce types around `workspace_source`, `workspace_paths`, `workspace_mode`, staging transport, and commit results
+  - extend generic runtime session types only where host staging needs additional fields such as `workspace_source`, `workspace_paths`, `workspace_mode`, staging transport, and commit results
 - `src/runtime/sessions.ts`
   - own prepare, commit, discard, and reconcile behavior for host-staged sessions
 - `src/runtime/adapters/sandbox.ts`

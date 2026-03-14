@@ -1,20 +1,28 @@
 # Host-Owned Workspace Staging — Tasks
 
+## Dependency and scope note
+
+This task list starts **after** the reusable runtime substrate from `planning/runtime-contract/tasks.md` is in place.
+
+- It extends runtime sessions with host-owned staging behavior.
+- It does **not** redefine the generic runtime contract, registry, adapter lifecycle, or runtime catalog APIs.
+- It owns host-specific semantics only: canonical host root resolution, selected-path manifests, conflict-safe commit, discard, and host-backed write coordination.
+
 ## 1. Cross-project planning alignment
 
 - [ ] [Req 1-9] Project: `or3-net` — add a short cross-link from `planning/runtime-contract/requirements.md` and `planning/runtime-contract/design.md` to this plan as the smaller host-owned workspace option.
 - [ ] [Req 1-9] Project: `or3-net` — update `planning/runtime-contract/tasks.md` so `workspace-materialize` work is explicitly scoped to host staging and explicit commit, not a distributed workspace store.
 - [ ] [Req 1, 3, 4, 7] Project: `or3-net` — update `planning/main/04-host-api.md` and `planning/main/03-security-model.md` to describe host-owned staging, explicit commit, and sandbox import/export boundaries.
 
-## 2. `or3-net` requirements and contract work
+## 2. `or3-net` host-staging contract extension work
 
-- [ ] [Req 2, 3, 4, 5] Project: `or3-net` — extend the planned runtime contract in `src/contracts/runtime/` with host-staging concepts:
+- [ ] [Req 2, 3, 4, 5] Project: `or3-net` — after `runtime-contract` Phase 1-4 is complete, extend the runtime session contract in `src/contracts/runtime/` with the host-staging-specific fields needed by this plan:
   - `workspace_stage`
   - `workspace_stage_mode`
   - `workspace_stage_transport`
   - `WorkspaceCommitResult`
-- [ ] [Req 2, 5, 9] Project: `or3-net` — decide whether `runtime_sessions` gets explicit staging columns (`host_workspace_root`, `workspace_stage_mode`, `staging_status`) or a smaller hybrid of columns plus `config_json`, and document that choice in `planning/runtime-contract/design.md`.
-- [ ] [Req 4, 5, 9] Project: `or3-net` — define normalized runtime error codes for:
+- [ ] [Req 2, 5, 9] Project: `or3-net` — extend `runtime_sessions` persistence with the host-staging metadata this plan needs (`host_workspace_root`, `workspace_stage_mode`, `staging_status`, or a documented hybrid with `config_json`) without reopening the generic runtime-session schema design.
+- [ ] [Req 4, 5, 9] Project: `or3-net` — add host-staging-specific normalized error codes on top of the runtime error model for:
   - stale host write conflict
   - unsupported staging transport
   - workspace root missing
@@ -41,18 +49,18 @@
   - reject stale writes
   - apply safe host updates
   - release write coordination on success or terminal failure
-- [ ] [Req 2, 4, 6] Project: `or3-net` — expose explicit runtime session operations in `src/api/app.ts` for:
+- [ ] [Req 2, 4, 6] Project: `or3-net` — extend the runtime-session API in `src/api/app.ts` with explicit staged-session operations only after the generic runtime-session routes already exist:
   - prepare/create staged session
   - commit session changes
   - discard staged session
   - inspect staged status or changed paths summary
 - [ ] [Req 6] Project: `or3-net` — keep artifact persistence and preview flows separate from commit logic; update `runtime_artifacts` planning and API responses only where session summaries need commit metadata.
 
-## 4. `or3-net` sandbox adapter and SDK work
+## 4. `or3-net` sandbox substrate integration work
 
-- [ ] [Req 3, 7] Project: `or3-net` — extend `sdk/sandbox/types.ts` and `sdk/sandbox/client.ts` with archive import/export methods if `or3-sandbox` adds bulk endpoints.
+- [ ] [Req 3, 7] Project: `or3-net` — extend `sdk/sandbox/types.ts` and `sdk/sandbox/client.ts` with archive import/export methods if `or3-sandbox` adds bulk endpoints; do not re-specify the generic sandbox runtime adapter lifecycle here.
 - [ ] [Req 3, 7] Project: `or3-net` — keep existing `readFile`, `writeFile`, `deleteFile`, and `mkdir` flows as a bounded fallback path for small transfers.
-- [ ] [Req 2, 3, 7] Project: `or3-net` — update the planned sandbox runtime adapter so workspace staging chooses:
+- [ ] [Req 2, 3, 7] Project: `or3-net` — extend the existing sandbox runtime adapter so host workspace staging chooses:
   - archive transfer when available
   - file API fallback when bulk transfer is unavailable or too small to justify archive packaging
 
@@ -75,7 +83,7 @@
 
 - [ ] [Req 1, 2, 3, 4] Project: `or3-net` — add unit tests for host root normalization, selected-path manifest capture, archive/file fallback selection, and commit diff classification.
 - [ ] [Req 4, 5, 9] Project: `or3-net` — add regression tests for stale host writes, read-only commit rejection, partial commit failure handling, and restart reconciliation releasing stale writer state.
-- [ ] [Req 3, 7] Project: `or3-net` — add integration tests with fake sandbox client coverage for:
+- [ ] [Req 3, 7] Project: `or3-net` — add host-staging integration tests with fake sandbox client coverage for:
   - archive prepare/commit
   - file API fallback prepare/commit
   - unavailable bulk transport -> fallback or normalized error

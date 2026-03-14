@@ -8,7 +8,16 @@
 4. **Session service:** Build the session lifecycle service on top of registry + DB.
 5. **Adapters:** Implement `or3-sandbox` first (most complete existing infrastructure), then `remote-node-agent`, then `local-container`.
 6. **API routes:** Wire routes last, after the service layer is tested.
-7. **Cross-link:** Update desktop and main planning docs after the contract is stable.
+7. **Host-staging handoff:** Only after the generic runtime substrate is stable, extend it for host-owned workspace staging as described in `planning/runtime-host-implementation-order.md`.
+8. **Cross-link:** Update desktop and main planning docs after the contract is stable.
+
+### Scope guard for this task list
+
+This task list owns the reusable runtime substrate only.
+
+- It defines generic runtime contracts, session lifecycle, persistence, adapters, and runtime APIs.
+- It does **not** own host workspace root resolution, base manifest capture, stale-write conflict checks, explicit host commit/discard flows, or single-writer coordination for host-backed staged sessions.
+- `workspace-materialize` in this plan must stay compatible with the smaller host-owned staging model from `planning/host-workspace-staging/` and must not grow into a distributed workspace store.
 
 ---
 
@@ -17,6 +26,7 @@
 ### 1. Core capability types (`src/contracts/runtime/capabilities.ts`) [Req 3]
 
 - [ ] Define `runtimeCoreCapabilityValues` const array with all core capabilities: `exec`, `stop`, `resume`, `copy-in`, `copy-out`, `file-browse`, `file-rw`, `workspace-materialize`, `log-stream`, `service-expose`, `snapshot`, `artifact-push`, `internet`, `public-ingress`, `persistent-session`, `browser`, `package-install`, `secret-inject`, `workspace-write`.
+- [ ] Document `workspace-materialize` in this phase as a generic staged-workspace capability only; defer host-root resolution and commit semantics to `planning/host-workspace-staging/tasks.md`.
 - [ ] Define `runtimeCapabilitySchema` that accepts core capabilities or `ext:<adapter>:<name>` extensions.
 - [ ] Export `RuntimeCapability` type and `RuntimeCapabilitySet` (array with `.includes()` check helper).
 
@@ -46,6 +56,7 @@
 ### 5. Session input types (`src/contracts/runtime/sessions.ts`) [Req 5]
 
 - [ ] Define `runtimeSessionCreateInputSchema`: `preset_id`, `required_capabilities`, `workspace_ref`, `workspace_mode`, `network_policy`, `resource_hints`, `persistence_mode`, `env_refs`, `secret_refs`, `timeout_rules`, `artifact_rules`.
+- [ ] Keep workspace-related fields generic in this phase; do not embed host-root resolution, selected-path manifests, or explicit host commit rules here until the host-staging layer is added.
 - [ ] Define `runtimeSessionStateValues`: `creating`, `ready`, `stopping`, `stopped`, `destroying`, `destroyed`, `failed`.
 
 ### 6. Artifact descriptor (`src/contracts/runtime/artifacts.ts`) [Req 8]
@@ -66,6 +77,7 @@
 - [ ] Define `RuntimeAdapterHealth` type: `status`, `message`, `checked_at`.
 - [ ] Define `RuntimeAdapterSessionHandle` type: `ref`, `adapter_id`, `status`.
 - [ ] Define input/output types for `copyIn`, `copyOut`, `getLogs`, `fileBrowse`, `fileRead`, `fileWrite`, `materializeWorkspace`, `exposeService`, `snapshot`, `pushArtifact`.
+- [ ] Keep `materializeWorkspace` substrate-oriented in this phase; host-side manifests, conflict detection, and commit application belong to the host-staging plan.
 
 ### 9. Platform error code additions (`src/contracts/platform/error-codes.ts`) [Req 7]
 
@@ -188,6 +200,7 @@
 - [ ] `getLogs(workspaceId, sessionId, input)`: delegate to adapter.
 - [ ] `copyIn(workspaceId, sessionId, input)`: verify capability, delegate.
 - [ ] `copyOut(workspaceId, sessionId, input)`: verify capability, delegate.
+- [ ] Do not implement host workspace prepare / commit / discard flows in this phase; those are follow-on tasks under `planning/host-workspace-staging/tasks.md`.
 
 ### 20. Restart reconciliation (`src/runtime/sessions.ts`) [Req 13]
 
@@ -226,6 +239,7 @@
 - [ ] `health()` → `SandboxClient.runtimeHealth()`.
 - [ ] `listNodes()` → single virtual node from `SandboxClient.runtimeInfo()`.
 - [ ] Map `SandboxRequestError` to `RuntimeError`.
+- [ ] Keep sandbox workspace support limited to generic transfer/materialization substrate in this phase; explicit host staging prepare/commit flows are handled later by `host-workspace-staging`.
 
 ### 23. `or3-sandbox` parity tests (`tests/runtime/adapters/`) [Req 10]
 
