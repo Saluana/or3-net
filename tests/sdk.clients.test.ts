@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { HttpInternClient } from "../sdk/intern/client.ts";
 import { HttpSandboxClient } from "../sdk/sandbox/client.ts";
+import { isInternSubagentsUnavailable } from "../sdk/intern/index.ts";
 
 describe("HTTP SDK clients", () => {
   test("intern client sends service auth headers and parses multi-line SSE payloads", async () => {
@@ -323,6 +324,33 @@ describe("HTTP SDK clients", () => {
       "GET /internal/v1/jobs/job_1/stream",
       "POST /internal/v1/jobs/job_1/abort",
     ]);
+  });
+
+  test("treats subagent submission as capability-gated when upstream returns 503", async () => {
+    const client = new HttpInternClient({
+      baseUrl: "https://intern.test",
+      secret: "intern-secret",
+      fetch: (() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: "subagents disabled", code: "server_unavailable", status: 503 }), {
+            status: 503,
+            headers: { "Content-Type": "application/json" },
+          }),
+        )) as unknown as typeof fetch,
+    });
+
+    let subagentError: unknown;
+    try {
+      await client.spawnSubagent({
+        parentSessionKey: "svc:parent",
+        task: "do the thing",
+        promptSnapshot: [{ role: "user", content: "hi" }],
+      });
+    } catch (error: unknown) {
+      subagentError = error;
+    }
+
+    expect(isInternSubagentsUnavailable(subagentError)).toBeTrue();
   });
 });
 

@@ -802,6 +802,70 @@ describe("local job execution", () => {
     });
   });
 
+  test("can schedule a second remote job immediately after the first completes", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const manifest: UnsignedManifest = {
+      node_id: "node_remote_reuse",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote",
+      capabilities: ["exec"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["outbound-wss"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: false, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    const nodeRegistry = new NodeRegistryService({ database });
+    await nodeRegistry.enrollNode("ws_jobs", { ...manifest, signature: signNodeManifest(manifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_jobs", "node_remote_reuse");
+
+    const registry = new NodeTransportRegistry();
+    let executionCount = 0;
+    registry.registerNodeTransport("ws_jobs", "node_remote_reuse", {
+      kind: "outbound-wss",
+      startExecution: () => {
+        executionCount += 1;
+        return Promise.resolve({
+          nodeId: "node_remote_reuse",
+          result: Promise.resolve({ output_text: `remote complete ${String(executionCount)}`, artifacts: [], meta: { run: executionCount } }),
+          abort: () => Promise.resolve(),
+        });
+      },
+    });
+
+    const service = new LocalJobService({
+      database,
+      internClient: new ScriptedInternClient(() => emptyAsyncIterable()),
+      streamBroker: new JobStreamBroker(),
+      leaseScheduler: new LeaseScheduler({ database }),
+      remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
+    });
+
+    const first = service.submitJob("ws_jobs", {
+      session_key: "svc:remote-reuse-1",
+      message: "first",
+      execution_target: "remote",
+    });
+
+    await waitFor(() => {
+      expect(service.getJob("ws_jobs", first.job_id).job.status).toBe("completed");
+      expect(database.workspace("ws_jobs").listLeases()[0]?.lease.state).toBe("released");
+    });
+
+    const second = service.submitJob("ws_jobs", {
+      session_key: "svc:remote-reuse-2",
+      message: "second",
+      execution_target: "remote",
+    });
+
+    await waitFor(() => {
+      expect(service.getJob("ws_jobs", second.job_id).job.status).toBe("completed");
+    });
+
+    expect(executionCount).toBe(2);
+    expect(database.workspace("ws_jobs").listLeases().every((lease) => lease.lease.state === "released")).toBeTrue();
+  });
+
   test("repairs startup state by failing orphaned jobs and releasing ghost leases", () => {
     database.workspace("ws_jobs").saveNode({
       manifest: {

@@ -795,13 +795,42 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       previewLaunchTokens: Map<string, Set<string>>;
       scopedLaunchTokens: Map<string, Set<string>>;
       launchCapabilities: Map<string, { grant: { revoked_at: string | null } }>;
+      revokedLaunchCapabilities: Map<string, { revoked_at: string; expires_at: string }>;
     };
     const revokedPreviewToken = previewLaunch.launch_url.split("/").pop();
 
     expect(launchState.previewLaunchTokens.has("preview_cleanup")).toBeFalse();
     expect(launchState.scopedLaunchTokens.has("service:node_cleanup:openclaw")).toBeFalse();
     expect(revokedPreviewToken).toBeDefined();
-    expect(launchState.launchCapabilities.get(revokedPreviewToken ?? "")?.grant.revoked_at).toBeString();
+    expect(launchState.launchCapabilities.has(revokedPreviewToken ?? "")).toBeFalse();
+    expect(launchState.revokedLaunchCapabilities.get(revokedPreviewToken ?? "")?.revoked_at).toBeString();
+  });
+
+  test("keeps capability state bounded across repeated service launch and revoke cycles", () => {
+    const launchState = previewService as unknown as {
+      launchCapabilities: Map<string, unknown>;
+      scopedLaunchTokens: Map<string, Set<string>>;
+      revokedLaunchCapabilities: Map<string, { revoked_at: string; expires_at: string }>;
+    };
+
+    for (let index = 0; index < 400; index += 1) {
+      previewService.mintLaunchCapability({
+        workspace_id: "ws_preview",
+        scope_key: "service:node_bounded:openclaw",
+        target_url: `https://launch.local/service-bounded/${String(index)}`,
+        delivery_mode: "external",
+        supports_iframe: false,
+        supports_new_tab: true,
+        reused_tunnel: false,
+        service_status: "ready",
+        expires_at: "2099-01-01T00:00:00.000Z",
+      });
+      previewService.revokeLaunchScope("service:node_bounded:openclaw");
+    }
+
+    expect(launchState.launchCapabilities.size).toBe(0);
+    expect(launchState.scopedLaunchTokens.has("service:node_bounded:openclaw")).toBeFalse();
+    expect(launchState.revokedLaunchCapabilities.size).toBeLessThanOrEqual(256);
   });
 });
 

@@ -2,8 +2,8 @@
 
 ## 1. Preconditions and dependency alignment
 
-- [ ] [R4, R9] Link the desktop plan explicitly to `planning/remote-execution-completion`, `planning/operator-session-completion`, and `planning/chat-v1-integration` as prerequisites rather than parallel optional work.
-- [ ] [R4, R5] Identify the missing host/operator/provider catalog routes that desktop depends on and record them as host-side prerequisites rather than desktop-owned workarounds.
+- [ ] [R4, R9] Link the desktop plan explicitly to `planning/remote-execution-completion`, `planning/operator-session-completion`, `planning/chat-v1-integration`, and `planning/runtime-contract` as prerequisites rather than parallel optional work.
+- [ ] [R4, R5] Identify the missing host/operator/provider catalog routes that desktop depends on and record them as host-side prerequisites rather than desktop-owned workarounds. The runtime catalog and runtime session routes are now planned in `planning/runtime-contract/`.
 - [ ] [R4, R7] Reconfirm the local sandbox posture against `/Users/brendon/Documents/or3-sandbox/docs/runtimes.md` and related QEMU/HVF docs so desktop claims stay aligned with the actual sandbox runtime posture.
 
 ## 2. Repo and package scaffolding
@@ -14,8 +14,10 @@
 
 ## 3. Host API and registry groundwork
 
-- [ ] [R4, R5] Extend `src/contracts/*.ts` planning scope with runtime-provider, service-app, and capability metadata shapes.
-- [ ] [R4, R5] Extend `src/api/app.ts` planning scope with operator routes and provider catalog routes required by desktop.
+> **Cross-ref:** Runtime-provider contracts, adapter registry, runtime session APIs, and catalog routes are defined in `planning/runtime-contract/`. Desktop consumes those contracts rather than defining its own.
+
+- [ ] [R4, R5] Extend `src/contracts/*.ts` planning scope with runtime-provider, service-app, and capability metadata shapes. Runtime-provider shapes are now in `planning/runtime-contract/` (`RuntimeDescriptor`, `RuntimeNodeDescriptor`, `RuntimeAdapterManifest`).
+- [ ] [R4, R5] Extend `src/api/app.ts` planning scope with operator routes and provider catalog routes required by desktop. Runtime catalog and runtime session routes are defined in `planning/runtime-contract/tasks.md` Phase 6.
 - [ ] [R4, R5] Reuse existing auth, session, preview, and service behavior in the host plan and explicitly reject SSH or direct remote-machine bypass paths.
 - [ ] [R5, R9] Keep provider registries distinct from the existing `or3-chat` tool registry and admin extension systems.
 

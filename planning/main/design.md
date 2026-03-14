@@ -1,5 +1,7 @@
 # OR3 Network v1 — Technical Design
 
+> **Cross-ref:** A typed runtime adapter contract wrapping the node protocol layer is planned in `planning/runtime-contract/`. It adds `RuntimeAdapter`, `RuntimeRegistry`, runtime session management, and public runtime catalog/session APIs above the existing node RPC and transport infrastructure described below.
+
 ## Overview
 
 OR3 Network (`or3-net`) is a Bun/TypeScript application that serves as the control and communications layer for the OR3 ecosystem. It sits between client applications (or3-chat, CLI, third-party SDKs) and the execution infrastructure (or3-intern + or3-sandbox nodes).

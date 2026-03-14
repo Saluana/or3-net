@@ -74,6 +74,9 @@ export class InternRequestError extends Error {
   }
 }
 
+export const isInternSubagentsUnavailable = (error: unknown): error is InternRequestError =>
+  error instanceof InternRequestError && (error.status === 404 || error.status === 503);
+
 export interface InternClient {
   submitTurn(request: InternTurnRequest): Promise<InternTurnResponse>;
   submitTurnStream(request: InternTurnRequest): AsyncIterable<InternJobEvent>;

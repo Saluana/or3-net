@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import type { SessionProofValidator } from "../src/auth/service.ts";
-import { AuthService, createControlPlaneDatabase, handleAppRequest, LocalJobService, Or3NetApp } from "../src/index.ts";
+import { AuthService, createControlPlaneDatabase, handleAppRequest, LocalJobService, Or3NetApp, PreviewService } from "../src/index.ts";
 import { issueWorkspaceToken } from "../src/auth/tokens.ts";
 import type { InternAbortResponse, InternClient, InternJobEvent, InternSubagentRequest, InternSubagentResponse, InternTurnRequest, InternTurnResponse } from "../sdk/intern/index.ts";
 import { JobStreamBroker } from "../src/execution/job-streams.ts";
@@ -515,10 +515,59 @@ describe("phase 2 host API", () => {
     expect(response.status).toBe(400);
     expect(response.headers.get("X-Request-Id")).toBe("req_malformed_json");
     expect(await response.json()).toEqual({
-      error: "malformed request body",
+      error: "invalid JSON body",
       code: "input.malformed_body",
       status: 400,
       request_id: "req_malformed_json",
+    });
+  });
+
+  test("returns a stable 400 for malformed preview launch JSON bodies", async () => {
+    const previewService = new PreviewService(database);
+    previewService.registerPreview("ws_test", {
+      preview_id: "preview_json",
+      workspace_id: "ws_test",
+      kind: "static-site",
+      delivery_mode: "embedded-preferred",
+      source_type: "files",
+      status: "ready",
+      path: "/index.html",
+      supports_iframe: true,
+      supports_new_tab: true,
+    });
+
+    const { api_key: previewKey } = await authService.createApiKey({
+      workspace_id: "ws_test",
+      name: "preview-reader",
+      scopes: ["previews:read"],
+    });
+
+    const previewApp = new Or3NetApp({
+      database,
+      authService,
+      localJobService: new LocalJobService({ database, internClient }),
+      previewService,
+    });
+
+    const response = await handleAppRequest(
+      previewApp,
+      new Request("http://or3.test/v1/workspaces/ws_test/previews/preview_json/launch", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${previewKey}`,
+          "Content-Type": "application/json",
+          "X-Request-Id": "req_preview_bad_json",
+        },
+        body: "{",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "invalid JSON body",
+      code: "input.malformed_body",
+      status: 400,
+      request_id: "req_preview_bad_json",
     });
   });
 

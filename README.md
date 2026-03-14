@@ -20,6 +20,8 @@ bun run typecheck && bun run lint && bun test
 bun run cli -- help
 bun run cli -- auth exchange --workspace-id ws_demo
 bun run cli -- nodes list --workspace-id ws_demo --token <token>
+ bun run cli -- jobs list --workspace-id ws_demo --token <token>
+ bun run cli -- api-keys list --workspace-id ws_demo --token <token>
 bun run cli -- jobs submit --workspace-id ws_demo --token <token> --session-key svc:demo --message "hello"
 ```
 
@@ -30,7 +32,9 @@ The built-in operator console is served at `/console` by the Bun server. It prov
 ## Contract and Config Alignment
 
 - Contract fixtures and boundary notes live under [planning/platform-standardization](planning/platform-standardization).
+- Hardening-specific contract notes live in [planning/control-plane-hardening/compatibility-notes.md](planning/control-plane-hardening/compatibility-notes.md).
 - Canonical deployment env prefixes are `OR3_NET_*`, `OR3_INTERN_*`, and `OR3_SANDBOX_*`; orchestration should translate those into repo-native runtime settings before each process starts.
 - Shared secret precedence is launch-time env or mounted secret paths → instance-local config → repo defaults.
 - Cross-repo key mapping and secret ownership are documented in [planning/platform-standardization/config-alignment.md](planning/platform-standardization/config-alignment.md).
 - Contract fixture drift is enforced in CI via [.github/workflows/contracts.yml](.github/workflows/contracts.yml).
+- `or3-intern` subagents are treated as an optional capability: `POST /internal/v1/subagents` may return `503` when upstream subagents are disabled, so callers should treat that endpoint as capability-gated rather than universally available.

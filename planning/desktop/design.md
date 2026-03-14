@@ -23,9 +23,11 @@ This fits the current architecture because `or3-net` already owns jobs, sessions
 
 ### Existing `or3-net` host code
 
+> **Cross-ref:** Runtime-provider contracts, adapter registry, and runtime session/catalog routes are planned in `planning/runtime-contract/`. Desktop consumes `RuntimeDescriptor`, `RuntimeNodeDescriptor`, and the `/v1/workspaces/:wsId/runtimes` and `/v1/workspaces/:wsId/runtime-sessions` route families.
+
 - `/Users/brendon/Documents/or3-net/src/api/app.ts`
-  - add the operator and provider-catalog routes desktop depends on
-- `/Users/brendon/Documents/or3-net/src/contracts/*.ts`
+  - add the operator and provider-catalog routes desktop depends on (runtime routes defined in `planning/runtime-contract/`)
+- `/Users/brendon/Documents/or3-net/src/contracts/*.ts` and `src/contracts/runtime/`
   - extend contract metadata with runtime-provider, service-app, and desktop-facing capability shapes
 - `/Users/brendon/Documents/or3-net/src/execution/**`
   - reused for host-side job, status, and session workflows surfaced to desktop

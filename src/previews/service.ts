@@ -47,6 +47,8 @@ export class PreviewService {
   private readonly launchCapabilities = new Map<string, LaunchCapabilityRecord>();
   private readonly previewLaunchTokens = new Map<string, Set<string>>();
   private readonly scopedLaunchTokens = new Map<string, Set<string>>();
+  private readonly revokedLaunchCapabilities = new Map<string, { revoked_at: string; expires_at: string }>();
+  private readonly maxRevokedLaunchCapabilities = 256;
 
   public constructor(private readonly database: ControlPlaneDatabase) {}
 
@@ -182,13 +184,13 @@ export class PreviewService {
 
   public resolveLaunchCapability(token: string, requestedPath?: string): ResolvedLaunchCapability {
     this.pruneExpiredLaunchCapabilities();
+    const revokedCapability = this.revokedLaunchCapabilities.get(token);
+    if (revokedCapability !== undefined) {
+      throw new PreviewStateError(403, "launch capability has been revoked");
+    }
     const capability = this.launchCapabilities.get(token);
     if (capability === undefined) {
       throw new PreviewStateError(410, "launch capability has expired");
-    }
-    if (capability.grant.revoked_at !== null) {
-      this.removeCapabilityFromIndexes(token, capability);
-      throw new PreviewStateError(403, "launch capability has been revoked");
     }
     if (Date.parse(capability.grant.expires_at) <= Date.now()) {
       this.deleteLaunchCapability(token, capability);
@@ -219,18 +221,18 @@ export class PreviewService {
     let revokedCount = 0;
     for (const token of tokens) {
       const capability = this.launchCapabilities.get(token);
-      if (capability?.grant.revoked_at !== null) {
+      if (capability === undefined) {
         continue;
       }
 
-      this.launchCapabilities.set(token, {
+      const revokedCapability: LaunchCapabilityRecord = {
         ...capability,
         grant: {
           ...capability.grant,
           revoked_at: new Date().toISOString(),
         },
-      });
-      this.removeCapabilityFromIndexes(token, capability);
+      };
+      this.deleteLaunchCapability(token, revokedCapability, "revoked");
       revokedCount += 1;
     }
     this.scopedLaunchTokens.delete(scopeKey);
@@ -246,14 +248,14 @@ export class PreviewService {
     for (const token of tokens) {
       const capability = this.launchCapabilities.get(token);
       if (capability !== undefined) {
-        this.launchCapabilities.set(token, {
+        const revokedCapability: LaunchCapabilityRecord = {
           ...capability,
           grant: {
             ...capability.grant,
             revoked_at: new Date().toISOString(),
           },
-        });
-        this.removeCapabilityFromIndexes(token, capability);
+        };
+        this.deleteLaunchCapability(token, revokedCapability, "revoked");
       }
     }
 
@@ -329,11 +331,40 @@ export class PreviewService {
         this.deleteLaunchCapability(token, capability);
       }
     }
+
+    for (const [token, capability] of this.revokedLaunchCapabilities.entries()) {
+      if (Date.parse(capability.expires_at) <= nowMs) {
+        this.revokedLaunchCapabilities.delete(token);
+      }
+    }
+
+    while (this.revokedLaunchCapabilities.size > this.maxRevokedLaunchCapabilities) {
+      const oldest = this.revokedLaunchCapabilities.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      this.revokedLaunchCapabilities.delete(oldest);
+    }
   }
 
-  private deleteLaunchCapability(token: string, capability: LaunchCapabilityRecord): void {
+  private deleteLaunchCapability(token: string, capability: LaunchCapabilityRecord, reason: "expired" | "revoked" = "expired"): void {
     this.launchCapabilities.delete(token);
     this.removeCapabilityFromIndexes(token, capability);
+    if (reason === "revoked" && capability.grant.revoked_at !== null) {
+      this.revokedLaunchCapabilities.set(token, {
+        revoked_at: capability.grant.revoked_at,
+        expires_at: capability.grant.expires_at,
+      });
+      while (this.revokedLaunchCapabilities.size > this.maxRevokedLaunchCapabilities) {
+        const oldest = this.revokedLaunchCapabilities.keys().next().value;
+        if (oldest === undefined) {
+          break;
+        }
+        this.revokedLaunchCapabilities.delete(oldest);
+      }
+    } else {
+      this.revokedLaunchCapabilities.delete(token);
+    }
   }
 
   private removeCapabilityFromIndexes(token: string, capability: LaunchCapabilityRecord): void {

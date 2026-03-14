@@ -782,7 +782,7 @@ const readJsonBody = async (request: Request): Promise<unknown> => {
     return await request.json();
   } catch (error) {
     if (error instanceof SyntaxError) {
-      throw new HttpError(400, "malformed request body", { code: platformErrorCodes.inputMalformedBody });
+      throw new HttpError(400, "invalid JSON body", { code: platformErrorCodes.inputMalformedBody });
     }
     throw error;
   }
@@ -797,7 +797,7 @@ const readOptionalJson = async (request: Request): Promise<unknown> => {
     return JSON.parse(text) as unknown;
   } catch (error) {
     if (error instanceof SyntaxError) {
-      throw new HttpError(400, "malformed request body", { code: platformErrorCodes.inputMalformedBody });
+      throw new HttpError(400, "invalid JSON body", { code: platformErrorCodes.inputMalformedBody });
     }
     throw error;
   }

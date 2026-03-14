@@ -69,13 +69,15 @@ Scope assumptions:
 
 ### 5. Runtime and service extensibility must be registry-based
 
+> **Cross-ref:** The runtime-provider registry, adapter contract, capability system, and runtime catalog/session APIs are planned in `planning/runtime-contract/`. This desktop requirement is satisfied by consuming those contracts.
+
 **Requirement:** As a platform developer, I need a provider model that supports multiple runtimes and launchable services without hard-coding OR3 around a single backend or app.
 
 **Acceptance criteria:**
 
-- `or3-net` exposes a runtime-provider registry for execution backends such as `or3-intern` and `nullclaw`.
+- `or3-net` exposes a runtime-provider registry for execution backends such as `or3-intern` and `nullclaw`. (Planned in `planning/runtime-contract/` as `RuntimeRegistry` with `RuntimeAdapterManifest`.)
 - `or3-net` exposes a service or app registry for launchable UIs such as `openclaw`.
-- Both desktop and browser clients render available actions from capability metadata rather than service-specific hard-coded branches.
+- Both desktop and browser clients render available actions from capability metadata rather than service-specific hard-coded branches. (Planned in `planning/runtime-contract/` as `RuntimeDescriptor` with strongly typed capabilities.)
 - The runtime-provider registry and service or app registry stay distinct from the existing `or3-chat` tool registry and admin extension systems.
 
 ### 6. Desktop must support full-stack updates as a first-class workflow
