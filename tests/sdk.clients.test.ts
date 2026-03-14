@@ -26,18 +26,49 @@ describe("HTTP SDK clients", () => {
       fetch: fetchImpl,
     });
 
-    const events = await collect(client.submitTurnStream({ sessionKey: "svc:test", message: "hello" }));
+    const events = await collect(client.submitTurnStream({
+      sessionKey: "svc:test",
+      platformSessionRef: {
+        workspace_id: "ws_test",
+        client_kind: "chat",
+        client_session_id: "thread_1",
+        network_session_id: "sess_1",
+        session_key: "svc:test",
+      },
+      requestContext: {
+        requestId: "req_sdk_turn",
+        workspaceId: "ws_test",
+        networkSessionId: "sess_1",
+      },
+      message: "hello",
+    }));
 
     expect(events).toEqual([
       { event: "tool_result", data: { job_id: "job_1", result: { ok: true }, name: "shell" } },
       { event: "completion", data: { job_id: "job_1", status: "completed", final_text: "done" } },
     ]);
     expect(requests).toHaveLength(1);
-    expect(requests[0]?.headers.get("Authorization")).toMatch(/^Bearer /);
-    expect(requests[0]?.headers.get("Accept")).toBe("text/event-stream");
-    expect(requests[0]?.headers.get("Content-Type")).toBe("application/json");
-    await expect(requests[0]?.clone().json()).resolves.toEqual({
+    const firstRequest = requests[0];
+    expect(firstRequest).toBeDefined();
+    if (firstRequest === undefined) {
+      throw new Error("expected first request");
+    }
+
+    expect(firstRequest.headers.get("Authorization")).toMatch(/^Bearer /);
+    expect(firstRequest.headers.get("Accept")).toBe("text/event-stream");
+    expect(firstRequest.headers.get("Content-Type")).toBe("application/json");
+    expect(firstRequest.headers.get("X-Request-Id")).toBe("req_sdk_turn");
+    expect(firstRequest.headers.get("X-Workspace-Id")).toBe("ws_test");
+    expect(firstRequest.headers.get("X-Network-Session-Id")).toBe("sess_1");
+    expect(await firstRequest.clone().json()).toEqual({
       session_key: "svc:test",
+      platform_session_ref: {
+        workspace_id: "ws_test",
+        client_kind: "chat",
+        client_session_id: "thread_1",
+        network_session_id: "sess_1",
+        session_key: "svc:test",
+      },
       message: "hello",
     });
   });
@@ -60,6 +91,11 @@ describe("HTTP SDK clients", () => {
       parentSessionKey: "svc:parent",
       task: "do the thing",
       promptSnapshot: [{ role: "user", content: "hi" }],
+      requestContext: {
+        requestId: "req_sdk_subagent",
+        workspaceId: "ws_test",
+        networkSessionId: "sess_parent",
+      },
       allowedTools: ["shell"],
       timeoutSeconds: 30,
       profileName: "fast",
@@ -68,7 +104,16 @@ describe("HTTP SDK clients", () => {
     });
 
     expect(requests).toHaveLength(1);
-    await expect(requests[0]?.clone().json()).resolves.toEqual({
+    const subagentRequest = requests[0];
+    expect(subagentRequest).toBeDefined();
+    if (subagentRequest === undefined) {
+      throw new Error("expected subagent request");
+    }
+
+    expect(subagentRequest.headers.get("X-Request-Id")).toBe("req_sdk_subagent");
+    expect(subagentRequest.headers.get("X-Workspace-Id")).toBe("ws_test");
+    expect(subagentRequest.headers.get("X-Network-Session-Id")).toBe("sess_parent");
+    expect(await subagentRequest.clone().json()).toEqual({
       parent_session_key: "svc:parent",
       task: "do the thing",
       prompt_snapshot: [{ role: "user", content: "hi" }],
@@ -111,7 +156,9 @@ describe("HTTP SDK clients", () => {
       fetch: fetchImpl,
     });
 
-    const events = await collect(client.execStream("sbx_1", { command: ["echo", "hello"] }));
+    const events = await collect(
+      client.execStream("sbx_1", { command: ["echo", "hello"] }, { requestId: "req_sandbox", workspaceId: "ws_test" }),
+    );
 
     expect(events).toEqual([
       { event: "stdout", data: { chunk: "hello" } },
@@ -121,7 +168,60 @@ describe("HTTP SDK clients", () => {
     expect(requests[0]?.headers.get("Authorization")).toBe("Bearer sandbox-token");
     expect(requests[0]?.headers.get("Accept")).toBe("text/event-stream");
     expect(requests[0]?.headers.get("Content-Type")).toBe("application/json");
+    expect(requests[0]?.headers.get("X-Request-Id")).toBe("req_sandbox");
+    expect(requests[0]?.headers.get("X-Workspace-Id")).toBe("ws_test");
     expect(requests[0]?.url).toContain("/v1/sandboxes/sbx_1/exec?stream=1");
+  });
+
+  test("SDK clients surface parsed backend request errors and retry metadata", async () => {
+    const sandboxClient = new HttpSandboxClient({
+      baseUrl: "https://sandbox.test",
+      token: "sandbox-token",
+      fetch: (() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: "rate limited", code: "rate_limited", status: 429 }), {
+            status: 429,
+            headers: { "Content-Type": "application/json", "Retry-After": "3" },
+          }),
+        )) as unknown as typeof fetch,
+    });
+    const internClient = new HttpInternClient({
+      baseUrl: "https://intern.test",
+      secret: "intern-secret",
+      fetch: (() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: "intern unavailable", code: "server_unavailable", status: 503 }), {
+            status: 503,
+            headers: { "Content-Type": "application/json", "Retry-After": "2" },
+          }),
+        )) as unknown as typeof fetch,
+    });
+
+    let sandboxError: unknown;
+    try {
+      await sandboxClient.runtimeHealth();
+    } catch (error: unknown) {
+      sandboxError = error;
+    }
+    expect(sandboxError).toMatchObject({
+      name: "SandboxRequestError",
+      message: "rate limited",
+      status: 429,
+      retryAfterMs: 3000,
+    });
+
+    let internError: unknown;
+    try {
+      await collect(internClient.streamJob("job_1"));
+    } catch (error: unknown) {
+      internError = error;
+    }
+    expect(internError).toMatchObject({
+      name: "InternRequestError",
+      message: "intern unavailable",
+      status: 503,
+      retryAfterMs: 2000,
+    });
   });
 
   test("sandbox client exposes file, runtime, tunnel, and signed-url helper methods", async () => {

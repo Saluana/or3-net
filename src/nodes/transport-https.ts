@@ -1,12 +1,12 @@
 import { createId } from "../lib/ids.ts";
-import { nodeEventSchema, nodeResponseSchema, type NodeEvent, type NodeRequest, type NodeResponse } from "../contracts/index.ts";
+import { nodeEventSchema, nodeResponseSchema, type JobStreamEvent, type NodeEvent, type NodeRequest, type NodeResponse } from "../contracts/index.ts";
 
 import {
   nodeEventsToResult,
   normalizeNodeEvent,
   parseNodeResponseResult,
-  type NodeExecutionContext,
   type NodeExecutionHandle,
+  type NodeExecutionContext,
   type NodeRpcTransport,
 } from "./transport.ts";
 
@@ -60,9 +60,9 @@ export class HttpsNodeTransport implements NodeRpcTransport {
 
     const payload = (await response.json()) as NodeResponse | { events?: NodeEvent[] };
     const events = Array.isArray((payload as { events?: unknown }).events)
-      ? ((payload as { events: unknown[] }).events.map((event) => nodeEventSchema.parse(event)) as NodeEvent[])
+      ? ((payload as { events: unknown[] }).events.map((event) => nodeEventSchema.parse(event)))
       : [];
-    const fallback = "id" in payload ? parseNodeResponseResult(nodeResponseSchema.parse(payload as NodeResponse)) : undefined;
+    const fallback = "id" in payload ? parseNodeResponseResult(nodeResponseSchema.parse(payload)) : undefined;
 
     return {
       nodeId: context.nodeId,
@@ -83,11 +83,27 @@ export class HttpsNodeTransport implements NodeRpcTransport {
   }
 }
 
-const createNormalizedStream = async function* (events: readonly NodeEvent[]) {
-  for (const event of events) {
-    const normalized = normalizeNodeEvent(event);
-    if (normalized !== null) {
-      yield normalized;
-    }
-  }
-};
+const createNormalizedStream = (events: readonly NodeEvent[]): AsyncIterable<JobStreamEvent> => ({
+  [Symbol.asyncIterator](): AsyncIterator<JobStreamEvent> {
+    let index = 0;
+
+    return {
+      next(): Promise<IteratorResult<JobStreamEvent>> {
+        while (index < events.length) {
+          const event = events[index];
+          index += 1;
+          if (event === undefined) {
+            break;
+          }
+
+          const normalized = normalizeNodeEvent(event);
+          if (normalized !== null) {
+            return Promise.resolve({ done: false, value: normalized });
+          }
+        }
+
+        return Promise.resolve({ done: true, value: undefined });
+      },
+    };
+  },
+});

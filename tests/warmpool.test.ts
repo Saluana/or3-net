@@ -258,7 +258,13 @@ describe("warm pool manager", () => {
     });
     sandboxClient.setNextCreateStatus("starting");
 
-    await expect(manager.acquire("ws_timeout")).rejects.toThrow("did not become healthy");
+    try {
+      await manager.acquire("ws_timeout");
+      throw new Error("expected acquire to fail");
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("did not become healthy");
+    }
     expect(sandboxClient.deleted).toContain("sbx_1");
   });
 

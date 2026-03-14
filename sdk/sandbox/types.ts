@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { isoDateTimeSchema, jsonObjectSchema, nonEmptyStringSchema } from "../../src/contracts/shared.ts";
 
+export interface SandboxRequestContext {
+  readonly requestId?: string;
+  readonly workspaceId?: string;
+}
+
 export interface SandboxInfo {
   readonly id: string;
   readonly status: string;
@@ -71,6 +76,26 @@ export interface CreateTunnelSignedUrlRequest {
 export interface SandboxTunnelSignedUrl {
   readonly url: string;
   readonly expires_at: string;
+  readonly capability_id?: string;
+}
+
+export interface SandboxErrorResponse {
+  readonly error: string;
+  readonly code?: string;
+  readonly status?: number;
+}
+
+export class SandboxRequestError extends Error {
+  public override readonly name = "SandboxRequestError";
+
+  public constructor(
+    message: string,
+    public readonly status: number,
+    public readonly response?: SandboxErrorResponse,
+    public readonly retryAfterMs?: number,
+  ) {
+    super(message);
+  }
 }
 
 export interface RuntimeHealth {
@@ -78,42 +103,36 @@ export interface RuntimeHealth {
   readonly [key: string]: unknown;
 }
 
-export interface RuntimeInfo {
-  readonly [key: string]: unknown;
-}
+export type RuntimeInfo = Readonly<Record<string, unknown>>;
 
-export interface RuntimeCapacity {
-  readonly [key: string]: unknown;
-}
+export type RuntimeCapacity = Readonly<Record<string, unknown>>;
 
-export interface SandboxQuota {
-  readonly [key: string]: unknown;
-}
+export type SandboxQuota = Readonly<Record<string, unknown>>;
 
 export interface SandboxClient {
-  create(request: CreateSandboxRequest): Promise<SandboxInfo>;
-  list(): Promise<SandboxInfo[]>;
-  get(sandboxId: string): Promise<SandboxInfo>;
-  delete(sandboxId: string): Promise<void>;
-  start(sandboxId: string): Promise<SandboxInfo>;
-  stop(sandboxId: string): Promise<SandboxInfo>;
-  suspend(sandboxId: string): Promise<SandboxInfo>;
-  resume(sandboxId: string): Promise<SandboxInfo>;
-  exec(sandboxId: string, request: SandboxExecRequest): Promise<SandboxExecResult>;
-  execStream(sandboxId: string, request: SandboxExecRequest): AsyncIterable<SandboxExecEvent>;
-  readFile(sandboxId: string, path: string): Promise<SandboxFileContent>;
-  writeFile(sandboxId: string, request: SandboxWriteFileRequest): Promise<void>;
-  deleteFile(sandboxId: string, path: string): Promise<void>;
-  mkdir(sandboxId: string, path: string): Promise<void>;
-  createTunnel(sandboxId: string, request: CreateTunnelRequest): Promise<SandboxTunnel>;
-  listTunnels(sandboxId: string): Promise<SandboxTunnel[]>;
-  revokeTunnel(tunnelId: string): Promise<void>;
-  createSignedTunnelUrl(tunnelId: string, request?: CreateTunnelSignedUrlRequest): Promise<SandboxTunnelSignedUrl>;
-  runtimeInfo(): Promise<RuntimeInfo>;
-  runtimeHealth(): Promise<RuntimeHealth>;
-  runtimeCapacity(): Promise<RuntimeCapacity>;
-  getQuota(): Promise<SandboxQuota>;
-  getMetrics(): Promise<string>;
+  create(request: CreateSandboxRequest, requestContext?: SandboxRequestContext): Promise<SandboxInfo>;
+  list(requestContext?: SandboxRequestContext): Promise<SandboxInfo[]>;
+  get(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxInfo>;
+  delete(sandboxId: string, requestContext?: SandboxRequestContext): Promise<void>;
+  start(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxInfo>;
+  stop(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxInfo>;
+  suspend(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxInfo>;
+  resume(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxInfo>;
+  exec(sandboxId: string, request: SandboxExecRequest, requestContext?: SandboxRequestContext): Promise<SandboxExecResult>;
+  execStream(sandboxId: string, request: SandboxExecRequest, requestContext?: SandboxRequestContext): AsyncIterable<SandboxExecEvent>;
+  readFile(sandboxId: string, path: string, requestContext?: SandboxRequestContext): Promise<SandboxFileContent>;
+  writeFile(sandboxId: string, request: SandboxWriteFileRequest, requestContext?: SandboxRequestContext): Promise<void>;
+  deleteFile(sandboxId: string, path: string, requestContext?: SandboxRequestContext): Promise<void>;
+  mkdir(sandboxId: string, path: string, requestContext?: SandboxRequestContext): Promise<void>;
+  createTunnel(sandboxId: string, request: CreateTunnelRequest, requestContext?: SandboxRequestContext): Promise<SandboxTunnel>;
+  listTunnels(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxTunnel[]>;
+  revokeTunnel(tunnelId: string, requestContext?: SandboxRequestContext): Promise<void>;
+  createSignedTunnelUrl(tunnelId: string, request?: CreateTunnelSignedUrlRequest, requestContext?: SandboxRequestContext): Promise<SandboxTunnelSignedUrl>;
+  runtimeInfo(requestContext?: SandboxRequestContext): Promise<RuntimeInfo>;
+  runtimeHealth(requestContext?: SandboxRequestContext): Promise<RuntimeHealth>;
+  runtimeCapacity(requestContext?: SandboxRequestContext): Promise<RuntimeCapacity>;
+  getQuota(requestContext?: SandboxRequestContext): Promise<SandboxQuota>;
+  getMetrics(requestContext?: SandboxRequestContext): Promise<string>;
 }
 
 export const createSandboxRequestSchema = z.object({
@@ -162,6 +181,7 @@ export const sandboxTunnelSchema = z.object({
 export const sandboxTunnelSignedUrlSchema = z.object({
   url: nonEmptyStringSchema,
   expires_at: isoDateTimeSchema,
+	capability_id: nonEmptyStringSchema.optional(),
 });
 
 export const sandboxErrorResponseSchema = z.object({

@@ -24,7 +24,7 @@ describe("node transport abstraction", () => {
       fetch: ((_input, init) => {
         const payload = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as NodeRequest;
         seenMethods.push(`https:${payload.method}`);
-        seenAuth.push(init?.headers instanceof Headers ? (init.headers.get("Authorization") ?? "") : String((init?.headers as Record<string, string> | undefined)?.["Authorization"] ?? ""));
+        seenAuth.push(init?.headers instanceof Headers ? (init.headers.get("Authorization") ?? "") : ((init?.headers as Record<string, string> | undefined)?.["Authorization"] ?? ""));
         return Promise.resolve(new Response(
           JSON.stringify({
             id: payload.id,
@@ -35,13 +35,13 @@ describe("node transport abstraction", () => {
       }) as typeof fetch,
     });
     const wssTransport = new OutboundWssNodeTransport();
-    wssTransport.attachConnection("node_wss", async (payload, context) => {
+    wssTransport.attachConnection("node_wss", (payload, context) => {
       seenMethods.push(`outbound-wss:${payload.method}`);
       seenAuth.push(context.credential.token);
-      return {
+      return Promise.resolve({
         id: payload.id,
         result: { output_text: "remote ok", artifacts: [], meta: { via: "outbound-wss" } },
-      };
+      });
     });
 
     const registry = new NodeTransportRegistry();
@@ -119,7 +119,7 @@ describe("node transport abstraction", () => {
     const httpsTransport = new HttpsNodeTransport({
       endpoint: "https://node.example/rpc",
       fetch: ((_input) => {
-        const url = typeof _input === "string" ? _input : String(_input);
+        const url = toFetchInputUrl(_input);
         if (url.includes("/abort")) {
           return Promise.resolve(new Response(null, { status: 204 }));
         }
@@ -150,20 +150,20 @@ describe("node transport abstraction", () => {
       { event: "text.delta", data: { text: "halfway" } },
     ]);
     expect((await httpsRun.result).output_text).toBe("done");
-    await expect(httpsRun.abort()).resolves.toBeUndefined();
+    await httpsRun.abort();
 
     const wssTransport = new OutboundWssNodeTransport();
     let aborted = false;
-    wssTransport.attachConnection("node_wss", async (request) => {
+    wssTransport.attachConnection("node_wss", (request) => {
       if (request.method === "abort") {
         aborted = true;
-        return { id: request.id, result: { output_text: "aborted", artifacts: [], meta: {} } };
+        return Promise.resolve({ id: request.id, result: { output_text: "aborted", artifacts: [], meta: {} } });
       }
-      return { id: request.id, result: { output_text: "done", artifacts: [], meta: {} } };
-    }, async function* () {
-      yield { event: "progress", data: { percent: 25, message: "quarter" } };
-      yield { event: "complete", data: { output_text: "done", artifacts: [], meta: {} } };
-    });
+      return Promise.resolve({ id: request.id, result: { output_text: "done", artifacts: [], meta: {} } });
+    }, () => arrayAsyncIterable<NodeEvent>([
+      { event: "progress", data: { percent: 25, message: "quarter" } },
+      { event: "complete", data: { output_text: "done", artifacts: [], meta: {} } },
+    ]));
     const run = await wssTransport.startExecution(
       {
         workspace_id: "ws_transport",
@@ -193,17 +193,19 @@ describe("node transport abstraction", () => {
     let streamStarts = 0;
     wssTransport.attachConnection(
       "node_wss_single_consumer",
-      async (request) => ({
+      (request) => Promise.resolve({
         id: request.id,
         result: { output_text: "done", artifacts: [], meta: {} },
       }),
-      async function* () {
+      () => {
         streamStarts += 1;
         if (streamStarts > 1) {
-          throw new Error("stream opened twice");
+          return throwingAsyncIterable<NodeEvent>(new Error("stream opened twice"));
         }
-        yield { event: "progress", data: { percent: 10, message: "warming" } };
-        yield { event: "complete", data: { output_text: "done", artifacts: [], meta: {} } };
+        return arrayAsyncIterable<NodeEvent>([
+          { event: "progress", data: { percent: 10, message: "warming" } },
+          { event: "complete", data: { output_text: "done", artifacts: [], meta: {} } },
+        ]);
       },
     );
 
@@ -236,18 +238,18 @@ describe("node transport abstraction", () => {
     const registry = new NodeTransportRegistry();
     registry.registerNodeTransport("ws_alpha", "node_shared", {
       kind: "outbound-wss",
-      startExecution: async () => ({
+      startExecution: () => Promise.resolve({
         nodeId: "node_shared",
         result: Promise.resolve({ output_text: "alpha", artifacts: [], meta: {} }),
-        abort: async () => {},
+        abort: () => Promise.resolve(),
       }),
     });
     registry.registerNodeTransport("ws_beta", "node_shared", {
       kind: "outbound-wss",
-      startExecution: async () => ({
+      startExecution: () => Promise.resolve({
         nodeId: "node_shared",
         result: Promise.resolve({ output_text: "beta", artifacts: [], meta: {} }),
-        abort: async () => {},
+        abort: () => Promise.resolve(),
       }),
     });
     const executor = new RemoteNodeExecutor(registry);
@@ -319,4 +321,59 @@ const collect = async <T>(iterable: AsyncIterable<T>): Promise<T[]> => {
   return values;
 };
 
-async function* emptyAsync<T>(): AsyncIterable<T> {}
+const emptyAsync = <T>(): AsyncIterable<T> => ({
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next(): Promise<IteratorResult<T>> {
+        return Promise.resolve({ done: true, value: undefined });
+      },
+    };
+  },
+});
+
+const arrayAsyncIterable = <T>(values: readonly T[]): AsyncIterable<T> => ({
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    let index = 0;
+    return {
+      next(): Promise<IteratorResult<T>> {
+        if (index >= values.length) {
+          return Promise.resolve({ done: true, value: undefined });
+        }
+
+        const value = values[index] as T;
+        index += 1;
+        return Promise.resolve({ done: false, value });
+      },
+    };
+  },
+});
+
+const throwingAsyncIterable = <T>(error: Error): AsyncIterable<T> => ({
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    let done = false;
+    return {
+      next(): Promise<IteratorResult<T>> {
+        if (done) {
+          return Promise.resolve({ done: true, value: undefined });
+        }
+
+        done = true;
+        return Promise.reject(error);
+      },
+    };
+  },
+});
+
+const toFetchInputUrl = (input: Parameters<typeof fetch>[0]): string => {
+  if (typeof input === "string") {
+    return input;
+  }
+  if (input instanceof URL) {
+    return input.toString();
+  }
+  if (input instanceof Request) {
+    return input.url;
+  }
+
+  throw new Error("unsupported fetch input");
+};

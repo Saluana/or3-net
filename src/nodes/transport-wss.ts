@@ -77,11 +77,14 @@ export class OutboundWssNodeTransport implements NodeRpcTransport {
   }
 }
 
-const trackExecutionStream = (stream: AsyncIterable<NodeEvent>, fallback: ReturnType<typeof parseNodeResponseResult>) => {
+const trackExecutionStream = (
+  stream: AsyncIterable<NodeEvent>,
+  fallback: ReturnType<typeof parseNodeResponseResult>,
+): { stream: AsyncIterable<JobStreamEvent>; result: Promise<ReturnType<typeof nodeEventsToResult>> } => {
   const queue: StreamQueueEntry[] = [];
   let pendingResolve: ((entry: StreamQueueEntry) => void) | null = null;
 
-  const pushEntry = (entry: StreamQueueEntry) => {
+  const pushEntry = (entry: StreamQueueEntry): void => {
     if (pendingResolve !== null) {
       const resolve = pendingResolve;
       pendingResolve = null;
@@ -135,7 +138,7 @@ type StreamQueueEntry =
   | { readonly type: "error"; readonly error: unknown };
 
 const createQueuedStream = (takeEntry: () => Promise<StreamQueueEntry>): AsyncIterable<JobStreamEvent> => ({
-  [Symbol.asyncIterator]() {
+  [Symbol.asyncIterator](): AsyncIterator<JobStreamEvent> {
     return {
       next: async (): Promise<IteratorResult<JobStreamEvent>> => {
         const entry = await takeEntry();

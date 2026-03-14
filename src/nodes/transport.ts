@@ -127,7 +127,7 @@ const toJsonRecord = (value: Record<string, unknown>): JobError["details"] => {
       typeof entry === "boolean" ||
       entry === null ||
       Array.isArray(entry) ||
-      (typeof entry === "object" && entry !== null)
+      typeof entry === "object"
     ) {
       record[key] = entry as JobError["details"][string];
     }

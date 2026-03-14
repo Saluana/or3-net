@@ -39,16 +39,18 @@ type UnsignedManifest = Parameters<typeof signNodeManifest>[0];
 class ScriptedInternClient implements InternClient {
   public abortCalls: string[] = [];
   public submitTurnStreamCalls = 0;
+  public readonly turnRequests: InternTurnRequest[] = [];
 
   public constructor(private readonly streamFactory: StreamFactory) {}
 
   public submitTurn(request: InternTurnRequest): Promise<InternTurnResponse> {
-    void request;
+    this.turnRequests.push(request);
     return Promise.resolve({ job_id: "sync_job", status: "completed" });
   }
 
   public submitTurnStream(request: InternTurnRequest): AsyncIterable<InternJobEvent> {
     this.submitTurnStreamCalls += 1;
+    this.turnRequests.push(request);
     return this.streamFactory(request);
   }
 
@@ -128,6 +130,7 @@ class FakeSandboxClient implements SandboxClient {
     void sandboxId;
     void request;
     await Promise.resolve();
+    yield { event: "stdout", data: { chunk: "ok" } };
     yield { event: "result", data: { exit_code: 0 } };
   }
 
@@ -206,13 +209,13 @@ class AbortableRemoteTransport {
   public executeCalls = 0;
   public releaseSignal: (() => void) | null = null;
 
-  public create() {
+  public create(): { kind: "outbound-wss"; startExecution: () => Promise<{ nodeId: string; stream: AsyncIterable<{ readonly event: "text.delta"; readonly data: { readonly text: string } }>; result: Promise<{ output_text: string; artifacts: []; meta: { via: string } }>; abort: () => Promise<void> }> } {
     return {
       kind: "outbound-wss" as const,
-      startExecution: async () => {
+      startExecution: () => {
         this.executeCalls += 1;
         let aborted = false;
-        const result = new Promise((resolve: (value: { output_text: string; artifacts: []; meta: { via: string } }) => void, reject) => {
+        const result = new Promise<{ output_text: string; artifacts: []; meta: { via: string } }>((resolve, reject) => {
           this.releaseSignal = () => {
             if (aborted) {
               reject(new Error("remote aborted"));
@@ -221,18 +224,17 @@ class AbortableRemoteTransport {
             resolve({ output_text: "remote complete", artifacts: [], meta: { via: "remote" } });
           };
         });
-        return {
+        return Promise.resolve({
           nodeId: "node_remote_rpc",
-          stream: (async function* () {
-            yield { event: "text.delta", data: { text: "remote working" } } as const;
-          })(),
+          stream: singleEventAsyncIterable({ event: "text.delta", data: { text: "remote working" } } as const),
           result,
-          abort: async () => {
+          abort: () => {
             aborted = true;
             this.abortCalls += 1;
             this.releaseSignal?.();
+            return Promise.resolve();
           },
-        };
+        });
       },
     };
   }
@@ -243,35 +245,34 @@ class FailingRemoteTransport {
     private readonly mode: "start" | "disconnect" | "stream-disconnect" | "abort",
   ) {}
 
-  public create() {
+  public create(): { kind: "outbound-wss"; startExecution: () => Promise<{ nodeId: string; result: Promise<{ output_text: string; artifacts: []; meta: Record<string, never> }>; stream?: AsyncIterable<never>; abort: () => Promise<void> }> } {
     return {
       kind: "outbound-wss" as const,
-      startExecution: async () => {
+      startExecution: () => {
         if (this.mode === "start") {
-          throw new Error("dial tcp node failed");
+          return Promise.reject(new Error("dial tcp node failed"));
         }
 
-        return {
+        return Promise.resolve({
           nodeId: "node_remote_fail",
           result:
             this.mode === "disconnect"
               ? Promise.reject(new Error("connection closed"))
               : this.mode === "stream-disconnect"
-                ? new Promise<{ output_text: string; artifacts: []; meta: {} }>(() => undefined)
-                : new Promise<{ output_text: string; artifacts: []; meta: {} }>(() => undefined),
+                ? neverSettlingPromise<{ output_text: string; artifacts: []; meta: Record<string, never> }>()
+                : neverSettlingPromise<{ output_text: string; artifacts: []; meta: Record<string, never> }>(),
           ...(this.mode === "stream-disconnect"
             ? {
-                stream: (async function* () {
-                  throw new Error("stream connection closed");
-                })(),
+                stream: throwingAsyncIterable(new Error("stream connection closed")),
               }
             : {}),
-          abort: async () => {
+          abort: () => {
             if (this.mode === "abort") {
-              throw new Error("abort rpc failed");
+              return Promise.reject(new Error("abort rpc failed"));
             }
+            return Promise.resolve();
           },
-        };
+        });
       },
     };
   }
@@ -409,10 +410,11 @@ describe("local job execution", () => {
       yield { event: "started", data: { job_id: `intern_${request.sessionKey}`, status: "running" } };
       yield { event: "completion", data: { job_id: `intern_${request.sessionKey}`, status: "completed", final_text: "local complete" } };
     });
+    const broker = new JobStreamBroker();
     const service = new LocalJobService({
       database,
       internClient,
-      streamBroker: new JobStreamBroker(),
+      streamBroker: broker,
       leaseScheduler: new LeaseScheduler({ database }),
       sandboxNodeAdapter: new SandboxNodeAdapter(sandboxClient),
     });
@@ -432,6 +434,76 @@ describe("local job execution", () => {
     expect(internClient.submitTurnStreamCalls).toBe(1);
     expect(sandboxClient.execCalls).toHaveLength(0);
     expect(database.workspace("ws_jobs").listLeases()).toHaveLength(0);
+  });
+
+  test("passes PlatformSessionRef alongside session_key on intern-bound turns", async () => {
+    const broker = new JobStreamBroker();
+    const internClient = new ScriptedInternClient(async function* (request) {
+      await Promise.resolve();
+      yield { event: "started", data: { job_id: `intern_${request.sessionKey}`, status: "running" } };
+      yield { event: "completion", data: { job_id: `intern_${request.sessionKey}`, status: "completed", final_text: "done" } };
+    });
+    const service = new LocalJobService({ database, internClient, streamBroker: broker });
+
+    const created = service.submitJob(
+      "ws_jobs",
+      {
+        client_kind: "chat",
+        client_session_id: "thread_123",
+        message: "hello",
+      },
+      { initiator_subject: "user_123" },
+    );
+
+    await waitFor(() => {
+      expect(service.getJob("ws_jobs", created.job_id).job.status).toBe("completed");
+    });
+
+    const request = internClient.turnRequests[0];
+    expect(request).toBeDefined();
+    if (request === undefined) {
+      throw new Error("expected intern request");
+    }
+    const storedJob = service.getJob("ws_jobs", created.job_id);
+    expect(storedJob.network_session_id).not.toBeNull();
+    const networkSessionId = storedJob.network_session_id;
+    const sessionKey = request.sessionKey;
+    const requestId = request.requestContext?.requestId;
+    const platformSessionRef = request.platformSessionRef;
+    if (networkSessionId === null || requestId === undefined) {
+      throw new Error("expected persisted session binding details");
+    }
+
+    expect(platformSessionRef).toEqual({
+      workspace_id: "ws_jobs",
+      client_kind: "chat",
+      client_session_id: "thread_123",
+      network_session_id: networkSessionId,
+      session_key: sessionKey,
+    });
+    expect(request.requestContext?.workspaceId).toBe("ws_jobs");
+    expect(request.requestContext?.networkSessionId).toBe(networkSessionId);
+    expect(typeof request.requestContext?.requestId).toBe("string");
+    expect(storedJob.task_package.metadata["audit_context"]).toEqual({
+      request_id: requestId,
+      workspace_id: "ws_jobs",
+      subject: "user_123",
+      network_session_id: networkSessionId,
+      session_key: sessionKey,
+      job_id: created.job_id,
+    });
+    const persistedEvents = service.listSessionEvents("ws_jobs", networkSessionId);
+    expect(persistedEvents.length).toBeGreaterThan(0);
+    const persistedPayloads = persistedEvents.map((event) => parseJsonRecord(event.payload_json));
+    expect(persistedPayloads.some((payload) => {
+      const auditContext = getRecordValue(payload, "audit_context");
+      if (auditContext === undefined) {
+        return false;
+      }
+
+      return auditContext["request_id"] === requestId && auditContext["workspace_id"] === "ws_jobs";
+    })).toBeTrue();
+    expect(storedJob.task_package.metadata["platform_session_ref"]).toEqual(platformSessionRef);
   });
 
   test("routes jobs through the remote sandbox path only when explicitly requested", async () => {
@@ -460,10 +532,11 @@ describe("local job execution", () => {
         throw new Error("local intern path should not run");
       },
     }));
+    const broker = new JobStreamBroker();
     const service = new LocalJobService({
       database,
       internClient,
-      streamBroker: new JobStreamBroker(),
+      streamBroker: broker,
       leaseScheduler: new LeaseScheduler({ database }),
       sandboxNodeAdapter: new SandboxNodeAdapter(sandboxClient),
     });
@@ -482,7 +555,13 @@ describe("local job execution", () => {
     });
 
     expect(internClient.submitTurnStreamCalls).toBe(0);
-    expect(sandboxClient.execCalls).toHaveLength(1);
+    expect(sandboxClient.execCalls).toHaveLength(0);
+    expect(broker.history(job.job_id).map((event) => event.event)).toEqual([
+      "job.accepted",
+      "job.started",
+      "text.delta",
+      "job.completed",
+    ]);
     expect(database.workspace("ws_jobs").listLeases()).toHaveLength(1);
     expect(database.workspace("ws_jobs").listLeases()[0]?.lease.state).toBe("released");
   });
@@ -511,7 +590,7 @@ describe("local job execution", () => {
     const broker = new JobStreamBroker();
     const service = new LocalJobService({
       database,
-      internClient: new ScriptedInternClient(async function* () {}),
+      internClient: new ScriptedInternClient(() => emptyAsyncIterable()),
       streamBroker: broker,
       leaseScheduler: new LeaseScheduler({ database }),
       remoteNodeExecutor: new RemoteNodeExecutor(transportRegistry, database),
@@ -567,7 +646,7 @@ describe("local job execution", () => {
 
     const service = new LocalJobService({
       database,
-      internClient: new ScriptedInternClient(async function* () {}),
+      internClient: new ScriptedInternClient(() => emptyAsyncIterable()),
       streamBroker: new JobStreamBroker(),
       leaseScheduler: new LeaseScheduler({ database }),
       remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
@@ -608,7 +687,7 @@ describe("local job execution", () => {
 
     const service = new LocalJobService({
       database,
-      internClient: new ScriptedInternClient(async function* () {}),
+      internClient: new ScriptedInternClient(() => emptyAsyncIterable()),
       streamBroker: new JobStreamBroker(),
       leaseScheduler: new LeaseScheduler({ database }),
       remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
@@ -649,7 +728,7 @@ describe("local job execution", () => {
 
     const service = new LocalJobService({
       database,
-      internClient: new ScriptedInternClient(async function* () {}),
+      internClient: new ScriptedInternClient(() => emptyAsyncIterable()),
       streamBroker: new JobStreamBroker(),
       leaseScheduler: new LeaseScheduler({ database }),
       remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
@@ -665,7 +744,13 @@ describe("local job execution", () => {
       expect(service.getJob("ws_jobs", created.job_id).job.status).toBe("running");
     });
 
-    await expect(service.abortJob("ws_jobs", created.job_id)).rejects.toThrow("abort rpc failed");
+    try {
+      await service.abortJob("ws_jobs", created.job_id);
+      throw new Error("expected remote abort to fail");
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("abort rpc failed");
+    }
 
     await waitFor(() => {
       const stored = service.getJob("ws_jobs", created.job_id).job;
@@ -697,7 +782,7 @@ describe("local job execution", () => {
 
     const service = new LocalJobService({
       database,
-      internClient: new ScriptedInternClient(async function* () {}),
+      internClient: new ScriptedInternClient(() => emptyAsyncIterable()),
       streamBroker: new JobStreamBroker(),
       leaseScheduler: new LeaseScheduler({ database }),
       remoteNodeExecutor: new RemoteNodeExecutor(registry, database),
@@ -716,6 +801,68 @@ describe("local job execution", () => {
       expect(database.workspace("ws_jobs").listLeases()[0]?.lease.state).toBe("released");
     });
   });
+});
+
+const parseJsonRecord = (value: string): Record<string, unknown> => {
+  const parsed: unknown = JSON.parse(value);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("expected JSON object");
+  }
+
+  return parsed as Record<string, unknown>;
+};
+
+const getRecordValue = (record: Record<string, unknown>, key: string): Record<string, unknown> | undefined => {
+  const value = record[key];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value as Record<string, unknown>;
+};
+
+const neverSettlingPromise = <T>(): Promise<T> => new Promise<T>(() => undefined);
+
+const emptyAsyncIterable = <T>(): AsyncIterable<T> => ({
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next(): Promise<IteratorResult<T>> {
+        return Promise.resolve({ done: true, value: undefined });
+      },
+    };
+  },
+});
+
+const singleEventAsyncIterable = <T>(value: T): AsyncIterable<T> => ({
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    let done = false;
+    return {
+      next(): Promise<IteratorResult<T>> {
+        if (done) {
+          return Promise.resolve({ done: true, value: undefined });
+        }
+
+        done = true;
+        return Promise.resolve({ done: false, value });
+      },
+    };
+  },
+});
+
+const throwingAsyncIterable = <T>(error: Error): AsyncIterable<T> => ({
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    let done = false;
+    return {
+      next(): Promise<IteratorResult<T>> {
+        if (done) {
+          return Promise.resolve({ done: true, value: undefined });
+        }
+
+        done = true;
+        return Promise.reject(error);
+      },
+    };
+  },
 });
 
 const waitFor = async (callback: () => void, timeoutMs = 1_000): Promise<void> => {

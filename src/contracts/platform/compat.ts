@@ -3,13 +3,16 @@ import type { JobStreamEvent } from "../protocol.ts";
 import { platformErrorCodes, type PlatformErrorCode } from "./error-codes.ts";
 import type { ErrorEnvelope, PlatformSessionRef } from "./types.ts";
 import type { PlatformStreamEvent } from "./stream-events.ts";
+import { isRemoteExecutionError } from "../../nodes/transport.ts";
+import { InternRequestError } from "../../../sdk/intern/types.ts";
+import { SandboxRequestError } from "../../../sdk/sandbox/types.ts";
 
 export interface CreateErrorEnvelopeInput {
   readonly error: string;
   readonly code?: PlatformErrorCode;
   readonly status: number;
   readonly request_id: string;
-  readonly retry_after_ms?: number;
+  readonly retry_after_ms?: number | undefined;
 }
 
 export const createErrorEnvelope = (input: CreateErrorEnvelopeInput): ErrorEnvelope => ({
@@ -90,6 +93,50 @@ const defaultErrorCodeForStatus = (status: number): PlatformErrorCode => {
   }
 };
 
+export const normalizeInternError = (error: unknown, request_id: string): ErrorEnvelope => {
+  if (error instanceof InternRequestError) {
+    return createErrorEnvelope({
+      error: error.message,
+      status: error.status,
+      request_id,
+      ...(error.retryAfterMs === undefined ? {} : { retry_after_ms: error.retryAfterMs }),
+    });
+  }
+  if (isRemoteExecutionError(error)) {
+    const status = error.code === "remote_execution_failed" ? 500 : 503;
+    return createErrorEnvelope({
+      error: error.message,
+      status,
+      request_id,
+      code: status === 500 ? platformErrorCodes.serverInternal : platformErrorCodes.serverUnavailable,
+    });
+  }
+  return createErrorEnvelope({
+    error: error instanceof Error ? error.message : "Intern request failed",
+    status: 500,
+    request_id,
+    code: platformErrorCodes.serverInternal,
+  });
+};
+
+export const normalizeSandboxError = (error: unknown, request_id: string): ErrorEnvelope => {
+  if (error instanceof SandboxRequestError) {
+    return createErrorEnvelope({
+      error: error.message,
+      status: error.status,
+      request_id,
+      code: sandboxCodeToPlatformErrorCode(error.response?.code, error.status),
+      ...(error.retryAfterMs === undefined ? {} : { retry_after_ms: error.retryAfterMs }),
+    });
+  }
+  return createErrorEnvelope({
+    error: error instanceof Error ? error.message : "Sandbox request failed",
+    status: 500,
+    request_id,
+    code: platformErrorCodes.serverInternal,
+  });
+};
+
 const normalizeClientKind = (value: string): PlatformSessionRef["client_kind"] => {
   switch (value) {
     case "chat":
@@ -100,5 +147,29 @@ const normalizeClientKind = (value: string): PlatformSessionRef["client_kind"] =
       return value;
     default:
       return "legacy";
+  }
+};
+
+const sandboxCodeToPlatformErrorCode = (code: string | undefined, status: number): PlatformErrorCode => {
+  switch (code) {
+    case undefined:
+      return defaultErrorCodeForStatus(status);
+    case "unauthorized":
+      return platformErrorCodes.authTokenInvalid;
+    case "forbidden":
+      return platformErrorCodes.authInsufficientScope;
+    case "not_found":
+      return platformErrorCodes.resourceNotFound;
+    case "conflict":
+      return platformErrorCodes.resourceConflict;
+    case "invalid_request":
+    case "payload_too_large":
+      return platformErrorCodes.inputInvalidParameter;
+    case "rate_limited":
+      return platformErrorCodes.rateLimitExceeded;
+    case "bad_gateway":
+      return platformErrorCodes.serverUnavailable;
+    default:
+      return defaultErrorCodeForStatus(status);
   }
 };

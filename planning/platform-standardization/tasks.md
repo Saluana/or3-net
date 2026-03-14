@@ -94,19 +94,19 @@ Tasks are organized by project in execution order. `or3-net` goes first as the b
 ### 9. Error envelope adoption (or3-net)
 
 - [x] [Req 5] Implement `errorResponse()` helper in `src/api/` that produces `ErrorEnvelope` with `request_id` and optional `retry_after_ms`.
-- [ ] [Req 5] Migrate `handleAppRequest()` error catch block from `{ error }` to `ErrorEnvelope` using `errorResponse()`.
-- [ ] [Req 5] Migrate `HttpError` usage to carry a `code` field from the error code registry.
-- [ ] [Req 5] Update `readOptionalJson()` malformed body error to use `input.malformed_body` code.
-- [ ] [Req 5] Update 401/403/404 responses throughout API routes to use the canonical error codes.
-- [ ] [Req 5] Add `Retry-After` header and `retry_after_ms` field to any 429 responses.
+- [x] [Req 5] Migrate `handleAppRequest()` error catch block from `{ error }` to `ErrorEnvelope` using `errorResponse()`.
+- [x] [Req 5] Migrate `HttpError` usage to carry a `code` field from the error code registry.
+- [x] [Req 5] Update `readOptionalJson()` malformed body error to use `input.malformed_body` code.
+- [x] [Req 5] Update 401/403/404 responses throughout API routes to use the canonical error codes.
+- [x] [Req 5] Add `Retry-After` header and `retry_after_ms` field to any 429 responses.
 
 ### 10. Request ID and audit context propagation (or3-net)
 
-- [ ] [Req 8] Generate or accept `X-Request-Id` on every incoming request in `handleAppRequest()`.
-- [ ] [Req 8] Create `AuditContext` at the start of each request handler with `request_id`, `workspace_id`, and `subject`.
-- [ ] [Req 8] Propagate `X-Request-Id`, `X-Workspace-Id`, and `X-Network-Session-Id` headers on calls to `or3-intern` via the intern SDK.
-- [ ] [Req 8] Propagate `X-Request-Id` and `X-Workspace-Id` headers on calls to `or3-sandbox` via the sandbox SDK.
-- [ ] [Req 8] Include `AuditContext` fields in persisted job lifecycle events (job creation, terminal state changes).
+- [x] [Req 8] Generate or accept `X-Request-Id` on every incoming request in `handleAppRequest()`.
+- [x] [Req 8] Create `AuditContext` at the start of each request handler with `request_id`, `workspace_id`, and `subject`.
+- [x] [Req 8] Propagate `X-Request-Id`, `X-Workspace-Id`, and `X-Network-Session-Id` headers on calls to `or3-intern` via the intern SDK.
+- [x] [Req 8] Propagate `X-Request-Id` and `X-Workspace-Id` headers on calls to `or3-sandbox` via the sandbox SDK.
+- [x] [Req 8] Include `AuditContext` fields in persisted job lifecycle events (job creation, terminal state changes).
 
 ### 11. WorkspacePrincipal freeze (or3-net)
 
@@ -116,83 +116,83 @@ Tasks are organized by project in execution order. `or3-net` goes first as the b
 
 ### 12. PlatformSessionRef binding (or3-net)
 
-- [ ] [Req 2] Update the session binding logic in the network sessions layer to produce `PlatformSessionRef` when routing to `or3-intern`.
-- [ ] [Req 2] Pass `PlatformSessionRef` metadata alongside `session_key` on intern SDK calls.
-- [ ] [Req 2] Persist `network_session_id` ↔ `session_key` binding in the `network_sessions` table (verify existing schema suffices).
+- [x] [Req 2] Update the session binding logic in the network sessions layer to produce `PlatformSessionRef` when routing to `or3-intern`.
+- [x] [Req 2] Pass `PlatformSessionRef` metadata alongside `session_key` on intern SDK calls.
+- [x] [Req 2] Persist `network_session_id` ↔ `session_key` binding in the `network_sessions` table (verify existing schema suffices).
 
 ### 13. CapabilityGrant lifecycle formalization (or3-net)
 
-- [ ] [Req 4] Refactor `src/previews/service.ts` launch capability minting to produce `CapabilityGrant` objects.
-- [ ] [Req 4] Use `cap_` prefixed IDs for all capability grants.
-- [ ] [Req 4] Return `410 Gone` with `capability.expired` error code for expired capabilities.
-- [ ] [Req 4] Return `403 Forbidden` with `capability.revoked` error code for revoked capabilities.
-- [ ] [Req 4] Ensure service launch flows also produce `CapabilityGrant` objects with the same lifecycle.
+- [x] [Req 4] Refactor `src/previews/service.ts` launch capability minting to produce `CapabilityGrant` objects.
+- [x] [Req 4] Use `cap_` prefixed IDs for all capability grants.
+- [x] [Req 4] Return `410 Gone` with `capability.expired` error code for expired capabilities.
+- [x] [Req 4] Return `403 Forbidden` with `capability.revoked` error code for revoked capabilities.
+- [x] [Req 4] Ensure service launch flows also produce `CapabilityGrant` objects with the same lifecycle.
 
 ### 14. Backend error normalization (or3-net)
 
-- [ ] [Req 5] Implement `normalizeInternError()` to translate `or3-intern` Go errors and `RemoteExecutionError` into `ErrorEnvelope`.
-- [ ] [Req 5] Implement `normalizeSandboxError()` to translate `or3-sandbox` `{ error, code, status }` responses into `ErrorEnvelope`.
-- [ ] [Req 5] Wire both normalizers into the execution and adapter paths so backend errors never leak raw output to clients.
+- [x] [Req 5] Implement `normalizeInternError()` to translate `or3-intern` Go errors and `RemoteExecutionError` into `ErrorEnvelope`.
+- [x] [Req 5] Implement `normalizeSandboxError()` to translate `or3-sandbox` `{ error, code, status }` responses into `ErrorEnvelope`.
+- [x] [Req 5] Wire both normalizers into the execution and adapter paths so backend errors never leak raw output to clients.
 
 ### 15. Stream event normalization (or3-net)
 
-- [ ] [Req 6] Implement intern-to-platform stream event translator for the `or3-intern` SSE path.
-- [ ] [Req 6] Implement sandbox-to-platform stream event translator for the `or3-sandbox` exec streaming path.
-- [ ] [Req 6] Enforce the terminal event constraint: exactly one terminal event per stream.
-- [ ] [Req 6] Document resume/reconnect behavior for `GET /v1/workspaces/:wsId/jobs/:id/stream`.
+- [x] [Req 6] Implement intern-to-platform stream event translator for the `or3-intern` SSE path.
+- [x] [Req 6] Implement sandbox-to-platform stream event translator for the `or3-sandbox` exec streaming path.
+- [x] [Req 6] Enforce the terminal event constraint: exactly one terminal event per stream.
+- [x] [Req 6] Document resume/reconnect behavior for `GET /v1/workspaces/:wsId/jobs/:id/stream`.
 
 ### 16. Idempotency support (or3-net)
 
-- [ ] [Req 7] Add optional `Idempotency-Key` header support to job submit endpoint.
-- [ ] [Req 7] Return existing job on duplicate submit with same idempotency key.
-- [ ] [Req 7] Make abort idempotent: return success if job is already terminal.
-- [ ] [Req 7] Make auth exchange idempotent: return valid token without creating duplicate sessions.
+- [x] [Req 7] Add optional `Idempotency-Key` header support to job submit endpoint.
+- [x] [Req 7] Return existing job on duplicate submit with same idempotency key.
+- [x] [Req 7] Make abort idempotent: return success if job is already terminal.
+- [x] [Req 7] Make auth exchange idempotent: return valid token without creating duplicate sessions.
 
 ---
 
 ### 17. Audit context header acceptance (or3-intern)
 
-- [ ] [Req 8] Accept `X-Request-Id`, `X-Workspace-Id`, and `X-Network-Session-Id` headers on internal service API endpoints.
-- [ ] [Req 8] Log audit context fields alongside `session_key` in execution lifecycle events.
-- [ ] [Req 8] Pass audit context through to subagent spawning so child jobs are correlatable.
+- [x] [Req 8] Accept `X-Request-Id`, `X-Workspace-Id`, and `X-Network-Session-Id` headers on internal service API endpoints.
+- [x] [Req 8] Log audit context fields alongside `session_key` in execution lifecycle events.
+- [x] [Req 8] Pass audit context through to subagent spawning so child jobs are correlatable.
 
 ### 18. Session key binding contract (or3-intern)
 
-- [ ] [Req 2] Document the `session_key` contract: what it is, how it's generated, how `or3-net` binds it to `network_session_id`.
-- [ ] [Req 1] Review and document any existing alias drift (e.g., `session_key` vs `sessionKey` vs `session_id` in different paths) and either unify or add an explicit compatibility layer.
-- [ ] [Req 2] Add fixture file (`tests/contracts/fixtures/intern-turn-request.json`) matching the frozen turn submission contract.
+- [x] [Req 2] Document the `session_key` contract: what it is, how it's generated, how `or3-net` binds it to `network_session_id`.
+- [x] [Req 1] Review and document any existing alias drift (e.g., `session_key` vs `sessionKey` vs `session_id` in different paths) and either unify or add an explicit compatibility layer.
+- [x] [Req 2] Add fixture file (`cmd/or3-intern/testdata/service_contract/intern-turn-request.json`) matching the frozen turn submission contract.
 
 ### 19. or3-intern contract test fixtures
 
-- [ ] [Req 10] Create `tests/contracts/fixtures/intern-turn-response.json` matching the frozen turn response shape.
-- [ ] [Req 10] Create `tests/contracts/fixtures/intern-stream-events.jsonl` with the raw `or3-intern` SSE event shapes.
-- [ ] [Req 10] Write contract tests validating fixtures against the documented service API shapes.
+- [x] [Req 10] Create `cmd/or3-intern/testdata/service_contract/intern-turn-response.json` matching the frozen turn response shape.
+- [x] [Req 10] Create `cmd/or3-intern/testdata/service_contract/intern-stream-events.jsonl` with the raw `or3-intern` SSE event shapes.
+- [x] [Req 10] Write contract tests validating fixtures against the documented service API shapes.
 
 ---
 
 ### 20. Workspace→tenant mapping contract (or3-sandbox)
 
-- [ ] [Req 1] Document the `workspace_id` → `tenant_id` mapping rule: how `or3-net` maps workspace context to sandbox tenant context via auth/token.
-- [ ] [Req 1] Confirm that `tenant_id` never appears in any external/public API response from `or3-sandbox` that clients would see through `or3-net`.
+- [x] [Req 1] Document the `workspace_id` → `tenant_id` mapping rule: how `or3-net` maps workspace context to sandbox tenant context via auth/token.
+- [x] [Req 1] Confirm that `tenant_id` never appears in any external/public API response from `or3-sandbox` that clients would see through `or3-net`.
 
 ### 21. Service account scope standardization (or3-sandbox)
 
-- [ ] [Req 2] Review and document the service account scopes used by `or3-net` when calling `or3-sandbox`.
-- [ ] [Req 2] Ensure service account scopes are minimal and workspace-scoped (no admin-level scopes for routine operations).
-- [ ] [Req 3] Verify that service account credentials are classified as `control-plane` secrets and handled accordingly.
+- [x] [Req 2] Review and document the service account scopes used by `or3-net` when calling `or3-sandbox`.
+- [x] [Req 2] Ensure service account scopes are minimal and workspace-scoped (no admin-level scopes for routine operations).
+- [x] [Req 3] Verify that service account credentials are classified as `control-plane` secrets and handled accordingly.
 
 ### 22. Launch capability alignment (or3-sandbox)
 
-- [ ] [Req 4] Document how tunnel creation and signed URL minting align with the platform `CapabilityGrant` model.
-- [ ] [Req 4] Ensure tunnel URLs and launch URLs have bounded expiry and are revocable.
-- [ ] [Req 4] Verify that raw tunnel/admin credentials are never returned in responses that flow through to browser clients.
+- [x] [Req 4] Document how tunnel creation and signed URL minting align with the platform `CapabilityGrant` model.
+- [x] [Req 4] Ensure tunnel URLs and launch URLs have bounded expiry and are revocable.
+- [x] [Req 4] Verify that raw tunnel/admin credentials are never returned in responses that flow through to browser clients.
 
 ### 23. or3-sandbox contract test fixtures
 
-- [ ] [Req 10] Create `tests/contracts/fixtures/sandbox-create-request.json` and `sandbox-create-response.json` matching the sandbox API contract.
-- [ ] [Req 10] Create `tests/contracts/fixtures/sandbox-exec-response.json` and `sandbox-exec-stream-events.jsonl` for exec endpoints.
-- [ ] [Req 10] Create `tests/contracts/fixtures/sandbox-error-response.json` for the sandbox error shape.
-- [ ] [Req 10] Write contract tests validating fixtures against the `or3-sandbox` v1 API docs.
+- [x] [Req 10] Create `tests/contracts/fixtures/sandbox-create-request.json` and `sandbox-create-response.json` matching the sandbox API contract.
+- [x] [Req 10] Create `tests/contracts/fixtures/sandbox-exec-response.json` and `sandbox-exec-stream-events.jsonl` for exec endpoints.
+- [x] [Req 10] Create `tests/contracts/fixtures/sandbox-error-response.json` for the sandbox error shape.
+- [x] [Req 10] Write contract tests validating fixtures against the `or3-sandbox` v1 API docs.
 
 ---
 
@@ -226,22 +226,22 @@ Tasks are organized by project in execution order. `or3-net` goes first as the b
 
 ### 28. CI contract test enforcement (all repos)
 
-- [ ] [Req 10] Add contract test suite to `or3-net` CI pipeline so fixture drift fails the build.
-- [ ] [Req 10] Add contract test suite to `or3-intern` CI pipeline for intern API fixtures.
-- [ ] [Req 10] Add contract test suite to `or3-sandbox` CI pipeline for sandbox API fixtures.
+- [x] [Req 10] Add contract test suite to `or3-net` CI pipeline so fixture drift fails the build.
+- [x] [Req 10] Add contract test suite to `or3-intern` CI pipeline for intern API fixtures.
+- [x] [Req 10] Add contract test suite to `or3-sandbox` CI pipeline for sandbox API fixtures.
 - [ ] [Req 10] Add contract test suite to `or3-chat` CI pipeline for `or3-net` API fixtures.
 
 ### 29. Configuration and env naming alignment (all repos)
 
-- [ ] [Req 9] Document the env var naming convention per repo (`OR3_NET_*`, `OR3_INTERN_*`, `OR3_SANDBOX_*`).
-- [ ] [Req 9] Document secret source precedence per repo (env → file → runtime config).
+- [x] [Req 9] Document the env var naming convention per repo (`OR3_NET_*`, `OR3_INTERN_*`, `OR3_SANDBOX_*`).
+- [x] [Req 9] Document secret source precedence per repo (env → file → runtime config).
 - [ ] [Req 9] Align `or3-chat` wizard env var emission with the canonical naming convention.
-- [ ] [Req 9] Document shared config values (e.g., HMAC secrets) and their key name mapping across repos.
+- [x] [Req 9] Document shared config values (e.g., HMAC secrets) and their key name mapping across repos.
 
 ### 30. Compatibility matrix maintenance
 
-- [ ] [Req 10] Finalize and publish the compatibility matrix with contract versions for all boundaries.
-- [ ] [Req 10] Add a process for updating the matrix when contract versions change.
+- [x] [Req 10] Finalize and publish the compatibility matrix with contract versions for all boundaries.
+- [x] [Req 10] Add a process for updating the matrix when contract versions change.
 
 ---
 

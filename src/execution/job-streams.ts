@@ -1,4 +1,5 @@
 import type { JobStreamEvent } from "../contracts/index.ts";
+import { normalizeLegacyJobStreamEvent } from "../contracts/platform/compat.ts";
 
 interface JobStreamState {
   readonly history: JobStreamEvent[];
@@ -76,4 +77,7 @@ export class JobStreamBroker {
   }
 }
 
-const formatSseEvent = (event: JobStreamEvent): string => `event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`;
+const formatSseEvent = (event: JobStreamEvent): string => {
+  const normalized = normalizeLegacyJobStreamEvent(event);
+  return `event: ${normalized.event}\ndata: ${JSON.stringify(normalized.data)}\n\n`;
+};

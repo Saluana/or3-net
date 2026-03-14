@@ -23,7 +23,7 @@ describe("auth principal canonical fields", () => {
       secret,
       database,
       sessionProofValidator: {
-        validateSessionProof: async () => ({
+        validateSessionProof: () => Promise.resolve({
           user_id: "user_1",
           workspace_id: "ws_test",
           scopes: ["jobs:read", "jobs:write"],

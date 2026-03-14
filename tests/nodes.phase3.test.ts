@@ -527,7 +527,15 @@ describe("phase 3 node control plane", () => {
     );
 
     const transportRegistry = new NodeTransportRegistry();
-    transportRegistry.registerKindTransport("https", { kind: "https", startExecution: async () => ({ nodeId: "node_certified", result: Promise.resolve({ output_text: "ok", artifacts: [], meta: {} }), abort: async () => {} }) });
+    transportRegistry.registerKindTransport("https", {
+      kind: "https",
+      startExecution: () =>
+        Promise.resolve({
+          nodeId: "node_certified",
+          result: Promise.resolve({ output_text: "ok", artifacts: [], meta: {} }),
+          abort: () => Promise.resolve(),
+        }),
+    });
     const eligibleScheduler = new LeaseScheduler({ database, transportRegistry, enforceManagedCertification: true });
     const lease = eligibleScheduler.issueLease({ workspace_id: "ws_nodes", job_id: "job_policy", task_package: workspaceStore.getJob("job_policy").task_package });
     expect(lease.lease.node_id).toBe("node_certified");
@@ -568,7 +576,15 @@ describe("phase 3 node control plane", () => {
     });
 
     const transportRegistry = new NodeTransportRegistry();
-    transportRegistry.registerNodeTransport("ws_nodes", "node_https_only", { kind: "outbound-wss", startExecution: async () => ({ nodeId: "node_https_only", result: Promise.resolve({ output_text: "bad", artifacts: [], meta: {} }), abort: async () => {} }) });
+    transportRegistry.registerNodeTransport("ws_nodes", "node_https_only", {
+      kind: "outbound-wss",
+      startExecution: () =>
+        Promise.resolve({
+          nodeId: "node_https_only",
+          result: Promise.resolve({ output_text: "bad", artifacts: [], meta: {} }),
+          abort: () => Promise.resolve(),
+        }),
+    });
     const scheduler = new LeaseScheduler({ database, transportRegistry });
 
     expect(() => scheduler.issueLease({ workspace_id: "ws_nodes", job_id: "job_transport_policy", task_package: workspaceStore.getJob("job_transport_policy").task_package })).toThrow(

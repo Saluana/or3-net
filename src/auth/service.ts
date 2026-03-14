@@ -61,7 +61,10 @@ export class AuthService {
 
     try {
       return await validateWorkspaceToken(this.options.secret, value);
-    } catch {
+    } catch (error) {
+      if (isExpiredWorkspaceTokenError(error)) {
+        throw error;
+      }
       const apiKey = await this.authenticateApiKey(value);
       const issuedAt = Math.floor(Date.parse(apiKey.created_at) / 1000);
       const expiresAt = apiKey.expires_at === null
@@ -116,3 +119,6 @@ export class AuthService {
 }
 
 const MAX_API_KEY_EXPIRY_SECONDS = 253402300799;
+
+const isExpiredWorkspaceTokenError = (error: unknown): boolean =>
+  error instanceof Error && error.message.toLowerCase().includes("workspace token expired");

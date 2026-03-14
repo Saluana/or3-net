@@ -175,7 +175,7 @@ const evaluateNodeEligibility = (
 };
 
 const buildLeaseFailureMessage = (
-  nodes: ReadonlyArray<{ node: StoredNode; reasons: readonly NodeEligibilityIssue[] }>,
+  nodes: readonly { node: StoredNode; reasons: readonly NodeEligibilityIssue[] }[],
 ): string => {
   const relevant = nodes
     .filter(({ reasons }) => reasons.length > 0)

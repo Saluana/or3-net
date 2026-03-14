@@ -1,7 +1,8 @@
 import type { PreviewDescriptor, PreviewLaunchMetadata, TaskPackage } from "../contracts/index.ts";
+import type { AuditContext } from "../contracts/platform/types.ts";
 import type { StoredNode } from "../db/index.ts";
 import { WarmPoolManager } from "../scheduler/warmpool.ts";
-import type { SandboxClient, SandboxInfo, SandboxTunnel } from "../../sdk/sandbox/index.ts";
+import type { SandboxClient, SandboxExecEvent, SandboxInfo, SandboxRequestContext, SandboxTunnel } from "../../sdk/sandbox/index.ts";
 
 export interface NodeServiceDescriptor {
   readonly service_id: string;
@@ -32,17 +33,52 @@ export class SandboxNodeAdapter {
   }
 
   public async executeTask(workspaceId: string, taskPackage: TaskPackage): Promise<{ sandbox: SandboxInfo; exit_code: number }> {
+    return await this.executeTaskWithProgress(workspaceId, taskPackage);
+  }
+
+  public async executeTaskWithProgress(
+    workspaceId: string,
+    taskPackage: TaskPackage,
+    onEvent?: (event: SandboxExecEvent) => Promise<void> | void,
+  ): Promise<{ sandbox: SandboxInfo; exit_code: number }> {
+    const requestContext = getSandboxRequestContext(taskPackage);
     const sandbox = await this.executionWarmPool.acquire(workspaceId);
     try {
       for (const artifact of taskPackage.artifacts) {
         if (artifact.text !== undefined) {
-          await this.sandboxClient.writeFile(sandbox.id, { path: artifact.path, content: artifact.text });
+          await this.sandboxClient.writeFile(sandbox.id, { path: artifact.path, content: artifact.text }, requestContext);
         }
       }
-      const result = await this.sandboxClient.exec(sandbox.id, {
-        command: ["sh", "-lc", taskPackage.instructions],
-      });
-      return { sandbox, exit_code: result.exit_code };
+      let exitCode: number | null = null;
+      for await (const event of this.sandboxClient.execStream(
+        sandbox.id,
+        {
+          command: ["sh", "-lc", taskPackage.instructions],
+        },
+        requestContext,
+      )) {
+        await onEvent?.({
+          ...event,
+          data: {
+            ...event.data,
+            sandbox_id: sandbox.id,
+          },
+        });
+        if (event.event === "result" && typeof event.data["exit_code"] === "number") {
+          exitCode = event.data["exit_code"];
+        }
+      }
+      if (exitCode === null) {
+        const result = await this.sandboxClient.exec(
+          sandbox.id,
+          {
+            command: ["sh", "-lc", taskPackage.instructions],
+          },
+          requestContext,
+        );
+        exitCode = result.exit_code;
+      }
+      return { sandbox, exit_code: exitCode };
     } finally {
       await this.executionWarmPool.release(workspaceId, sandbox);
     }
@@ -55,15 +91,20 @@ export class SandboxNodeAdapter {
       .filter((service): service is NodeServiceDescriptor => service !== null);
   }
 
-  public async prepareServiceLaunch(workspaceId: string, node: StoredNode, serviceId: string): Promise<InternalServiceLaunch> {
+  public async prepareServiceLaunch(
+    workspaceId: string,
+    node: StoredNode,
+    serviceId: string,
+    requestContext?: SandboxRequestContext,
+  ): Promise<InternalServiceLaunch> {
     const service = this.listServices(node).find((candidate) => candidate.service_id === serviceId);
     if (service === undefined) {
       throw new Error(`service ${serviceId} is not available on node ${node.manifest.node_id}`);
     }
 
     const sandbox = await this.ensureNodeSandbox(workspaceId, node.manifest.node_id);
-    const { tunnel, reused } = await this.ensureTunnel(sandbox.id, service.target_port);
-    const signedUrl = await this.sandboxClient.createSignedTunnelUrl(tunnel.id, { path: "/" });
+    const { tunnel, reused } = await this.ensureTunnel(sandbox.id, service.target_port, requestContext);
+    const signedUrl = await this.sandboxClient.createSignedTunnelUrl(tunnel.id, { path: "/" }, requestContext);
     return {
       target_url: signedUrl.url,
       delivery_mode: "external",
@@ -75,7 +116,12 @@ export class SandboxNodeAdapter {
     };
   }
 
-  public async restartService(workspaceId: string, node: StoredNode, serviceId: string): Promise<{ service_id: string; status: "ready" }> {
+  public async restartService(
+    workspaceId: string,
+    node: StoredNode,
+    serviceId: string,
+    requestContext?: SandboxRequestContext,
+  ): Promise<{ service_id: string; status: "ready" }> {
     const service = this.listServices(node).find((candidate) => candidate.service_id === serviceId);
     if (service === undefined) {
       throw new Error(`service ${serviceId} is not available on node ${node.manifest.node_id}`);
@@ -86,7 +132,7 @@ export class SandboxNodeAdapter {
     if (existing !== undefined) {
       this.nodeSandboxes.delete(nodeKey);
       try {
-        await this.sandboxClient.delete(existing.id);
+        await this.sandboxClient.delete(existing.id, requestContext);
       } catch {
         // best effort restart cleanup
       }
@@ -100,7 +146,12 @@ export class SandboxNodeAdapter {
     };
   }
 
-  public async revokeServiceLaunch(workspaceId: string, node: StoredNode, serviceId: string): Promise<number> {
+  public async revokeServiceLaunch(
+    workspaceId: string,
+    node: StoredNode,
+    serviceId: string,
+    requestContext?: SandboxRequestContext,
+  ): Promise<number> {
     const service = this.listServices(node).find((candidate) => candidate.service_id === serviceId);
     if (service === undefined) {
       return 0;
@@ -111,12 +162,12 @@ export class SandboxNodeAdapter {
       return 0;
     }
 
-    const tunnel = (await this.sandboxClient.listTunnels(sandbox.id)).find((candidate) => candidate.target_port === service.target_port);
+    const tunnel = (await this.sandboxClient.listTunnels(sandbox.id, requestContext)).find((candidate) => candidate.target_port === service.target_port);
     if (tunnel === undefined) {
       return 0;
     }
 
-    await this.sandboxClient.revokeTunnel(tunnel.id);
+    await this.sandboxClient.revokeTunnel(tunnel.id, requestContext);
     return 1;
   }
 
@@ -137,17 +188,25 @@ export class SandboxNodeAdapter {
     };
   }
 
-  private async ensureTunnel(sandboxId: string, targetPort: number): Promise<{ tunnel: SandboxTunnel; reused: boolean }> {
-    const existing = (await this.sandboxClient.listTunnels(sandboxId)).find((tunnel) => tunnel.target_port === targetPort);
+  private async ensureTunnel(
+    sandboxId: string,
+    targetPort: number,
+    requestContext?: SandboxRequestContext,
+  ): Promise<{ tunnel: SandboxTunnel; reused: boolean }> {
+    const existing = (await this.sandboxClient.listTunnels(sandboxId, requestContext)).find((tunnel) => tunnel.target_port === targetPort);
     if (existing !== undefined) {
       return { tunnel: existing, reused: true };
     }
-    const tunnel = await this.sandboxClient.createTunnel(sandboxId, {
-      target_port: targetPort,
-      protocol: "http",
-      auth_mode: "token",
-      visibility: "private",
-    });
+    const tunnel = await this.sandboxClient.createTunnel(
+      sandboxId,
+      {
+        target_port: targetPort,
+        protocol: "http",
+        auth_mode: "token",
+        visibility: "private",
+      },
+      requestContext,
+    );
     return { tunnel, reused: false };
   }
 
@@ -187,3 +246,16 @@ const parseServiceCapability = (capability: string): NodeServiceDescriptor | nul
 };
 
 const buildNodeKey = (workspaceId: string, nodeId: string): string => `${workspaceId}:${nodeId}`;
+
+const getSandboxRequestContext = (taskPackage: TaskPackage): SandboxRequestContext | undefined => {
+  const rawAuditContext = taskPackage.metadata["audit_context"];
+  if (typeof rawAuditContext !== "object" || rawAuditContext === null) {
+    return undefined;
+  }
+
+  const auditContext = rawAuditContext as Partial<AuditContext>;
+  return {
+    ...(typeof auditContext.request_id === "string" ? { requestId: auditContext.request_id } : {}),
+    ...(typeof auditContext.workspace_id === "string" ? { workspaceId: auditContext.workspace_id } : {}),
+  };
+};

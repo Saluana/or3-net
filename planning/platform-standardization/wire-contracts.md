@@ -51,8 +51,10 @@ Every stream emits at most one terminal event.
 
 ## Resume/reconnect
 
-- Job stream resume/reconnect semantics are endpoint-specific and must be documented alongside the route.
-- Until resume is formalized, reconnect behavior is best-effort and callers should treat the stream as non-resumable.
+- `GET /v1/jobs/:job_id/stream` does not currently accept a cursor or replay token.
+- Reconnecting to that route replays only the in-memory history retained by the active `or3-net` process for the job, then resumes live events if the job is still running.
+- Callers must treat the stream as non-resumable across host restarts or broker eviction and should fall back to `GET /v1/jobs/:job_id` plus durable session/job event APIs when they need recovery.
+- Exactly one terminal event (`job.completed`, `job.failed`, or `job.aborted`) is emitted per stream; once that event is sent, the stream closes.
 
 ## Retry and idempotency
 
@@ -65,3 +67,11 @@ The following operations should be safe to retry:
 - service launch
 
 Retry behavior should prefer deduplication over duplicate side effects.
+
+Concrete rules:
+
+- `POST /v1/auth/exchange` accepts `Idempotency-Key`; the same key plus the same canonical request body returns the stored token response until that stored response expires.
+- `POST /v1/workspaces/:workspace_id/jobs` accepts `Idempotency-Key`; the same key plus the same canonical request body returns the original `202` job payload instead of creating a second job.
+- Reusing an `Idempotency-Key` with a different canonical request body returns `409 resource.conflict`.
+- `POST /v1/jobs/:job_id/abort` is idempotent and returns success even when the job is already terminal.
+- Any `429` response must include both the HTTP `Retry-After` header and `retry_after_ms` in the error envelope.

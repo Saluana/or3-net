@@ -1,8 +1,17 @@
 import { z } from "zod";
 import { jsonObjectSchema, nonEmptyStringSchema } from "../../src/contracts/shared.ts";
+import { platformSessionRefSchema, type PlatformSessionRef } from "../../src/contracts/platform/types.ts";
+
+export interface InternRequestContext {
+  readonly requestId?: string;
+  readonly workspaceId?: string;
+  readonly networkSessionId?: string;
+}
 
 export interface InternTurnRequest {
   readonly sessionKey: string;
+  readonly platformSessionRef?: PlatformSessionRef;
+  readonly requestContext?: InternRequestContext;
   readonly message: string;
   readonly allowedTools?: string[];
   readonly meta?: Record<string, unknown>;
@@ -20,6 +29,7 @@ export interface InternSubagentRequest {
   readonly parentSessionKey: string;
   readonly task: string;
   readonly promptSnapshot: Record<string, unknown>[];
+  readonly requestContext?: InternRequestContext;
   readonly allowedTools?: string[];
   readonly timeoutSeconds?: number;
   readonly meta?: Record<string, unknown>;
@@ -45,6 +55,25 @@ export interface InternAbortResponse {
   readonly status?: string;
 }
 
+export interface InternErrorResponse {
+  readonly error?: string;
+  readonly code?: string;
+  readonly status?: number;
+}
+
+export class InternRequestError extends Error {
+  public override readonly name = "InternRequestError";
+
+  public constructor(
+    message: string,
+    public readonly status: number,
+    public readonly response?: InternErrorResponse,
+    public readonly retryAfterMs?: number,
+  ) {
+    super(message);
+  }
+}
+
 export interface InternClient {
   submitTurn(request: InternTurnRequest): Promise<InternTurnResponse>;
   submitTurnStream(request: InternTurnRequest): AsyncIterable<InternJobEvent>;
@@ -55,6 +84,7 @@ export interface InternClient {
 
 export const internTurnRequestSchema = z.object({
   session_key: nonEmptyStringSchema,
+  platform_session_ref: platformSessionRefSchema.optional(),
   message: nonEmptyStringSchema,
   allowed_tools: z.array(nonEmptyStringSchema).optional(),
   meta: jsonObjectSchema.optional(),

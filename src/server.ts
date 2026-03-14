@@ -1,6 +1,7 @@
 import type { AuthService } from "./auth/service.ts";
 import type { AgentService } from "./agents/index.ts";
 import { handleAppRequest, Or3NetApp } from "./api/app.ts";
+import type { ControlPlaneDatabase } from "./db/index.ts";
 import type { LocalJobService } from "./execution/local-jobs.ts";
 import type { SandboxNodeAdapter } from "./nodes/adapter-sandbox.ts";
 import type { NodeRegistryService } from "./nodes/index.ts";
@@ -8,6 +9,7 @@ import type { PreviewService } from "./previews/service.ts";
 import type { InMemoryWorkspaceFileService } from "./workspace/files.ts";
 
 export interface ServerOptions {
+  readonly database?: ControlPlaneDatabase;
   readonly authService: AuthService;
   readonly localJobService: LocalJobService;
   readonly nodeRegistryService?: NodeRegistryService;
@@ -19,6 +21,7 @@ export interface ServerOptions {
 
 export const createServerApp = (options: ServerOptions): Or3NetApp =>
   new Or3NetApp({
+    ...(options.database === undefined ? {} : { database: options.database }),
     authService: options.authService,
     localJobService: options.localJobService,
     ...(options.nodeRegistryService === undefined ? {} : { nodeRegistryService: options.nodeRegistryService }),

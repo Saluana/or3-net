@@ -1,12 +1,14 @@
 import type {
   InternAbortResponse,
   InternClient,
+  InternErrorResponse,
   InternJobEvent,
   InternSubagentRequest,
   InternSubagentResponse,
   InternTurnRequest,
   InternTurnResponse,
 } from "./types.ts";
+import { InternRequestError } from "./types.ts";
 import { encodeBase64Url, hmacSha256Hex } from "../../src/lib/crypto.ts";
 
 interface InternClientOptions {
@@ -30,7 +32,7 @@ export class HttpInternClient implements InternClient {
   public async submitTurn(request: InternTurnRequest): Promise<InternTurnResponse> {
     const response = await this.fetchImpl(new URL("/internal/v1/turns", this.options.baseUrl), {
       method: "POST",
-      headers: await this.createHeaders(),
+      headers: await this.createHeaders({}, request.requestContext),
       body: JSON.stringify(serializeTurnRequest(request)),
     });
     return parseJsonResponse<InternTurnResponse>(response);
@@ -39,7 +41,7 @@ export class HttpInternClient implements InternClient {
   public async *submitTurnStream(request: InternTurnRequest): AsyncIterable<InternJobEvent> {
     const response = await this.fetchImpl(new URL("/internal/v1/turns", this.options.baseUrl), {
       method: "POST",
-      headers: await this.createHeaders({ Accept: "text/event-stream" }),
+      headers: await this.createHeaders({ Accept: "text/event-stream" }, request.requestContext),
       body: JSON.stringify(serializeTurnRequest(request)),
     });
     yield* parseEventStream(response);
@@ -48,7 +50,7 @@ export class HttpInternClient implements InternClient {
   public async spawnSubagent(request: InternSubagentRequest): Promise<InternSubagentResponse> {
     const response = await this.fetchImpl(new URL("/internal/v1/subagents", this.options.baseUrl), {
       method: "POST",
-      headers: await this.createHeaders(),
+      headers: await this.createHeaders({}, request.requestContext),
       body: JSON.stringify(serializeSubagentRequest(request)),
     });
     return parseJsonResponse<InternSubagentResponse>(response);
@@ -70,10 +72,19 @@ export class HttpInternClient implements InternClient {
     return parseJsonResponse<InternAbortResponse>(response);
   }
 
-  private async createHeaders(extra: Record<string, string> = {}): Promise<Headers> {
+  private async createHeaders(extra: Record<string, string> = {}, requestContext?: InternTurnRequest["requestContext"]): Promise<Headers> {
     const headers = new Headers(extra);
     headers.set("Authorization", `Bearer ${await issueServiceBearerToken(this.options.secret)}`);
     headers.set("Content-Type", "application/json");
+    if (requestContext?.requestId !== undefined && requestContext.requestId.trim() !== "") {
+      headers.set("X-Request-Id", requestContext.requestId);
+    }
+    if (requestContext?.workspaceId !== undefined && requestContext.workspaceId.trim() !== "") {
+      headers.set("X-Workspace-Id", requestContext.workspaceId);
+    }
+    if (requestContext?.networkSessionId !== undefined && requestContext.networkSessionId.trim() !== "") {
+      headers.set("X-Network-Session-Id", requestContext.networkSessionId);
+    }
     return headers;
   }
 }
@@ -90,14 +101,14 @@ const issueServiceBearerToken = async (secret: string, now = new Date()): Promis
 
 const parseJsonResponse = async <T>(response: Response): Promise<T> => {
   if (!response.ok) {
-    throw new Error(`Intern request failed with status ${String(response.status)}`);
+    throw await toInternRequestError(response, "Intern request failed");
   }
   return (await response.json()) as T;
 };
 
 const parseEventStream = async function* (response: Response): AsyncIterable<InternJobEvent> {
   if (!response.ok) {
-    throw new Error(`Intern stream failed with status ${String(response.status)}`);
+    throw await toInternRequestError(response, "Intern stream failed");
   }
   if (response.body === null) {
     throw new Error("Intern stream response missing body");
@@ -157,6 +168,7 @@ const parseEventFrame = (frame: string): InternJobEvent | null => {
 
 const serializeTurnRequest = (request: InternTurnRequest): Record<string, unknown> => ({
   session_key: request.sessionKey,
+  ...(request.platformSessionRef === undefined ? {} : { platform_session_ref: request.platformSessionRef }),
   message: request.message,
   ...(request.allowedTools === undefined ? {} : { allowed_tools: request.allowedTools }),
   ...(request.meta === undefined ? {} : { meta: request.meta }),
@@ -174,3 +186,20 @@ const serializeSubagentRequest = (request: InternSubagentRequest): Record<string
   ...(request.channel === undefined ? {} : { channel: request.channel }),
   ...(request.replyTo === undefined ? {} : { reply_to: request.replyTo }),
 });
+
+const toInternRequestError = async (response: Response, prefix: string): Promise<InternRequestError> => {
+  let payload: InternErrorResponse | undefined;
+  try {
+    payload = (await response.clone().json()) as InternErrorResponse;
+  } catch {
+    payload = undefined;
+  }
+  const retryAfterHeader = response.headers.get("Retry-After");
+  const retryAfterMs = retryAfterHeader === null ? undefined : Number.parseInt(retryAfterHeader, 10) * 1_000;
+  return new InternRequestError(
+    payload?.error ?? `${prefix} with status ${String(response.status)}`,
+    response.status,
+    payload,
+    Number.isFinite(retryAfterMs) ? retryAfterMs : undefined,
+  );
+};

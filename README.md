@@ -26,3 +26,11 @@ bun run cli -- jobs submit --workspace-id ws_demo --token <token> --session-key 
 ## Console
 
 The built-in operator console is served at `/console` by the Bun server. It provides a minimal authenticated UI for nodes, jobs, previews, and service actions such as `Open Dashboard`, `Revoke Access`, and `Restart Service`.
+
+## Contract and Config Alignment
+
+- Contract fixtures and boundary notes live under [planning/platform-standardization](planning/platform-standardization).
+- Canonical deployment env prefixes are `OR3_NET_*`, `OR3_INTERN_*`, and `OR3_SANDBOX_*`; orchestration should translate those into repo-native runtime settings before each process starts.
+- Shared secret precedence is launch-time env or mounted secret paths → instance-local config → repo defaults.
+- Cross-repo key mapping and secret ownership are documented in [planning/platform-standardization/config-alignment.md](planning/platform-standardization/config-alignment.md).
+- Contract fixture drift is enforced in CI via [.github/workflows/contracts.yml](.github/workflows/contracts.yml).

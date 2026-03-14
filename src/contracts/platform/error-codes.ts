@@ -2,6 +2,7 @@ export const platformErrorCodes = {
   authTokenExpired: "auth.token_expired",
   authTokenInvalid: "auth.token_invalid",
   authInsufficientScope: "auth.insufficient_scope",
+  authWorkspaceMismatch: "auth.workspace_mismatch",
   resourceNotFound: "resource.not_found",
   resourceConflict: "resource.conflict",
   rateLimitExceeded: "rate.limit_exceeded",

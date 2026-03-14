@@ -4,6 +4,9 @@ import type { AuthService } from "../auth/service.ts";
 import type { AgentService } from "../agents/index.ts";
 import { agentSchema, previewDescriptorSchema, previewLaunchRequestSchema } from "../contracts/index.ts";
 import { exchangeSessionRequestSchema } from "../contracts/platform/auth.ts";
+import { platformErrorCodes, type PlatformErrorCode } from "../contracts/platform/error-codes.ts";
+import type { AuditContext } from "../contracts/platform/types.ts";
+import { normalizeInternError, normalizeSandboxError } from "../contracts/platform/compat.ts";
 import type { WorkspacePrincipal } from "../auth/tokens.ts";
 import { consoleEntryPath, renderConsoleHtml } from "../console/index.ts";
 import type { LocalJobService } from "../execution/local-jobs.ts";
@@ -12,7 +15,13 @@ import type { SandboxNodeAdapter } from "../nodes/adapter-sandbox.ts";
 import type { NodeRegistryService } from "../nodes/index.ts";
 import { enrollNodeRequestSchema } from "../nodes/index.ts";
 import { PreviewStateError, type PreviewService } from "../previews/service.ts";
+import { errorResponse, resolveRequestId } from "./response-helpers.ts";
 import type { InMemoryWorkspaceFileService } from "../workspace/files.ts";
+import type { ControlPlaneDatabase } from "../db/index.ts";
+import type { StoredIdempotencyRecord } from "../db/schema.ts";
+import { InternRequestError } from "../../sdk/intern/types.ts";
+import type { SandboxRequestContext } from "../../sdk/sandbox/types.ts";
+import { SandboxRequestError } from "../../sdk/sandbox/types.ts";
 
 const createApiKeyRequestSchema = z.object({
   name: z.string().trim().min(1),
@@ -26,6 +35,7 @@ const createApiKeyRequestSchema = z.object({
 });
 
 interface AppServices {
+  readonly database?: ControlPlaneDatabase;
   readonly authService: AuthService;
   readonly localJobService: LocalJobService;
   readonly nodeRegistryService?: NodeRegistryService;
@@ -252,25 +262,52 @@ export class Or3NetApp {
       return this.handleFiles(request, url.pathname);
     }
 
-    return jsonResponse(404, { error: "route not found" });
+    throw new HttpError(404, "route not found", { code: platformErrorCodes.resourceNotFound });
   }
 
   private async handleExchange(request: Request): Promise<Response> {
-    const payload = exchangeSessionRequestSchema.parse(await request.json());
+    const payload = exchangeSessionRequestSchema.parse(await readJsonBody(request));
+    const idempotencyKey = resolveIdempotencyKey(request.headers.get("Idempotency-Key"));
+    const idempotencyScope = `auth.exchange:${payload.provider}`;
+    const idempotencyOwnerKey = payload.workspace_id ?? payload.provider;
+    const requestBody = stableStringify(payload);
+    const existing = this.readIdempotencyRecord(idempotencyScope, idempotencyOwnerKey, idempotencyKey, requestBody);
+    if (existing !== null) {
+      return jsonResponse(existing.status_code, JSON.parse(existing.response_json) as Record<string, unknown>);
+    }
     const token = await this.services.authService.exchangeSessionProof({
       provider: payload.provider,
       session_proof: payload.session_proof,
       ...(payload.workspace_id === undefined ? {} : { workspace_id: payload.workspace_id }),
     });
+    this.saveIdempotencyRecord(idempotencyScope, idempotencyOwnerKey, idempotencyKey, requestBody, token, 200, token.workspace_id, token.expires_at);
     return jsonResponse(200, token);
   }
 
   private async handleCreateJob(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "jobs:write");
-    const payload = createJobRequestSchema.parse(await request.json());
+    const payload = createJobRequestSchema.parse(await readJsonBody(request));
+    const auditContext = createRequestAuditContext(request, principal);
+    const idempotencyKey = resolveIdempotencyKey(request.headers.get("Idempotency-Key"));
+    const requestBody = stableStringify(payload);
+    const existing = this.readIdempotencyRecord("jobs.create", principal.workspace_id, idempotencyKey, requestBody);
+    if (existing !== null) {
+      return jsonResponse(existing.status_code, JSON.parse(existing.response_json) as Record<string, unknown>);
+    }
     const job = this.services.localJobService.submitJob(principal.workspace_id, payload, {
       initiator_subject: principal.subject,
+      request_id: auditContext.request_id,
     });
+    this.saveIdempotencyRecord(
+      "jobs.create",
+      principal.workspace_id,
+      idempotencyKey,
+      requestBody,
+      job,
+      202,
+      job.job_id,
+      new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+    );
     return jsonResponse(202, job);
   }
 
@@ -327,7 +364,7 @@ export class Or3NetApp {
 
   private async handleCreateApiKey(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "api-keys:write");
-    const payload = createApiKeyRequestSchema.parse(await request.json());
+    const payload = createApiKeyRequestSchema.parse(await readJsonBody(request));
     const created = await this.services.authService.createApiKey({
       workspace_id: principal.workspace_id,
       name: payload.name,
@@ -381,9 +418,9 @@ export class Or3NetApp {
 
   private async handleCreateAgent(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "agents:write");
-    const agent = agentSchema.parse(await request.json());
+    const agent = agentSchema.parse(await readJsonBody(request));
     if (agent.workspace_id !== principal.workspace_id) {
-      throw new HttpError(403, "workspace mismatch");
+      throw new HttpError(403, "workspace mismatch", { code: platformErrorCodes.authWorkspaceMismatch });
     }
     return jsonResponse(201, {
       agent: requireAgentService(this.services.agentService).saveAgent(principal.workspace_id, agent),
@@ -398,12 +435,12 @@ export class Or3NetApp {
 
   private async handleUpdateAgent(request: Request, workspaceId: string, agentId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "agents:write");
-    const agent = agentSchema.parse(await request.json());
+    const agent = agentSchema.parse(await readJsonBody(request));
     if (agent.workspace_id !== principal.workspace_id) {
-      throw new HttpError(403, "workspace mismatch");
+      throw new HttpError(403, "workspace mismatch", { code: platformErrorCodes.authWorkspaceMismatch });
     }
     if (agent.agent_id !== agentId) {
-      throw new HttpError(400, "agent id mismatch");
+      throw new HttpError(400, "agent id mismatch", { code: platformErrorCodes.inputInvalidParameter });
     }
     return jsonResponse(200, {
       agent: requireAgentService(this.services.agentService).saveAgent(principal.workspace_id, agent),
@@ -425,7 +462,7 @@ export class Or3NetApp {
   private async handleEnrollNode(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "nodes:write");
     const registry = requireNodeRegistry(this.services.nodeRegistryService);
-    const payload = enrollNodeRequestSchema.parse(await request.json());
+    const payload = enrollNodeRequestSchema.parse(await readJsonBody(request));
     const node = await registry.enrollNode(principal.workspace_id, payload);
     return jsonResponse(202, { node });
   }
@@ -452,12 +489,13 @@ export class Or3NetApp {
     const principal = await this.requirePrincipal(request, workspaceId, "services:write");
     const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
     const previewService = requirePreviewService(this.services.previewService);
+    const auditContext = createRequestAuditContext(request, principal);
     const node = requireNodeRegistry(this.services.nodeRegistryService).listNodes(principal.workspace_id).find((item) => item.manifest.node_id === nodeId);
     if (node === undefined) {
       throw new HttpError(404, "node not found");
     }
     ensureLaunchableNode(node);
-    const internalLaunch = await adapter.prepareServiceLaunch(principal.workspace_id, node, serviceId);
+    const internalLaunch = await adapter.prepareServiceLaunch(principal.workspace_id, node, serviceId, toSandboxRequestContext(auditContext));
     const launch = previewService.mintLaunchCapability({
       origin: new URL(request.url).origin,
       workspace_id: principal.workspace_id,
@@ -476,13 +514,19 @@ export class Or3NetApp {
   private async handleRevokeNodeService(request: Request, workspaceId: string, nodeId: string, serviceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "services:write");
     const previewService = requirePreviewService(this.services.previewService);
+    const auditContext = createRequestAuditContext(request, principal);
     const node = requireNodeRegistry(this.services.nodeRegistryService).listNodes(principal.workspace_id).find((item) => item.manifest.node_id === nodeId);
     if (node === undefined) {
       throw new HttpError(404, "node not found");
     }
     ensureLaunchableNode(node);
     const revokedLaunches = previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
-    const revokedTunnels = await requireSandboxAdapter(this.services.sandboxNodeAdapter).revokeServiceLaunch(principal.workspace_id, node, serviceId);
+    const revokedTunnels = await requireSandboxAdapter(this.services.sandboxNodeAdapter).revokeServiceLaunch(
+      principal.workspace_id,
+      node,
+      serviceId,
+      toSandboxRequestContext(auditContext),
+    );
     return jsonResponse(200, { ok: true, revoked: revokedLaunches + revokedTunnels });
   }
 
@@ -490,13 +534,14 @@ export class Or3NetApp {
     const principal = await this.requirePrincipal(request, workspaceId, "services:write");
     const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
     const previewService = requirePreviewService(this.services.previewService);
+    const auditContext = createRequestAuditContext(request, principal);
     const node = requireNodeRegistry(this.services.nodeRegistryService).listNodes(principal.workspace_id).find((item) => item.manifest.node_id === nodeId);
     if (node === undefined) {
       throw new HttpError(404, "node not found");
     }
     ensureLaunchableNode(node);
     previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
-    const result = await adapter.restartService(principal.workspace_id, node, serviceId);
+    const result = await adapter.restartService(principal.workspace_id, node, serviceId, toSandboxRequestContext(auditContext));
     return jsonResponse(200, result as unknown as Record<string, unknown>);
   }
 
@@ -509,9 +554,9 @@ export class Or3NetApp {
   private async handleRegisterPreview(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "previews:write");
     const previewService = requirePreviewService(this.services.previewService);
-    const preview = previewDescriptorSchema.parse(await request.json());
+    const preview = previewDescriptorSchema.parse(await readJsonBody(request));
     if (preview.workspace_id !== principal.workspace_id) {
-      throw new HttpError(403, "workspace mismatch");
+      throw new HttpError(403, "workspace mismatch", { code: platformErrorCodes.authWorkspaceMismatch });
     }
     if (preview.launch_url !== undefined || preview.embed_url !== undefined) {
       throw new HttpError(403, "caller-supplied browser URLs are not allowed");
@@ -522,6 +567,7 @@ export class Or3NetApp {
   private async handleLaunchPreview(request: Request, workspaceId: string, previewId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "previews:read");
     const previewService = requirePreviewService(this.services.previewService);
+    void createRequestAuditContext(request, principal);
     const launchRequest = previewLaunchRequestSchema.parse(await readOptionalJson(request));
     const launch = previewService.launchPreview(principal.workspace_id, previewId, launchRequest, new URL(request.url).origin);
     return jsonResponse(200, launch as unknown as Record<string, unknown>);
@@ -582,25 +628,82 @@ export class Or3NetApp {
     let principal: WorkspacePrincipal;
     try {
       principal = await this.services.authService.authenticateBearerToken(request.headers.get("Authorization"));
-    } catch {
-      throw new HttpError(401, "unauthorized");
+    } catch (error) {
+      throw new HttpError(401, isExpiredAuthError(error) ? "token expired" : "unauthorized", {
+        code: isExpiredAuthError(error) ? platformErrorCodes.authTokenExpired : platformErrorCodes.authTokenInvalid,
+      });
     }
     if (workspaceId !== undefined && principal.workspace_id !== workspaceId) {
-      throw new HttpError(403, "workspace mismatch");
+      throw new HttpError(403, "workspace mismatch", { code: platformErrorCodes.authWorkspaceMismatch });
     }
     if (!hasScope(principal, requiredScope)) {
       throw new HttpError(403, "missing required scope");
     }
     return principal;
   }
+
+  private readIdempotencyRecord(
+    scope: string,
+    ownerKey: string,
+    idempotencyKey: string | undefined,
+    requestBody: string,
+  ): StoredIdempotencyRecord | null {
+    if (idempotencyKey === undefined || this.services.database === undefined) {
+      return null;
+    }
+
+    this.services.database.pruneExpiredIdempotencyRecords();
+    const existing = this.services.database.getIdempotencyRecord(scope, ownerKey, idempotencyKey);
+    if (existing === null) {
+      return null;
+    }
+    if (existing.request_body !== requestBody) {
+      throw new HttpError(409, "idempotency key was reused with a different request body", {
+        code: platformErrorCodes.resourceConflict,
+      });
+    }
+    return existing;
+  }
+
+  private saveIdempotencyRecord(
+    scope: string,
+    ownerKey: string,
+    idempotencyKey: string | undefined,
+    requestBody: string,
+    responsePayload: Record<string, unknown>,
+    statusCode: number,
+    resourceId: string,
+    expiresAt: string,
+  ): void {
+    if (idempotencyKey === undefined || this.services.database === undefined) {
+      return;
+    }
+
+    this.services.database.saveIdempotencyRecord({
+      scope,
+      owner_key: ownerKey,
+      idempotency_key: idempotencyKey,
+      request_body: requestBody,
+      response_json: JSON.stringify(responsePayload),
+      status_code: statusCode,
+      resource_id: resourceId,
+      expires_at: expiresAt,
+    });
+  }
 }
 
 class HttpError extends Error {
+  public readonly code: PlatformErrorCode;
+  public readonly retry_after_ms: number | undefined;
+
   public constructor(
     public readonly status: number,
     message: string,
+    options: { code?: PlatformErrorCode; retry_after_ms?: number } = {},
   ) {
     super(message);
+    this.code = options.code ?? httpErrorCodeForStatus(status);
+    this.retry_after_ms = options.retry_after_ms;
   }
 }
 
@@ -622,42 +725,42 @@ const htmlResponse = (html: string): Response =>
 const requireGroup = (groups: Record<string, string | undefined>, key: string): string => {
   const value = groups[key];
   if (value === undefined) {
-    throw new HttpError(404, `missing route parameter ${key}`);
+    throw new HttpError(404, `missing route parameter ${key}`, { code: platformErrorCodes.resourceNotFound });
   }
   return value;
 };
 
 const requireNodeRegistry = (service: NodeRegistryService | undefined): NodeRegistryService => {
   if (service === undefined) {
-    throw new HttpError(503, "node registry is not configured");
+    throw new HttpError(503, "node registry is not configured", { code: platformErrorCodes.serverUnavailable });
   }
   return service;
 };
 
 const requireAgentService = (service: AgentService | undefined): AgentService => {
   if (service === undefined) {
-    throw new HttpError(503, "agent service is not configured");
+    throw new HttpError(503, "agent service is not configured", { code: platformErrorCodes.serverUnavailable });
   }
   return service;
 };
 
 const requirePreviewService = (service: PreviewService | undefined): PreviewService => {
   if (service === undefined) {
-    throw new HttpError(503, "preview service is not configured");
+    throw new HttpError(503, "preview service is not configured", { code: platformErrorCodes.serverUnavailable });
   }
   return service;
 };
 
 const requireWorkspaceFileService = (service: InMemoryWorkspaceFileService | undefined): InMemoryWorkspaceFileService => {
   if (service === undefined) {
-    throw new HttpError(503, "workspace file service is not configured");
+    throw new HttpError(503, "workspace file service is not configured", { code: platformErrorCodes.serverUnavailable });
   }
   return service;
 };
 
 const requireSandboxAdapter = (service: SandboxNodeAdapter | undefined): SandboxNodeAdapter => {
   if (service === undefined) {
-    throw new HttpError(503, "sandbox node adapter is not configured");
+    throw new HttpError(503, "sandbox node adapter is not configured", { code: platformErrorCodes.serverUnavailable });
   }
   return service;
 };
@@ -674,12 +777,30 @@ const ensureLaunchableNode = (node: { status: string; health_status: string }): 
 const buildServiceLaunchScope = (workspaceId: string, nodeId: string, serviceId: string): string =>
   `service:${workspaceId}:${nodeId}:${serviceId}`;
 
+const readJsonBody = async (request: Request): Promise<unknown> => {
+  try {
+    return await request.json();
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new HttpError(400, "malformed request body", { code: platformErrorCodes.inputMalformedBody });
+    }
+    throw error;
+  }
+};
+
 const readOptionalJson = async (request: Request): Promise<unknown> => {
   const text = await request.text();
   if (text.trim() === "") {
     return {};
   }
-  return JSON.parse(text) as unknown;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new HttpError(400, "malformed request body", { code: platformErrorCodes.inputMalformedBody });
+    }
+    throw error;
+  }
 };
 
 const parseJobStatusFilter = (value: string | null): "running" | "terminal" | "all" | undefined => {
@@ -689,7 +810,7 @@ const parseJobStatusFilter = (value: string | null): "running" | "terminal" | "a
   if (value === "running" || value === "terminal" || value === "all") {
     return value;
   }
-  throw new HttpError(400, "invalid status filter");
+  throw new HttpError(400, "invalid status filter", { code: platformErrorCodes.inputInvalidParameter });
 };
 
 const toApiKeyResponse = (record: ReturnType<AuthService["listApiKeys"]>[number]): Record<string, unknown> => ({
@@ -703,28 +824,138 @@ const toApiKeyResponse = (record: ReturnType<AuthService["listApiKeys"]>[number]
 });
 
 export const handleAppRequest = async (app: Or3NetApp, request: Request): Promise<Response> => {
+  const requestId = resolveRequestId(request.headers.get("X-Request-Id"));
+  const normalizedRequest = withRequestId(request, requestId);
   try {
-    return await app.fetch(request);
+    const response = await app.fetch(normalizedRequest);
+    response.headers.set("X-Request-Id", requestId);
+    return response;
   } catch (error) {
     if (error instanceof HttpError) {
-      return jsonResponse(error.status, { error: error.message });
+      return errorResponse({
+        error: error.message,
+        status: error.status,
+        code: error.code,
+        request_id: requestId,
+        ...(error.retry_after_ms === undefined ? {} : { retry_after_ms: error.retry_after_ms }),
+      });
+    }
+    if (error instanceof SandboxRequestError) {
+      return errorResponse(normalizeSandboxError(error, requestId));
+    }
+    if (error instanceof InternRequestError) {
+      return errorResponse(normalizeInternError(error, requestId));
     }
     if (error instanceof PreviewStateError) {
-      return jsonResponse(error.status, { error: error.message });
+      return errorResponse({
+        error: error.message,
+        status: error.status,
+        code: previewStateErrorCode(error),
+        request_id: requestId,
+      });
     }
     if (error instanceof z.ZodError) {
-      return jsonResponse(400, { error: error.issues[0]?.message ?? "invalid request" });
+      return errorResponse({
+        error: error.issues[0]?.message ?? "invalid request",
+        status: 400,
+        code: platformErrorCodes.inputInvalidParameter,
+        request_id: requestId,
+      });
     }
     if (error instanceof Error && isNotFoundError(error)) {
-      return jsonResponse(404, { error: error.message });
+      return errorResponse({
+        error: error.message,
+        status: 404,
+        code: platformErrorCodes.resourceNotFound,
+        request_id: requestId,
+      });
     }
-    return jsonResponse(500, {
+    return errorResponse({
       error: error instanceof Error ? error.message : "internal server error",
+      status: 500,
+      code: platformErrorCodes.serverInternal,
+      request_id: requestId,
     });
   }
+};
+
+const withRequestId = (request: Request, requestId: string): Request => {
+  const headers = new Headers(request.headers);
+  headers.set("X-Request-Id", requestId);
+  return new Request(request, { headers });
 };
 
 const isNotFoundError = (error: Error): boolean => {
   const message = error.message.toLowerCase();
   return message.includes("was not found") || message.endsWith("not found");
 };
+
+const httpErrorCodeForStatus = (status: number): PlatformErrorCode => {
+  switch (status) {
+    case 400:
+      return platformErrorCodes.inputInvalidParameter;
+    case 401:
+      return platformErrorCodes.authTokenInvalid;
+    case 403:
+      return platformErrorCodes.authInsufficientScope;
+    case 404:
+      return platformErrorCodes.resourceNotFound;
+    case 409:
+      return platformErrorCodes.resourceConflict;
+    case 429:
+      return platformErrorCodes.rateLimitExceeded;
+    case 503:
+      return platformErrorCodes.serverUnavailable;
+    default:
+      return platformErrorCodes.serverInternal;
+  }
+};
+
+const previewStateErrorCode = (error: PreviewStateError): PlatformErrorCode => {
+  const message = error.message.toLowerCase();
+  if (message.includes("expired")) {
+    return platformErrorCodes.capabilityExpired;
+  }
+  if (message.includes("revoked")) {
+    return platformErrorCodes.capabilityRevoked;
+  }
+  if (error.status === 403) {
+    return platformErrorCodes.inputInvalidParameter;
+  }
+  return httpErrorCodeForStatus(error.status);
+};
+
+const isExpiredAuthError = (error: unknown): boolean =>
+  error instanceof Error && error.message.toLowerCase().includes("expired");
+
+const resolveIdempotencyKey = (value: string | null): string | undefined => {
+  const trimmed = value?.trim() ?? "";
+  return trimmed === "" ? undefined : trimmed;
+};
+
+const stableStringify = (value: unknown): string => JSON.stringify(sortJsonValue(value));
+
+const sortJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sortJsonValue(entry));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, sortJsonValue(entry)]),
+    );
+  }
+  return value;
+};
+
+const createRequestAuditContext = (request: Request, principal: WorkspacePrincipal): AuditContext => ({
+  request_id: resolveRequestId(request.headers.get("X-Request-Id")),
+  workspace_id: principal.workspace_id,
+  subject: principal.subject,
+});
+
+const toSandboxRequestContext = (auditContext: AuditContext): SandboxRequestContext => ({
+  requestId: auditContext.request_id,
+  workspaceId: auditContext.workspace_id,
+});

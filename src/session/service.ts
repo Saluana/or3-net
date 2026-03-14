@@ -1,5 +1,7 @@
 import { createId } from "../lib/ids.ts";
 import type { ControlPlaneDatabase, StoredNetworkSession } from "../db/index.ts";
+import { toPlatformSessionRef } from "../contracts/platform/compat.ts";
+import type { PlatformSessionRef } from "../contracts/platform/types.ts";
 
 export interface ResolveSessionBindingInput {
   readonly workspace_id: string;
@@ -8,6 +10,11 @@ export interface ResolveSessionBindingInput {
   readonly client_session_id?: string;
   readonly session_key?: string;
   readonly initiator_subject?: string;
+}
+
+export interface ResolvedPlatformSessionBinding {
+  readonly binding: StoredNetworkSession;
+  readonly platform_session_ref: PlatformSessionRef;
 }
 
 export class SessionBindingService {
@@ -68,6 +75,14 @@ export class SessionBindingService {
     }
 
     throw new Error("job submission requires network_session_id, client session identity, or session_key");
+  }
+
+  public resolvePlatformSessionBinding(input: ResolveSessionBindingInput): ResolvedPlatformSessionBinding {
+    const binding = this.resolveBinding(input);
+    return {
+      binding,
+      platform_session_ref: toPlatformSessionRef(binding),
+    };
   }
 
   public touchBinding(workspaceId: string, networkSessionId: string, input: { last_job_id?: string; status?: string; closed_at?: string } = {}): StoredNetworkSession {

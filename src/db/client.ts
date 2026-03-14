@@ -21,6 +21,7 @@ import type {
   ApiKeyRow,
   JobRow,
   JobEventRow,
+  IdempotencyRecordRow,
   LeaseRow,
   NodeRow,
   NodeCredentialRow,
@@ -29,6 +30,7 @@ import type {
   StoredAgent,
   StoredApiKey,
   StoredJobEvent,
+  StoredIdempotencyRecord,
   StoredJobWithDiagnostics,
   StoredLease,
   StoredNetworkSession,
@@ -122,6 +124,18 @@ export interface SavePreviewInput {
   readonly created_at?: string;
   readonly updated_at?: string;
   readonly revoked_at?: string;
+}
+
+export interface SaveIdempotencyRecordInput {
+  readonly scope: string;
+  readonly owner_key: string;
+  readonly idempotency_key: string;
+  readonly request_body: string;
+  readonly response_json: string;
+  readonly status_code: number;
+  readonly resource_id?: string;
+  readonly created_at?: string;
+  readonly expires_at: string;
 }
 
 const runningJobStatuses = ["scheduled", "running"] as const;
@@ -254,6 +268,18 @@ const parseNodeCredentialRow = (row: NodeCredentialRow): StoredNodeCredential =>
   issued_at: toIsoDateTime(row.issued_at),
   expires_at: toIsoDateTime(row.expires_at),
   rotated_at: row.rotated_at === null ? null : toIsoDateTime(row.rotated_at),
+});
+
+const parseIdempotencyRecordRow = (row: IdempotencyRecordRow): StoredIdempotencyRecord => ({
+  scope: row.scope,
+  owner_key: row.owner_key,
+  idempotency_key: row.idempotency_key,
+  request_body: row.request_body,
+  response_json: row.response_json,
+  status_code: row.status_code,
+  resource_id: row.resource_id,
+  created_at: toIsoDateTime(row.created_at),
+  expires_at: toIsoDateTime(row.expires_at),
 });
 
 export class WorkspaceStore {
@@ -499,7 +525,7 @@ export class WorkspaceStore {
 
   public listJobsByFilter(status?: "running" | "terminal" | "all", networkSessionId?: string): StoredJobWithDiagnostics[] {
     const clauses = ["workspace_id = ?"];
-    const params: Array<string> = [this.workspaceId];
+    const params: string[] = [this.workspaceId];
 
     if (status === "running") {
       clauses.push("status IN ('pending', 'scheduled', 'running')");
@@ -659,7 +685,7 @@ export class WorkspaceStore {
 
   public listJobEvents(input: ListJobEventsInput = {}): StoredJobEvent[] {
     const clauses = ["workspace_id = ?"];
-    const params: Array<string | number> = [this.workspaceId];
+    const params: (string | number)[] = [this.workspaceId];
 
     if (input.job_id !== undefined) {
       clauses.push("job_id = ?");
@@ -673,7 +699,7 @@ export class WorkspaceStore {
     params.push(input.limit ?? 100);
 
     return this.db
-      .query<JobEventRow, Array<string | number>>(
+      .query<JobEventRow, (string | number)[]>(
         `SELECT * FROM (
           SELECT * FROM job_events WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC, sequence DESC LIMIT ?
         ) ORDER BY created_at ASC, sequence ASC`,
@@ -958,6 +984,52 @@ export class ControlPlaneDatabase {
     return this.getApiKey(workspaceId, apiKeyId);
   }
 
+  public getIdempotencyRecord(
+    scope: string,
+    ownerKey: string,
+    idempotencyKey: string,
+    nowMs = Date.now(),
+  ): StoredIdempotencyRecord | null {
+    const row = this.sqlite
+      .query<IdempotencyRecordRow, [string, string, string, number]>(
+        "SELECT * FROM idempotency_records WHERE scope = ? AND owner_key = ? AND idempotency_key = ? AND expires_at > ? LIMIT 1",
+      )
+      .get(scope, ownerKey, idempotencyKey, nowMs);
+
+    return row === null ? null : parseIdempotencyRecordRow(row);
+  }
+
+  public saveIdempotencyRecord(input: SaveIdempotencyRecordInput): StoredIdempotencyRecord {
+    const createdAt = input.created_at ?? new Date().toISOString();
+
+    this.sqlite
+      .prepare(
+        "INSERT INTO idempotency_records (scope, owner_key, idempotency_key, request_body, response_json, status_code, resource_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(scope, owner_key, idempotency_key) DO UPDATE SET request_body = excluded.request_body, response_json = excluded.response_json, status_code = excluded.status_code, resource_id = excluded.resource_id, created_at = excluded.created_at, expires_at = excluded.expires_at",
+      )
+      .run(
+        input.scope,
+        input.owner_key,
+        input.idempotency_key,
+        input.request_body,
+        input.response_json,
+        input.status_code,
+        input.resource_id ?? null,
+        fromIsoDateTime(createdAt),
+        fromIsoDateTime(input.expires_at),
+      );
+
+    const record = this.getIdempotencyRecord(input.scope, input.owner_key, input.idempotency_key, 0);
+    if (record === null) {
+      throw new Error("idempotency record was not persisted");
+    }
+
+    return record;
+  }
+
+  public pruneExpiredIdempotencyRecords(nowMs = Date.now()): number {
+    return this.sqlite.prepare("DELETE FROM idempotency_records WHERE expires_at <= ?").run(nowMs).changes;
+  }
+
   public reconcileStartupState(nowMs = Date.now()): StartupReconciliationSummary {
     const failableStates = runningJobStatuses.map(() => "?").join(", ");
     const failedJobs = this.sqlite
@@ -1023,5 +1095,14 @@ const sanitizeValue = (value: unknown): unknown => {
   if (typeof value === "number" || typeof value === "boolean" || value === null) {
     return value;
   }
-  return String(value);
+  if (typeof value === "bigint" || typeof value === "symbol") {
+    return value.toString();
+  }
+  if (typeof value === "undefined") {
+    return "undefined";
+  }
+  if (typeof value === "function") {
+    return `[function ${value.name || "anonymous"}]`;
+  }
+  return null;
 };

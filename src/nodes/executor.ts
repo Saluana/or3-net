@@ -68,7 +68,7 @@ export class RemoteNodeExecutor {
     }
 
     const stored = this.database.workspace(node.workspace_id).getActiveNodeCredential(node.manifest.node_id);
-    if (stored === null || stored.token_ciphertext === null) {
+    if (stored?.token_ciphertext == null) {
       throw new RemoteExecutionError(
         "remote_execution_start_failed",
         `no runtime credential is available for node ${node.manifest.node_id}`,

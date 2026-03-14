@@ -7,7 +7,10 @@ import type { InternAbortResponse, InternClient, InternJobEvent, InternSubagentR
 import { JobStreamBroker } from "../src/execution/job-streams.ts";
 
 class StaticSessionProofValidator implements SessionProofValidator {
+  public exchangeCalls = 0;
+
   public validateSessionProof(): Promise<{ user_id: string; workspace_id: string; scopes: string[] }> {
+    this.exchangeCalls += 1;
     return Promise.resolve({
       user_id: "user_1",
       workspace_id: "ws_test",
@@ -73,6 +76,7 @@ describe("phase 2 host API", () => {
   let authService: AuthService;
   let internClient: FakeInternClient;
   let app: Or3NetApp;
+  let validator: StaticSessionProofValidator;
 
   beforeEach(() => {
     database = createControlPlaneDatabase();
@@ -86,13 +90,15 @@ describe("phase 2 host API", () => {
       name: "Other Workspace",
       created_at: "2024-01-01T00:00:00.000Z",
     });
+    validator = new StaticSessionProofValidator();
     authService = new AuthService({
       secret: "phase2-secret",
       database,
-      sessionProofValidator: new StaticSessionProofValidator(),
+      sessionProofValidator: validator,
     });
     internClient = new FakeInternClient();
     app = new Or3NetApp({
+      database,
       authService,
       localJobService: new LocalJobService({ database, internClient }),
     });
@@ -124,6 +130,7 @@ describe("phase 2 host API", () => {
         headers: {
           Authorization: `Bearer ${tokenPayload.token}`,
           "Content-Type": "application/json",
+          "X-Request-Id": "req_phase2_create",
         },
         body: JSON.stringify({
           session_key: "svc:test",
@@ -132,6 +139,8 @@ describe("phase 2 host API", () => {
         }),
       }),
     );
+
+    expect(createJobResponse.headers.get("X-Request-Id")).toBe("req_phase2_create");
 
     expect(createJobResponse.status).toBe(202);
     const createdJob = (await createJobResponse.json()) as { job_id: string };
@@ -198,6 +207,17 @@ describe("phase 2 host API", () => {
     expect(abortResponse.status).toBe(200);
     expect(internClient.abortCount).toBe(1);
 
+    const secondAbortResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/jobs/${createdJob.job_id}/abort`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}` },
+      }),
+    );
+
+    expect(secondAbortResponse.status).toBe(200);
+    expect(internClient.abortCount).toBe(1);
+
     await waitFor(async () => {
       const getJobResponse = await handleAppRequest(
         app,
@@ -209,6 +229,70 @@ describe("phase 2 host API", () => {
       const payload = (await getJobResponse.json()) as { status: string };
       expect(payload.status).toBe("aborted");
     });
+  });
+
+  test("replays auth exchange and job creation when Idempotency-Key is reused", async () => {
+    const createAuthRequest = (): Request =>
+      new Request("http://or3.test/v1/auth/exchange", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem-auth-1",
+        },
+        body: JSON.stringify({
+          provider: "test",
+          session_proof: { session: "ok" },
+          workspace_id: "ws_test",
+        }),
+      });
+
+    const firstTokenResponse = await handleAppRequest(app, createAuthRequest());
+    const secondTokenResponse = await handleAppRequest(app, createAuthRequest());
+    const firstTokenPayload = (await firstTokenResponse.json()) as { token: string; expires_at: string };
+    const secondTokenPayload = (await secondTokenResponse.json()) as { token: string; expires_at: string };
+
+    expect(firstTokenPayload).toEqual(secondTokenPayload);
+    expect(validator.exchangeCalls).toBe(1);
+
+    const createJobRequest = (): Request =>
+      new Request("http://or3.test/v1/workspaces/ws_test/jobs", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${firstTokenPayload.token}`,
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem-job-1",
+        },
+        body: JSON.stringify({
+          session_key: "svc:test",
+          message: "idempotent hello",
+        }),
+      });
+
+    const firstJobResponse = await handleAppRequest(app, createJobRequest());
+    const secondJobResponse = await handleAppRequest(app, createJobRequest());
+    const firstJobPayload = (await firstJobResponse.json()) as { job_id: string };
+    const secondJobPayload = (await secondJobResponse.json()) as { job_id: string };
+
+    expect(firstJobPayload).toEqual(secondJobPayload);
+    expect(database.workspace("ws_test").listJobsByFilter("all")).toHaveLength(1);
+
+    const conflictResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/jobs", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${firstTokenPayload.token}`,
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem-job-1",
+        },
+        body: JSON.stringify({
+          session_key: "svc:test",
+          message: "different body",
+        }),
+      }),
+    );
+
+    expect(conflictResponse.status).toBe(409);
   });
 
   test("lists jobs, manages api keys, and replays durable session history", async () => {
@@ -265,7 +349,7 @@ describe("phase 2 host API", () => {
     );
     expect(jobsResponse.status).toBe(200);
     const jobsPayload = (await jobsResponse.json()) as {
-      items: Array<{ job_id: string; status: string; network_session_id: string | null }>;
+      items: { job_id: string; status: string; network_session_id: string | null }[];
     };
     expect(jobsPayload.items).toHaveLength(1);
     expect(jobsPayload.items[0]?.job_id).toBe(createdJob.job_id);
@@ -282,7 +366,7 @@ describe("phase 2 host API", () => {
     );
     expect(sessionsResponse.status).toBe(200);
     const sessionsPayload = (await sessionsResponse.json()) as {
-      items: Array<{ network_session_id: string; client_kind: string; client_session_id: string | null }>;
+      items: { network_session_id: string; client_kind: string; client_session_id: string | null }[];
     };
     expect(sessionsPayload.items).toHaveLength(1);
     expect(sessionsPayload.items[0]?.network_session_id).toBe(sessionId);
@@ -298,7 +382,7 @@ describe("phase 2 host API", () => {
     expect(sessionDetailResponse.status).toBe(200);
     const sessionDetailPayload = (await sessionDetailResponse.json()) as {
       session: { network_session_id: string; intern_session_key: string };
-      jobs: Array<{ job_id: string }>;
+      jobs: { job_id: string }[];
     };
     expect(sessionDetailPayload.session.network_session_id).toBe(sessionId);
     expect(sessionDetailPayload.session.intern_session_key).toBeString();
@@ -312,7 +396,7 @@ describe("phase 2 host API", () => {
     );
     expect(sessionEventsResponse.status).toBe(200);
     const sessionEventsPayload = (await sessionEventsResponse.json()) as {
-      items: Array<{ event_type: string; sequence: number; job_id: string }>;
+      items: { event_type: string; sequence: number; job_id: string }[];
     };
     expect(sessionEventsPayload.items.map((item) => item.event_type)).toContain("job.completed");
     expect(sessionEventsPayload.items.every((item) => item.job_id === createdJob.job_id)).toBeTrue();
@@ -352,7 +436,7 @@ describe("phase 2 host API", () => {
     );
     expect(listKeysResponse.status).toBe(200);
     const listKeysPayload = (await listKeysResponse.json()) as {
-      items: Array<{ api_key_id: string; name: string; revoked_at: string | null }>;
+      items: { api_key_id: string; name: string; revoked_at: string | null }[];
     };
     expect(listKeysPayload.items).toHaveLength(1);
     expect(listKeysPayload.items[0]?.api_key_id).toBe(createKeyPayload.record.api_key_id);
@@ -407,7 +491,35 @@ describe("phase 2 host API", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "invalid expires_at" });
+    expect(await response.json()).toEqual(expect.objectContaining({
+      error: "invalid expires_at",
+      code: "input.invalid_parameter",
+      status: 400,
+    }));
+    expect(response.headers.get("X-Request-Id")).toBeTruthy();
+  });
+
+  test("returns a canonical error envelope for malformed JSON request bodies", async () => {
+    const response = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/auth/exchange", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Request-Id": "req_malformed_json",
+        },
+        body: "{",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("X-Request-Id")).toBe("req_malformed_json");
+    expect(await response.json()).toEqual({
+      error: "malformed request body",
+      code: "input.malformed_body",
+      status: 400,
+      request_id: "req_malformed_json",
+    });
   });
 
   test("keeps remaining subscribers active when one stream cancels", async () => {
@@ -445,6 +557,10 @@ describe("phase 2 host API", () => {
       }),
     );
     expect(malformedResponse.status).toBe(401);
+    expect(await malformedResponse.json()).toEqual(expect.objectContaining({
+      code: "auth.token_invalid",
+      status: 401,
+    }));
 
     const expiredToken = await issueWorkspaceToken({
       secret: "phase2-secret",
@@ -468,6 +584,10 @@ describe("phase 2 host API", () => {
       }),
     );
     expect(expiredTokenResponse.status).toBe(401);
+    expect(await expiredTokenResponse.json()).toEqual(expect.objectContaining({
+      code: "auth.token_expired",
+      status: 401,
+    }));
 
     const { api_key: expiredApiKey } = await authService.createApiKey({
       workspace_id: "ws_test",
@@ -490,6 +610,10 @@ describe("phase 2 host API", () => {
       }),
     );
     expect(expiredApiResponse.status).toBe(401);
+    expect(await expiredApiResponse.json()).toEqual(expect.objectContaining({
+      code: "auth.token_invalid",
+      status: 401,
+    }));
 
     const { api_key: readonlyKey } = await authService.createApiKey({
       workspace_id: "ws_test",
@@ -511,6 +635,35 @@ describe("phase 2 host API", () => {
       }),
     );
     expect(missingScopeResponse.status).toBe(403);
+    expect(await missingScopeResponse.json()).toEqual(expect.objectContaining({
+      code: "auth.insufficient_scope",
+      status: 403,
+    }));
+
+    const { api_key: otherWorkspaceKey } = await authService.createApiKey({
+      workspace_id: "ws_other",
+      name: "other-workspace-key",
+      scopes: ["jobs:read", "jobs:write"],
+    });
+    const workspaceMismatchResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/jobs", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${otherWorkspaceKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_key: "svc:workspace-mismatch",
+          message: "nope",
+        }),
+      }),
+    );
+    expect(workspaceMismatchResponse.status).toBe(403);
+    expect(await workspaceMismatchResponse.json()).toEqual(expect.objectContaining({
+      code: "auth.workspace_mismatch",
+      status: 403,
+    }));
   });
 
   test("does not leak job routes across workspaces", async () => {

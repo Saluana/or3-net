@@ -148,6 +148,18 @@ export interface PreviewRow {
   readonly updated_at: number;
 }
 
+export interface IdempotencyRecordRow {
+  readonly scope: string;
+  readonly owner_key: string;
+  readonly idempotency_key: string;
+  readonly request_body: string;
+  readonly response_json: string;
+  readonly status_code: number;
+  readonly resource_id: string | null;
+  readonly created_at: number;
+  readonly expires_at: number;
+}
+
 export interface StoredNode {
   readonly workspace_id: string;
   readonly manifest: NodeManifest;
@@ -246,6 +258,18 @@ export interface StoredJobEvent {
   readonly created_at: string;
 }
 
+export interface StoredIdempotencyRecord {
+  readonly scope: string;
+  readonly owner_key: string;
+  readonly idempotency_key: string;
+  readonly request_body: string;
+  readonly response_json: string;
+  readonly status_code: number;
+  readonly resource_id: string | null;
+  readonly created_at: string;
+  readonly expires_at: string;
+}
+
 export const schemaMigrations: readonly Migration[] = [
   {
     version: 1,
@@ -338,6 +362,14 @@ export const schemaMigrations: readonly Migration[] = [
       "CREATE TABLE IF NOT EXISTS job_events (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, id TEXT NOT NULL, job_id TEXT NOT NULL, network_session_id TEXT, event_type TEXT NOT NULL, sequence INTEGER NOT NULL, payload_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, id), FOREIGN KEY (workspace_id, job_id) REFERENCES jobs(workspace_id, id) ON DELETE CASCADE, FOREIGN KEY (workspace_id, network_session_id) REFERENCES network_sessions(workspace_id, id) ON DELETE SET NULL)",
       "CREATE INDEX IF NOT EXISTS idx_job_events_workspace_job_sequence ON job_events(workspace_id, job_id, sequence)",
       "CREATE INDEX IF NOT EXISTS idx_job_events_workspace_session_created ON job_events(workspace_id, network_session_id, created_at)",
+    ],
+  },
+  {
+    version: 5,
+    name: "idempotency-records",
+    statements: [
+      "CREATE TABLE IF NOT EXISTS idempotency_records (scope TEXT NOT NULL, owner_key TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_body TEXT NOT NULL, response_json TEXT NOT NULL, status_code INTEGER NOT NULL, resource_id TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY (scope, owner_key, idempotency_key))",
+      "CREATE INDEX IF NOT EXISTS idx_idempotency_records_expires_at ON idempotency_records(expires_at)",
     ],
   },
 ];

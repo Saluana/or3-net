@@ -3,6 +3,7 @@ import nacl from "tweetnacl";
 
 import { AuthService, createControlPlaneDatabase, handleAppRequest, InMemoryWorkspaceFileService, LocalJobService, NodeRegistryService, Or3NetApp, PreviewService, SandboxNodeAdapter, signNodeManifest } from "../src/index.ts";
 import type { SessionProofValidator } from "../src/auth/service.ts";
+import type { StoredNode } from "../src/db/index.ts";
 import type { InternAbortResponse, InternClient, InternJobEvent, InternSubagentRequest, InternSubagentResponse, InternTurnRequest, InternTurnResponse } from "../sdk/intern/index.ts";
 import type { CreateSandboxRequest, CreateTunnelRequest, SandboxClient, SandboxExecEvent, SandboxExecRequest, SandboxExecResult, SandboxInfo, SandboxTunnel, SandboxWriteFileRequest } from "../sdk/sandbox/index.ts";
 
@@ -285,6 +286,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     );
     const launchPayload = (await launchResponse.json()) as { launch_url: string; supports_iframe: boolean };
     expect(launchPayload.launch_url).toContain("http://or3.test/v1/launch/");
+    expect(launchPayload.launch_url).toContain("cap_");
     expect(launchPayload.supports_iframe).toBeTrue();
 
     const resolvedLaunchResponse = await handleAppRequest(
@@ -315,7 +317,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       app,
       new Request(launchPayload.launch_url),
     );
-    expect(revokedLaunchResponse.status).toBe(410);
+    expect(revokedLaunchResponse.status).toBe(403);
   });
 
   test("returns embedded pane launch metadata for iframe-safe previews and falls back to new-tab mode", async () => {
@@ -474,6 +476,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     );
     const launchPayload = (await launchResponse.json()) as { launch_url: string };
     expect(launchPayload.launch_url).toContain("http://or3.test/v1/launch/");
+    expect(launchPayload.launch_url).toContain("cap_");
 
     const resolvedLaunchResponse = await handleAppRequest(
       app,
@@ -495,7 +498,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       app,
       new Request(launchPayload.launch_url),
     );
-    expect(revokedLaunchResponse.status).toBe(410);
+    expect(revokedLaunchResponse.status).toBe(403);
 
     const otherToken = await authService.createApiKey({
       workspace_id: "ws_other",
@@ -541,11 +544,12 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
 
   test("only requests tunnel-capable sandboxes for service launches", async () => {
     const adapter = new SandboxNodeAdapter(sandboxClient);
-    const node = {
+    const node: StoredNode = {
       workspace_id: "ws_preview",
       manifest: {
         node_id: "node_services",
         pubkey: "pubkey",
+        signature: "sig",
         adapter_kind: "sandbox",
         capabilities: ["exec", "service:openclaw:3000:OpenClaw Dashboard"],
         isolation_class: "docker-trusted",
@@ -744,6 +748,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
 
     const token = launch.launch_url.split("/").pop();
     expect(token).toBeDefined();
+    expect(token).toStartWith("cap_");
     expect(() => previewService.resolveLaunchCapability(token ?? "")).toThrow("launch capability has expired");
   });
 });

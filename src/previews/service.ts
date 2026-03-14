@@ -1,30 +1,25 @@
 import { posix as pathPosix } from "node:path";
 
 import type { PreviewDescriptor, PreviewLaunchMetadata, PreviewLaunchRequest } from "../contracts/index.ts";
+import type { CapabilityGrant } from "../contracts/platform/types.ts";
 import type { ControlPlaneDatabase, StoredPreview } from "../db/index.ts";
 import { createId } from "../lib/ids.ts";
 
-type LaunchCapability =
+type LaunchCapabilityRecord =
   | {
-      readonly token: string;
-      readonly workspace_id: string;
+      readonly grant: CapabilityGrant;
       readonly preview_id?: string;
       readonly scope_key?: string;
       readonly kind: "redirect";
       readonly target_url: string;
-      readonly expires_at: string;
-      readonly revoked: boolean;
     }
   | {
-      readonly token: string;
-      readonly workspace_id: string;
+      readonly grant: CapabilityGrant;
       readonly preview_id?: string;
       readonly scope_key?: string;
       readonly kind: "files";
       readonly root_path: string;
       readonly default_file_path: string;
-      readonly expires_at: string;
-      readonly revoked: boolean;
     };
 
 export type ResolvedLaunchCapability =
@@ -49,7 +44,7 @@ export class PreviewStateError extends Error {
 }
 
 export class PreviewService {
-  private readonly launchCapabilities = new Map<string, LaunchCapability>();
+  private readonly launchCapabilities = new Map<string, LaunchCapabilityRecord>();
   private readonly previewLaunchTokens = new Map<string, Set<string>>();
   private readonly scopedLaunchTokens = new Map<string, Set<string>>();
 
@@ -137,33 +132,40 @@ export class PreviewService {
     readonly preview_id?: string;
     readonly scope_key?: string;
   }): PreviewLaunchMetadata {
-    const token = createId("launchcap");
-    this.launchCapabilities.set(token, {
-      token,
+    const capabilityKind: CapabilityGrant["kind"] = input.preview_id === undefined ? "service-launch" : "preview-launch";
+    const capability = createCapabilityGrant({
       workspace_id: input.workspace_id,
+      kind: capabilityKind,
+      scope: {
+        ...(input.preview_id === undefined ? {} : { preview_id: input.preview_id }),
+        ...(input.scope_key === undefined ? {} : { scope_key: input.scope_key }),
+        target_url: input.target_url,
+      },
+      expires_at: input.expires_at,
+    });
+    this.launchCapabilities.set(capability.capability_id, {
+      grant: capability,
       ...(input.preview_id === undefined ? {} : { preview_id: input.preview_id }),
       ...(input.scope_key === undefined ? {} : { scope_key: input.scope_key }),
       kind: "redirect",
       target_url: input.target_url,
-      expires_at: input.expires_at,
-      revoked: false,
     });
 
     if (input.preview_id !== undefined) {
       const existing = this.previewLaunchTokens.get(input.preview_id) ?? new Set<string>();
-      existing.add(token);
+      existing.add(capability.capability_id);
       this.previewLaunchTokens.set(input.preview_id, existing);
     }
 
     if (input.scope_key !== undefined) {
       const existing = this.scopedLaunchTokens.get(input.scope_key) ?? new Set<string>();
-      existing.add(token);
+      existing.add(capability.capability_id);
       this.scopedLaunchTokens.set(input.scope_key, existing);
     }
 
-    const launchUrl = new URL(`/v1/launch/${token}`, normalizeOrigin(input.origin)).toString();
+    const launchUrl = new URL(`/v1/launch/${capability.capability_id}`, normalizeOrigin(input.origin)).toString();
     return {
-      preview_id: input.preview_id ?? token,
+      preview_id: input.preview_id ?? capability.capability_id,
       workspace_id: input.workspace_id,
       launch_url: launchUrl,
       ...(input.supports_iframe ? { embed_url: launchUrl } : {}),
@@ -178,10 +180,13 @@ export class PreviewService {
 
   public resolveLaunchCapability(token: string, requestedPath?: string): ResolvedLaunchCapability {
     const capability = this.launchCapabilities.get(token);
-    if (capability === undefined || capability.revoked) {
-      throw new PreviewStateError(410, "launch capability has been revoked");
+    if (capability === undefined) {
+      throw new PreviewStateError(410, "launch capability has expired");
     }
-    if (Date.parse(capability.expires_at) <= Date.now()) {
+    if (capability.grant.revoked_at !== null) {
+      throw new PreviewStateError(403, "launch capability has been revoked");
+    }
+    if (Date.parse(capability.grant.expires_at) <= Date.now()) {
       throw new PreviewStateError(410, "launch capability has expired");
     }
 
@@ -189,13 +194,13 @@ export class PreviewService {
       return {
         kind: "redirect",
         target_url: capability.target_url,
-        workspace_id: capability.workspace_id,
+        workspace_id: capability.grant.workspace_id,
       };
     }
 
     return {
       kind: "files",
-      workspace_id: capability.workspace_id,
+      workspace_id: capability.grant.workspace_id,
       file_path: resolveCapabilityFilePath(capability.root_path, capability.default_file_path, requestedPath),
     };
   }
@@ -209,13 +214,18 @@ export class PreviewService {
     let revokedCount = 0;
     for (const token of tokens) {
       const capability = this.launchCapabilities.get(token);
-      if (capability !== undefined && !capability.revoked) {
-        this.launchCapabilities.set(token, {
-          ...capability,
-          revoked: true,
-        });
-        revokedCount += 1;
+      if (capability?.grant.revoked_at !== null) {
+        continue;
       }
+
+      this.launchCapabilities.set(token, {
+        ...capability,
+        grant: {
+          ...capability.grant,
+          revoked_at: new Date().toISOString(),
+        },
+      });
+      revokedCount += 1;
     }
     return revokedCount;
   }
@@ -231,7 +241,10 @@ export class PreviewService {
       if (capability !== undefined) {
         this.launchCapabilities.set(token, {
           ...capability,
-          revoked: true,
+          grant: {
+            ...capability.grant,
+            revoked_at: new Date().toISOString(),
+          },
         });
       }
     }
@@ -257,28 +270,34 @@ export class PreviewService {
     readonly service_status: PreviewLaunchMetadata["service_status"];
     readonly expires_at: string;
   }): PreviewLaunchMetadata {
-    const token = createId("launchcap");
     const rootPath = resolvePreviewRootPath(input.preview);
     const defaultFilePath = resolvePreviewDefaultFilePath(input.preview);
+    const capability = createCapabilityGrant({
+      workspace_id: input.workspace_id,
+      kind: "preview-launch",
+      scope: {
+        preview_id: input.preview_id,
+        root_path: rootPath,
+        default_file_path: defaultFilePath,
+      },
+      expires_at: input.expires_at,
+    });
     if (!isPathWithinRoot(rootPath, defaultFilePath)) {
       throw new PreviewStateError(403, "preview entry path is outside the preview root");
     }
-    this.launchCapabilities.set(token, {
-      token,
-      workspace_id: input.workspace_id,
+    this.launchCapabilities.set(capability.capability_id, {
+      grant: capability,
       preview_id: input.preview_id,
       kind: "files",
       root_path: rootPath,
       default_file_path: defaultFilePath,
-      expires_at: input.expires_at,
-      revoked: false,
     });
 
     const existing = this.previewLaunchTokens.get(input.preview_id) ?? new Set<string>();
-    existing.add(token);
+    existing.add(capability.capability_id);
     this.previewLaunchTokens.set(input.preview_id, existing);
 
-    const launchUrl = buildFileLaunchUrl(input.origin, token, rootPath, defaultFilePath);
+    const launchUrl = buildFileLaunchUrl(input.origin, capability.capability_id, rootPath, defaultFilePath);
     return {
       preview_id: input.preview_id,
       workspace_id: input.workspace_id,
@@ -293,6 +312,20 @@ export class PreviewService {
     };
   }
 }
+
+const createCapabilityGrant = (input: {
+  readonly workspace_id: string;
+  readonly kind: CapabilityGrant["kind"];
+  readonly scope: CapabilityGrant["scope"];
+  readonly expires_at: string;
+}): CapabilityGrant => ({
+  capability_id: createId("cap"),
+  workspace_id: input.workspace_id,
+  kind: input.kind,
+  scope: input.scope,
+  expires_at: input.expires_at,
+  revoked_at: null,
+});
 
 const shouldOfferIframe = (preview: PreviewDescriptor, request?: PreviewLaunchRequest): boolean => {
   if (!preview.supports_iframe) {
