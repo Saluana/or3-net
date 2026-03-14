@@ -1,0 +1,8 @@
+{
+  "code": "exec_failed",
+  "message": "command execution failed",
+  "retriable": false,
+  "details": {
+    "command": "bun test"
+  }
+}

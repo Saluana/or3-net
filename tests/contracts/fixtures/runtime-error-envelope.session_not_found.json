@@ -1,0 +1,8 @@
+{
+  "code": "session_not_found",
+  "message": "runtime session was not found",
+  "retriable": false,
+  "details": {
+    "session_id": "rts_missing"
+  }
+}

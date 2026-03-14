@@ -10,9 +10,9 @@ This task list starts **after** the reusable runtime substrate from `planning/ru
 
 ## 1. Cross-project planning alignment
 
-- [ ] [Req 1-9] Project: `or3-net` — add a short cross-link from `planning/runtime-contract/requirements.md` and `planning/runtime-contract/design.md` to this plan as the smaller host-owned workspace option.
-- [ ] [Req 1-9] Project: `or3-net` — update `planning/runtime-contract/tasks.md` so `workspace-materialize` work is explicitly scoped to host staging and explicit commit, not a distributed workspace store.
-- [ ] [Req 1, 3, 4, 7] Project: `or3-net` — update `planning/main/04-host-api.md` and `planning/main/03-security-model.md` to describe host-owned staging, explicit commit, and sandbox import/export boundaries.
+- [x] [Req 1-9] Project: `or3-net` — add a short cross-link from `planning/runtime-contract/requirements.md` and `planning/runtime-contract/design.md` to this plan as the smaller host-owned workspace option.
+- [x] [Req 1-9] Project: `or3-net` — update `planning/runtime-contract/tasks.md` so `workspace-materialize` work is explicitly scoped to host staging and explicit commit, not a distributed workspace store.
+- [x] [Req 1, 3, 4, 7] Project: `or3-net` — update `planning/main/04-host-api.md` and `planning/main/03-security-model.md` to describe host-owned staging, explicit commit, and sandbox import/export boundaries.
 
 ## 2. `or3-net` host-staging contract extension work
 

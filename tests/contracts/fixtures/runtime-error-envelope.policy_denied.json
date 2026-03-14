@@ -1,0 +1,8 @@
+{
+  "code": "policy_denied",
+  "message": "requested runtime policy is denied",
+  "retriable": false,
+  "details": {
+    "required_capability": "internet"
+  }
+}

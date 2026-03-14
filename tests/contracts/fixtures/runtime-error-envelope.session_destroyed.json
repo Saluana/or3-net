@@ -1,0 +1,8 @@
+{
+  "code": "session_destroyed",
+  "message": "runtime session is already destroyed",
+  "retriable": false,
+  "details": {
+    "session_id": "rts_demo"
+  }
+}

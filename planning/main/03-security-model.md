@@ -37,9 +37,18 @@
 - Workspace A cannot view, stream, schedule, or approve resources from Workspace B.
 - Warm pools are single-workspace only.
 - Task packages contain explicit artifacts and bounded instructions, never implicit workspace mirrors.
+- Host-backed runtime staging must resolve a configured host root server-side; clients cannot redirect runtime sessions to arbitrary host paths.
 - Remote subagents inherit host-issued tool/path/timeout/quota bounds.
 - Service dashboard launches are workspace-scoped and user-authorized before any tunnel URL is minted.
 - Users should not receive raw sandbox bearer tokens or broad tunnel-management permissions merely to open a dashboard.
+
+## Host workspace staging safeguards
+
+- Host files remain canonical even when a runtime session stages selected paths into `/workspace`.
+- Read-write staged sessions must return changes only through an explicit commit path after host-side validation and stale-write checks.
+- Archive import/export, when enabled, must stay confined to the sandbox workspace root and reject traversal, symlink escape, and oversized payloads.
+- File-API fallback remains bounded and uses the same workspace-root confinement rules.
+- Read-only staged sessions must not gain commit rights via artifact or preview flows.
 
 ## Runtime reuse safeguards
 

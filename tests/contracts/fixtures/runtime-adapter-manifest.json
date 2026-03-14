@@ -1,0 +1,12 @@
+{
+  "adapter_id": "sandbox-default",
+  "display_name": "Sandbox Runtime",
+  "version": "1.0.0",
+  "adapter_kind": "sandbox",
+  "isolation_class": "container",
+  "trust_tier": "development",
+  "locality": "local",
+  "capabilities": ["exec", "copy-in", "copy-out", "workspace-materialize", "ext:sandbox:warm-pool"],
+  "supported_presets": ["default", "browser"],
+  "session_modes": ["ephemeral", "persistent"]
+}

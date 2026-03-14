@@ -1,0 +1,9 @@
+{
+  "code": "adapter_unavailable",
+  "message": "sandbox adapter is unavailable",
+  "retriable": true,
+  "details": {
+    "adapter_id": "sandbox-default"
+  },
+  "retry_after_ms": 5000
+}

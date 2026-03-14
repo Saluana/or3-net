@@ -1,0 +1,9 @@
+{
+  "code": "exec_timeout",
+  "message": "command execution exceeded timeout",
+  "retriable": true,
+  "details": {
+    "timeout_ms": 30000
+  },
+  "retry_after_ms": 1000
+}

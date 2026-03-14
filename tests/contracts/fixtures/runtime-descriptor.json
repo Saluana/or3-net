@@ -1,0 +1,15 @@
+{
+  "adapter_id": "sandbox-default",
+  "display_name": "Sandbox Runtime",
+  "isolation_class": "container",
+  "trust_tier": "development",
+  "locality": "local",
+  "health": {
+    "status": "healthy",
+    "message": "sandbox reachable",
+    "checked_at": "2026-03-14T12:00:00Z"
+  },
+  "capabilities": ["exec", "copy-in", "copy-out", "workspace-materialize"],
+  "supported_presets": ["default"],
+  "session_modes": ["ephemeral"]
+}

@@ -1,0 +1,9 @@
+{
+  "code": "log_unavailable",
+  "message": "logs are unavailable for this runtime",
+  "retriable": true,
+  "details": {
+    "session_id": "rts_demo"
+  },
+  "retry_after_ms": 1500
+}

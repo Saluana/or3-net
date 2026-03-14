@@ -1,0 +1,8 @@
+{
+  "code": "unsupported_capability",
+  "message": "adapter does not support workspace-materialize",
+  "retriable": false,
+  "details": {
+    "capability": "workspace-materialize"
+  }
+}

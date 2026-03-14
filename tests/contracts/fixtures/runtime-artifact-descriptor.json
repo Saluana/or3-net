@@ -1,0 +1,11 @@
+{
+  "artifact_id": "artifact_demo",
+  "session_id": "rts_demo",
+  "path": "/workspace/out/report.txt",
+  "kind": "file",
+  "content_type": "text/plain",
+  "size_bytes": 12,
+  "source": {
+    "command": "bun test"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "session_id": "rts_demo",
+  "workspace_id": "ws_demo",
+  "adapter_id": "sandbox-default",
+  "node_id": "node_sandbox_local",
+  "status": "ready",
+  "capabilities": ["exec", "copy-in", "copy-out"],
+  "isolation_class": "container",
+  "trust_tier": "development",
+  "preset_id": "default",
+  "created_at": "2026-03-14T12:00:00Z",
+  "updated_at": "2026-03-14T12:05:00Z"
+}

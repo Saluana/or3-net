@@ -25,85 +25,85 @@ This task list owns the reusable runtime substrate only.
 
 ### 1. Core capability types (`src/contracts/runtime/capabilities.ts`) [Req 3]
 
-- [ ] Define `runtimeCoreCapabilityValues` const array with all core capabilities: `exec`, `stop`, `resume`, `copy-in`, `copy-out`, `file-browse`, `file-rw`, `workspace-materialize`, `log-stream`, `service-expose`, `snapshot`, `artifact-push`, `internet`, `public-ingress`, `persistent-session`, `browser`, `package-install`, `secret-inject`, `workspace-write`.
-- [ ] Document `workspace-materialize` in this phase as a generic staged-workspace capability only; defer host-root resolution and commit semantics to `planning/host-workspace-staging/tasks.md`.
-- [ ] Define `runtimeCapabilitySchema` that accepts core capabilities or `ext:<adapter>:<name>` extensions.
-- [ ] Export `RuntimeCapability` type and `RuntimeCapabilitySet` (array with `.includes()` check helper).
+- [x] Define `runtimeCoreCapabilityValues` const array with all core capabilities: `exec`, `stop`, `resume`, `copy-in`, `copy-out`, `file-browse`, `file-rw`, `workspace-materialize`, `log-stream`, `service-expose`, `snapshot`, `artifact-push`, `internet`, `public-ingress`, `persistent-session`, `browser`, `package-install`, `secret-inject`, `workspace-write`.
+- [x] Document `workspace-materialize` in this phase as a generic staged-workspace capability only; defer host-root resolution and commit semantics to `planning/host-workspace-staging/tasks.md`.
+- [x] Define `runtimeCapabilitySchema` that accepts core capabilities or `ext:<adapter>:<name>` extensions.
+- [x] Export `RuntimeCapability` type and `RuntimeCapabilitySet` (array with `.includes()` check helper).
 
 ### 2. Adapter manifest schema (`src/contracts/runtime/manifest.ts`) [Req 1]
 
-- [ ] Define `runtimeAdapterKindValues` const array: `sandbox`, `remote`, `local`, `fly`, `cloudflare`, `ssh-vm`, `akash`.
-- [ ] Define `runtimeTrustTierValues`: `production`, `staging`, `development`, `untrusted`.
-- [ ] Define `runtimeLocalityValues`: `local`, `remote`, `hybrid`.
-- [ ] Define `runtimeSessionModeValues`: `ephemeral`, `persistent`.
-- [ ] Define `runtimeAdapterManifestSchema` with Zod: `adapter_id`, `display_name`, `version`, `adapter_kind`, `isolation_class`, `trust_tier`, `locality`, `capabilities`, `supported_presets`, `session_modes`.
-- [ ] Export `RuntimeAdapterManifest` type.
+- [x] Define `runtimeAdapterKindValues` const array: `sandbox`, `remote`, `local`, `fly`, `cloudflare`, `ssh-vm`, `akash`.
+- [x] Define `runtimeTrustTierValues`: `production`, `staging`, `development`, `untrusted`.
+- [x] Define `runtimeLocalityValues`: `local`, `remote`, `hybrid`.
+- [x] Define `runtimeSessionModeValues`: `ephemeral`, `persistent`.
+- [x] Define `runtimeAdapterManifestSchema` with Zod: `adapter_id`, `display_name`, `version`, `adapter_kind`, `isolation_class`, `trust_tier`, `locality`, `capabilities`, `supported_presets`, `session_modes`.
+- [x] Export `RuntimeAdapterManifest` type.
 
 ### 3. Descriptor schemas (`src/contracts/runtime/descriptors.ts`) [Req 4]
 
-- [ ] Define `runtimeDescriptorSchema`: `adapter_id`, `display_name`, `isolation_class`, `trust_tier`, `locality`, `health`, `capabilities`, `supported_presets`, `session_modes`.
-- [ ] Define `runtimeNodeDescriptorSchema`: `node_id`, `runtime_id`, `health`, `capabilities`, `resource_limits`, `locality`.
-- [ ] Define `runtimeSessionDescriptorSchema`: `session_id`, `workspace_id`, `adapter_id`, `node_id`, `status`, `capabilities`, `isolation_class`, `trust_tier`, `preset_id`, `created_at`, `updated_at`, `destroyed_at`, `error`.
-- [ ] Export `RuntimeDescriptor`, `RuntimeNodeDescriptor`, `RuntimeSessionDescriptor` types.
+- [x] Define `runtimeDescriptorSchema`: `adapter_id`, `display_name`, `isolation_class`, `trust_tier`, `locality`, `health`, `capabilities`, `supported_presets`, `session_modes`.
+- [x] Define `runtimeNodeDescriptorSchema`: `node_id`, `runtime_id`, `health`, `capabilities`, `resource_limits`, `locality`.
+- [x] Define `runtimeSessionDescriptorSchema`: `session_id`, `workspace_id`, `adapter_id`, `node_id`, `status`, `capabilities`, `isolation_class`, `trust_tier`, `preset_id`, `created_at`, `updated_at`, `destroyed_at`, `error`.
+- [x] Export `RuntimeDescriptor`, `RuntimeNodeDescriptor`, `RuntimeSessionDescriptor` types.
 
 ### 4. Execution types (`src/contracts/runtime/execution.ts`) [Req 6]
 
-- [ ] Define `runtimeExecutionRequestSchema`: `command`, `args`, `cwd`, `env`, `timeout_ms`, `stdin`, `background`.
-- [ ] Define `RuntimeExecutionEvent` union type: `stdout`, `stderr`, `exit`.
-- [ ] Define `RuntimeExecutionResult`: `exit_code`, `stdout`, `stderr`, `artifacts`, `meta`.
-- [ ] Define `RuntimeExecutionHandle` interface: `execution_id`, `stream?`, `result`, `abort()`.
+- [x] Define `runtimeExecutionRequestSchema`: `command`, `args`, `cwd`, `env`, `timeout_ms`, `stdin`, `background`.
+- [x] Define `RuntimeExecutionEvent` union type: `stdout`, `stderr`, `exit`.
+- [x] Define `RuntimeExecutionResult`: `exit_code`, `stdout`, `stderr`, `artifacts`, `meta`.
+- [x] Define `RuntimeExecutionHandle` interface: `execution_id`, `stream?`, `result`, `abort()`.
 
 ### 5. Session input types (`src/contracts/runtime/sessions.ts`) [Req 5]
 
-- [ ] Define `runtimeSessionCreateInputSchema`: `preset_id`, `required_capabilities`, `workspace_ref`, `workspace_mode`, `network_policy`, `resource_hints`, `persistence_mode`, `env_refs`, `secret_refs`, `timeout_rules`, `artifact_rules`.
-- [ ] Keep workspace-related fields generic in this phase; do not embed host-root resolution, selected-path manifests, or explicit host commit rules here until the host-staging layer is added.
-- [ ] Define `runtimeSessionStateValues`: `creating`, `ready`, `stopping`, `stopped`, `destroying`, `destroyed`, `failed`.
+- [x] Define `runtimeSessionCreateInputSchema`: `preset_id`, `required_capabilities`, `workspace_ref`, `workspace_mode`, `network_policy`, `resource_hints`, `persistence_mode`, `env_refs`, `secret_refs`, `timeout_rules`, `artifact_rules`.
+- [x] Keep workspace-related fields generic in this phase; do not embed host-root resolution, selected-path manifests, or explicit host commit rules here until the host-staging layer is added.
+- [x] Define `runtimeSessionStateValues`: `creating`, `ready`, `stopping`, `stopped`, `destroying`, `destroyed`, `failed`.
 
 ### 6. Artifact descriptor (`src/contracts/runtime/artifacts.ts`) [Req 8]
 
-- [ ] Define `runtimeArtifactDescriptorSchema`: `artifact_id`, `session_id`, `path`, `kind`, `content_type`, `size_bytes`, `source`.
-- [ ] Export `RuntimeArtifactDescriptor` type.
+- [x] Define `runtimeArtifactDescriptorSchema`: `artifact_id`, `session_id`, `path`, `kind`, `content_type`, `size_bytes`, `source`.
+- [x] Export `RuntimeArtifactDescriptor` type.
 
 ### 7. Error envelope (`src/contracts/runtime/errors.ts`) [Req 7]
 
-- [ ] Define `runtimeErrorCodeValues` const array: `unsupported_capability`, `policy_denied`, `adapter_unavailable`, `session_not_found`, `session_destroyed`, `exec_failed`, `exec_timeout`, `copy_failed`, `log_unavailable`, `adapter_internal`.
-- [ ] Define `runtimeErrorEnvelopeSchema`: `code`, `message`, `retriable`, `details`, `retry_after_ms`.
-- [ ] Define `RuntimeError` class extending `Error` with code, retriable, details.
-- [ ] Add mapping function `runtimeErrorToApiEnvelope()` that converts `RuntimeError` to platform `ErrorEnvelope`.
+- [x] Define `runtimeErrorCodeValues` const array: `unsupported_capability`, `policy_denied`, `adapter_unavailable`, `session_not_found`, `session_destroyed`, `exec_failed`, `exec_timeout`, `copy_failed`, `log_unavailable`, `adapter_internal`.
+- [x] Define `runtimeErrorEnvelopeSchema`: `code`, `message`, `retriable`, `details`, `retry_after_ms`.
+- [x] Define `RuntimeError` class extending `Error` with code, retriable, details.
+- [x] Add mapping function `runtimeErrorToApiEnvelope()` that converts `RuntimeError` to platform `ErrorEnvelope`.
 
 ### 8. Adapter interface (`src/contracts/runtime/adapter.ts`) [Req 2]
 
-- [ ] Define `RuntimeAdapter` interface with required and optional methods as specified in design.
-- [ ] Define `RuntimeAdapterHealth` type: `status`, `message`, `checked_at`.
-- [ ] Define `RuntimeAdapterSessionHandle` type: `ref`, `adapter_id`, `status`.
-- [ ] Define input/output types for `copyIn`, `copyOut`, `getLogs`, `fileBrowse`, `fileRead`, `fileWrite`, `materializeWorkspace`, `exposeService`, `snapshot`, `pushArtifact`.
-- [ ] Keep `materializeWorkspace` substrate-oriented in this phase; host-side manifests, conflict detection, and commit application belong to the host-staging plan.
+- [x] Define `RuntimeAdapter` interface with required and optional methods as specified in design.
+- [x] Define `RuntimeAdapterHealth` type: `status`, `message`, `checked_at`.
+- [x] Define `RuntimeAdapterSessionHandle` type: `ref`, `adapter_id`, `status`.
+- [x] Define input/output types for `copyIn`, `copyOut`, `getLogs`, `fileBrowse`, `fileRead`, `fileWrite`, `materializeWorkspace`, `exposeService`, `snapshot`, `pushArtifact`.
+- [x] Keep `materializeWorkspace` substrate-oriented in this phase; host-side manifests, conflict detection, and commit application belong to the host-staging plan.
 
 ### 9. Platform error code additions (`src/contracts/platform/error-codes.ts`) [Req 7]
 
-- [ ] Add runtime error codes to `platformErrorCodes` const map: `runtimeUnsupportedCapability`, `runtimePolicyDenied`, `runtimeAdapterUnavailable`, `runtimeSessionNotFound`, `runtimeExecFailed`, `runtimeExecTimeout`.
+- [x] Add runtime error codes to `platformErrorCodes` const map: `runtimeUnsupportedCapability`, `runtimePolicyDenied`, `runtimeAdapterUnavailable`, `runtimeSessionNotFound`, `runtimeExecFailed`, `runtimeExecTimeout`.
 
 ### 10. Barrel export (`src/contracts/runtime/index.ts`)
 
-- [ ] Create barrel export for all runtime contract modules.
-- [ ] Add runtime contracts to `src/contracts/index.ts` barrel.
+- [x] Create barrel export for all runtime contract modules.
+- [x] Add runtime contracts to `src/contracts/index.ts` barrel.
 
 ### 11. Contract test fixtures (`tests/contracts/fixtures/`) [Req 1-8]
 
-- [ ] Create `runtime-adapter-manifest.json` fixture with a valid manifest.
-- [ ] Create `runtime-descriptor.json` fixture.
-- [ ] Create `runtime-session-descriptor.json` fixture.
-- [ ] Create `runtime-execution-request.json` fixture.
-- [ ] Create `runtime-error-envelope.json` fixtures for each error code.
-- [ ] Create `runtime-artifact-descriptor.json` fixture.
+- [x] Create `runtime-adapter-manifest.json` fixture with a valid manifest.
+- [x] Create `runtime-descriptor.json` fixture.
+- [x] Create `runtime-session-descriptor.json` fixture.
+- [x] Create `runtime-execution-request.json` fixture.
+- [x] Create `runtime-error-envelope.json` fixtures for each error code.
+- [x] Create `runtime-artifact-descriptor.json` fixture.
 
 ### 12. Contract tests (`tests/contracts/runtime/`) [Req 1-8]
 
-- [ ] Write `runtime-manifest.contract.test.ts` validating manifest fixtures and rejection of invalid manifests.
-- [ ] Write `runtime-descriptors.contract.test.ts` validating descriptor fixtures.
-- [ ] Write `runtime-errors.contract.test.ts` validating error envelope fixtures and API envelope mapping.
-- [ ] Write `runtime-capabilities.contract.test.ts` validating capability union and extension namespace.
-- [ ] Write `runtime-sessions.contract.test.ts` validating session create input and state value fixtures.
+- [x] Write `runtime-manifest.contract.test.ts` validating manifest fixtures and rejection of invalid manifests.
+- [x] Write `runtime-descriptors.contract.test.ts` validating descriptor fixtures.
+- [x] Write `runtime-errors.contract.test.ts` validating error envelope fixtures and API envelope mapping.
+- [x] Write `runtime-capabilities.contract.test.ts` validating capability union and extension namespace.
+- [x] Write `runtime-sessions.contract.test.ts` validating session create input and state value fixtures.
 
 ---
 

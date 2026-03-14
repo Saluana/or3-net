@@ -1,0 +1,11 @@
+{
+  "command": "bun",
+  "args": ["test"],
+  "cwd": "/workspace/project",
+  "env": {
+    "CI": "1"
+  },
+  "timeout_ms": 30000,
+  "stdin": "",
+  "background": false
+}

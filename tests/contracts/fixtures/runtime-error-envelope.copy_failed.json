@@ -1,0 +1,8 @@
+{
+  "code": "copy_failed",
+  "message": "file copy failed",
+  "retriable": false,
+  "details": {
+    "path": "/workspace/missing.txt"
+  }
+}

@@ -19,6 +19,7 @@ This plan introduces a typed runtime adapter contract in `or3-net` that sits abo
 - The existing node protocol (`src/contracts/protocol.ts`), `NodeTransportRegistry`, `RemoteNodeExecutor`, `SandboxNodeAdapter`, `LeaseScheduler`, `WarmPoolManager`, and `LocalJobService` remain intact as internal implementation details.
 - Plugin loading is startup-driven from first-party code or explicitly configured Bun modules. No dynamic install/discovery scanning in v1.
 - Runtime sessions use `runtime-sessions` terminology everywhere public and durable. Existing `sessions` routes and `network_sessions` tables keep their current meaning.
+- Workspace staging in v1 follows the smaller host-owned model from `planning/host-workspace-staging/`; `workspace-materialize` is staged copy substrate, not a distributed workspace store.
 
 ---
 

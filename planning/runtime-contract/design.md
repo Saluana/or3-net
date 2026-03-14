@@ -22,6 +22,7 @@ This design owns the reusable runtime substrate only.
 - It may include generic workspace-related capability and session fields where needed for staged runtime use.
 - It does **not** own canonical host workspace resolution, selected-path manifest capture, stale-write conflict checks, explicit host commit/discard flows, or single-writer coordination for host-backed staged sessions.
 - Those host-specific semantics belong to `planning/host-workspace-staging/design.md` and must layer on this substrate rather than redefine it.
+- `workspace-materialize` in this design means explicit staged copy semantics compatible with host-owned staging, not a canonical runtime-owned workspace store.
 
 ### Why this fits
 

@@ -33,6 +33,8 @@ Lists files and directories within the workspace sandbox boundary.
 
 This endpoint is for workspace-owned storage, not arbitrary host filesystem access.
 
+Host-backed runtime staging is separate from these sandbox file endpoints: runtime sessions may stage selected host paths into an isolated runtime, but host files remain canonical and any read-write changes return only through an explicit commit flow.
+
 ### `GET /v1/workspaces/:workspaceId/files/*path`
 
 Reads or downloads a file from the workspace sandbox.
@@ -125,6 +127,23 @@ Creates or updates an agent definition with instructions, tool policy, and node 
 
 Creates a job, selects local or remote execution, and returns the accepted job handle.
 
+## Runtime session endpoints
+
+Runtime-session routes are distinct from job and node routes.
+
+- `GET /v1/workspaces/:workspaceId/runtimes`
+- `GET /v1/workspaces/:workspaceId/runtimes/:runtimeId`
+- `GET /v1/workspaces/:workspaceId/runtimes/:runtimeId/nodes`
+- `POST /v1/workspaces/:workspaceId/runtime-sessions`
+- `GET /v1/workspaces/:workspaceId/runtime-sessions`
+- `GET /v1/workspaces/:workspaceId/runtime-sessions/:sessionId`
+- `POST /v1/workspaces/:workspaceId/runtime-sessions/:sessionId/exec`
+- `POST /v1/workspaces/:workspaceId/runtime-sessions/:sessionId/stop`
+- `POST /v1/workspaces/:workspaceId/runtime-sessions/:sessionId/destroy`
+- `GET /v1/workspaces/:workspaceId/runtime-sessions/:sessionId/logs`
+
+When runtime sessions request workspace staging, `workspace-materialize` means bounded stage-in/stage-out semantics only: selected host paths are copied into the runtime, and sandbox output returns through explicit host-side validation and commit rather than implicit sync or bind mounts.
+
 ### `GET /v1/jobs/:jobId`
 
 Returns status, timestamps, routing metadata, and final result metadata when complete.
@@ -175,3 +194,4 @@ Recommended audit-visible event set for service launches:
 - Do not expose raw sandbox control routes on the public host API.
 - Prefer explicit job polling + SSE over a large custom real-time protocol.
 - Prefer launching known services/apps over exposing generic port-forwarding UX to normal users.
+- Prefer host-owned workspace staging with explicit commit over any distributed workspace store or arbitrary host-path exposure.

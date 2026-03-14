@@ -1,0 +1,8 @@
+{
+  "code": "adapter_internal",
+  "message": "adapter raised an internal error",
+  "retriable": false,
+  "details": {
+    "adapter_id": "sandbox-default"
+  }
+}
