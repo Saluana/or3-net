@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import type { z } from "zod";
 
 import {
   agentSchema,
@@ -13,9 +14,17 @@ import {
   taskPackageSchema,
   workspaceSchema,
 } from "../contracts/index.ts";
+import {
+  runtimeArtifactDescriptorSchema,
+  runtimeCapabilitySetSchema,
+  runtimeErrorEnvelopeSchema,
+  runtimeSessionCreateInputSchema,
+  runtimeSessionDescriptorSchema,
+} from "../contracts/runtime/index.ts";
 import { jsonObjectSchema, parseOptionalWithSchema, parseWithSchema, serializeWithSchema } from "../contracts/shared.ts";
 import { fromIsoDateTime, toIsoDateTime } from "../lib/time.ts";
 import type { NodeApprovalStatus, NodeHealthStatus } from "../contracts/index.ts";
+import type { RuntimeCapability, RuntimeErrorEnvelope, RuntimeSessionState, RuntimeTrustTier } from "../contracts/runtime/index.ts";
 import type {
   AgentRow,
   ApiKeyRow,
@@ -27,6 +36,9 @@ import type {
   NodeCredentialRow,
   NetworkSessionRow,
   PreviewRow,
+  RuntimeArtifactRow,
+  RuntimeSessionEventRow,
+  RuntimeSessionRow,
   StoredAgent,
   StoredApiKey,
   StoredJobEvent,
@@ -37,6 +49,9 @@ import type {
   StoredNodeCredential,
   StoredNode,
   StoredPreview,
+  StoredRuntimeArtifact,
+  StoredRuntimeSession,
+  StoredRuntimeSessionEvent,
   StoredWorkspace,
   WorkspaceRow,
 } from "./schema.ts";
@@ -56,6 +71,7 @@ export interface DatabaseOptions {
   readonly path?: string;
   readonly staleNodeThresholdMs?: number;
   readonly jobEventRetentionPerJob?: number;
+  readonly runtimeSessionEventRetentionPerSession?: number;
 }
 
 export interface SaveNodeInput {
@@ -118,6 +134,56 @@ export interface SaveLeaseInput {
   readonly created_at?: string;
   readonly expires_at: string;
   readonly released_at?: string;
+}
+
+export interface SaveRuntimeSessionInput {
+  readonly session_id: string;
+  readonly adapter_id: string;
+  readonly adapter_session_ref?: string;
+  readonly node_id?: string;
+  readonly preset_id?: string;
+  readonly status: RuntimeSessionState;
+  readonly capabilities: Iterable<RuntimeCapability>;
+  readonly config?: z.input<typeof runtimeSessionCreateInputSchema>;
+  readonly isolation_class: string;
+  readonly trust_tier: RuntimeTrustTier;
+  readonly error?: RuntimeErrorEnvelope;
+  readonly created_at?: string;
+  readonly updated_at?: string;
+  readonly destroyed_at?: string;
+}
+
+export interface TouchRuntimeSessionInput {
+  readonly adapter_id?: string;
+  readonly adapter_session_ref?: string | null;
+  readonly node_id?: string | null;
+  readonly preset_id?: string | null;
+  readonly status?: RuntimeSessionState;
+  readonly capabilities?: Iterable<RuntimeCapability>;
+  readonly config?: z.input<typeof runtimeSessionCreateInputSchema> | null;
+  readonly isolation_class?: string;
+  readonly trust_tier?: RuntimeTrustTier;
+  readonly error?: RuntimeErrorEnvelope | null;
+  readonly updated_at?: string;
+  readonly destroyed_at?: string | null;
+}
+
+export interface ListRuntimeSessionsInput {
+  readonly status?: string;
+  readonly adapter_id?: string;
+  readonly limit?: number;
+}
+
+export interface AppendRuntimeSessionEventInput {
+  readonly session_id: string;
+  readonly event_type: string;
+  readonly payload: Record<string, unknown>;
+  readonly created_at?: string;
+}
+
+export interface SaveRuntimeArtifactInput {
+  readonly artifact: Parameters<typeof runtimeArtifactDescriptorSchema.parse>[0];
+  readonly created_at?: string;
 }
 
 export interface SavePreviewInput {
@@ -226,6 +292,56 @@ const parseJobEventRow = (row: JobEventRow): StoredJobEvent => ({
   created_at: toIsoDateTime(row.created_at),
 });
 
+const parseRuntimeSessionRow = (row: RuntimeSessionRow): StoredRuntimeSession => {
+  const capabilities = parseWithSchema(runtimeCapabilitySetSchema, row.capabilities_json);
+  const config = parseOptionalWithSchema(runtimeSessionCreateInputSchema, row.config_json);
+  const error = parseOptionalWithSchema(runtimeErrorEnvelopeSchema, row.error_json);
+
+  return {
+    adapter_session_ref: row.adapter_session_ref,
+    config,
+    session: runtimeSessionDescriptorSchema.parse({
+      session_id: row.id,
+      workspace_id: row.workspace_id,
+      adapter_id: row.adapter_id,
+      node_id: row.node_id ?? undefined,
+      status: row.status,
+      capabilities,
+      isolation_class: row.isolation_class,
+      trust_tier: row.trust_tier,
+      preset_id: row.preset_id ?? undefined,
+      created_at: toIsoDateTime(row.created_at),
+      updated_at: toIsoDateTime(row.updated_at),
+      destroyed_at: row.destroyed_at === null ? undefined : toIsoDateTime(row.destroyed_at),
+      error: error ?? undefined,
+    }),
+  };
+};
+
+const parseRuntimeSessionEventRow = (row: RuntimeSessionEventRow): StoredRuntimeSessionEvent => ({
+  event_id: row.id,
+  workspace_id: row.workspace_id,
+  session_id: row.session_id,
+  event_type: row.event_type,
+  sequence: row.sequence,
+  payload_json: row.payload_json,
+  created_at: toIsoDateTime(row.created_at),
+});
+
+const parseRuntimeArtifactRow = (row: RuntimeArtifactRow): StoredRuntimeArtifact => ({
+  workspace_id: row.workspace_id,
+  artifact: runtimeArtifactDescriptorSchema.parse({
+    artifact_id: row.id,
+    session_id: row.session_id,
+    path: row.path,
+    kind: row.kind,
+    content_type: row.content_type,
+    size_bytes: row.size_bytes,
+    source: row.source_json === null ? undefined : parseWithSchema(jsonObjectSchema, row.source_json),
+  }),
+  created_at: toIsoDateTime(row.created_at),
+});
+
 const parseLeaseRow = (row: LeaseRow): StoredLease => ({
   workspace_id: row.workspace_id,
   job_id: row.job_id,
@@ -288,6 +404,7 @@ export class WorkspaceStore {
     private readonly db: Database,
     public readonly workspaceId: string,
     private readonly jobEventRetentionPerJob: number,
+    private readonly runtimeSessionEventRetentionPerSession: number,
   ) {}
 
   public saveAgent(agentInput: Parameters<typeof agentSchema.parse>[0], nowIso = new Date().toISOString()): StoredAgent {
@@ -709,6 +826,230 @@ export class WorkspaceStore {
       .map(parseJobEventRow);
   }
 
+  public saveRuntimeSession(input: SaveRuntimeSessionInput): StoredRuntimeSession {
+    const capabilities = runtimeCapabilitySetSchema.parse([...input.capabilities]);
+    const config = input.config === undefined ? null : runtimeSessionCreateInputSchema.parse(input.config);
+    const error = input.error === undefined ? null : runtimeErrorEnvelopeSchema.parse(input.error);
+    const createdAt = input.created_at ?? new Date().toISOString();
+    const updatedAt = input.updated_at ?? createdAt;
+
+    this.db
+      .prepare(
+        "INSERT INTO runtime_sessions (workspace_id, id, adapter_id, adapter_session_ref, node_id, preset_id, status, capabilities_json, config_json, isolation_class, trust_tier, error_json, created_at, updated_at, destroyed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET adapter_id = excluded.adapter_id, adapter_session_ref = excluded.adapter_session_ref, node_id = excluded.node_id, preset_id = excluded.preset_id, status = excluded.status, capabilities_json = excluded.capabilities_json, config_json = excluded.config_json, isolation_class = excluded.isolation_class, trust_tier = excluded.trust_tier, error_json = excluded.error_json, updated_at = excluded.updated_at, destroyed_at = excluded.destroyed_at",
+      )
+      .run(
+        this.workspaceId,
+        input.session_id,
+        input.adapter_id,
+        input.adapter_session_ref ?? null,
+        input.node_id ?? null,
+        input.preset_id ?? null,
+        input.status,
+        serializeWithSchema(runtimeCapabilitySetSchema, capabilities),
+        config === null ? null : serializeWithSchema(runtimeSessionCreateInputSchema, config),
+        input.isolation_class,
+        input.trust_tier,
+        error === null ? null : serializeWithSchema(runtimeErrorEnvelopeSchema, error),
+        fromIsoDateTime(createdAt),
+        fromIsoDateTime(updatedAt),
+        input.destroyed_at === undefined ? null : fromIsoDateTime(input.destroyed_at),
+      );
+
+    return this.getRuntimeSession(input.session_id);
+  }
+
+  public getRuntimeSession(sessionId: string): StoredRuntimeSession {
+    const row = this.db
+      .query<RuntimeSessionRow, [string, string]>(
+        "SELECT * FROM runtime_sessions WHERE workspace_id = ? AND id = ? LIMIT 1",
+      )
+      .get(this.workspaceId, sessionId);
+
+    if (row === null) {
+      throw new Error(`Runtime session ${sessionId} was not found in workspace ${this.workspaceId}`);
+    }
+
+    return parseRuntimeSessionRow(row);
+  }
+
+  public listRuntimeSessions(input: ListRuntimeSessionsInput = {}): StoredRuntimeSession[] {
+    const clauses = ["workspace_id = ?"];
+    const params: (string | number)[] = [this.workspaceId];
+
+    if (input.status !== undefined) {
+      clauses.push("status = ?");
+      params.push(input.status);
+    }
+
+    if (input.adapter_id !== undefined) {
+      clauses.push("adapter_id = ?");
+      params.push(input.adapter_id);
+    }
+
+    params.push(input.limit ?? 100);
+
+    return this.db
+      .query<RuntimeSessionRow, (string | number)[]>(
+        `SELECT * FROM runtime_sessions WHERE ${clauses.join(" AND ")} ORDER BY updated_at DESC LIMIT ?`,
+      )
+      .all(...params)
+      .map(parseRuntimeSessionRow);
+  }
+
+  public touchRuntimeSession(sessionId: string, input: TouchRuntimeSessionInput): StoredRuntimeSession {
+    const existing = this.getRuntimeSession(sessionId);
+    const updatedAt = input.updated_at ?? new Date().toISOString();
+    const capabilities =
+      input.capabilities === undefined
+        ? existing.session.capabilities
+        : runtimeCapabilitySetSchema.parse([...input.capabilities]);
+    const config =
+      input.config === undefined
+        ? existing.config
+        : input.config === null
+          ? null
+          : runtimeSessionCreateInputSchema.parse(input.config);
+    const error =
+      input.error === undefined
+        ? existing.session.error ?? null
+        : input.error === null
+          ? null
+          : runtimeErrorEnvelopeSchema.parse(input.error);
+
+    this.db
+      .prepare(
+        "UPDATE runtime_sessions SET adapter_id = ?, adapter_session_ref = ?, node_id = ?, preset_id = ?, status = ?, capabilities_json = ?, config_json = ?, isolation_class = ?, trust_tier = ?, error_json = ?, updated_at = ?, destroyed_at = ? WHERE workspace_id = ? AND id = ?",
+      )
+      .run(
+        input.adapter_id ?? existing.session.adapter_id,
+        input.adapter_session_ref === undefined ? existing.adapter_session_ref : input.adapter_session_ref,
+        input.node_id === undefined ? (existing.session.node_id ?? null) : input.node_id,
+        input.preset_id === undefined ? (existing.session.preset_id ?? null) : input.preset_id,
+        input.status ?? existing.session.status,
+        serializeWithSchema(runtimeCapabilitySetSchema, capabilities),
+        config === null ? null : serializeWithSchema(runtimeSessionCreateInputSchema, config),
+        input.isolation_class ?? existing.session.isolation_class,
+        input.trust_tier ?? existing.session.trust_tier,
+        error === null ? null : serializeWithSchema(runtimeErrorEnvelopeSchema, error),
+        fromIsoDateTime(updatedAt),
+        input.destroyed_at === undefined
+          ? existing.session.destroyed_at === undefined
+            ? null
+            : fromIsoDateTime(existing.session.destroyed_at)
+          : input.destroyed_at === null
+            ? null
+            : fromIsoDateTime(input.destroyed_at),
+        this.workspaceId,
+        sessionId,
+      );
+
+    return this.getRuntimeSession(sessionId);
+  }
+
+  public appendRuntimeSessionEvent(input: AppendRuntimeSessionEventInput): StoredRuntimeSessionEvent {
+    const createdAt = input.created_at ?? new Date().toISOString();
+    const eventId = createEventId();
+    const row = this.db.transaction(() => {
+      const nextSequence =
+        (this.db
+          .query<{ sequence: number }, [string, string]>(
+            "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM runtime_session_events WHERE workspace_id = ? AND session_id = ?",
+          )
+          .get(this.workspaceId, input.session_id)?.sequence ?? 0) + 1;
+
+      this.db
+        .prepare(
+          "INSERT INTO runtime_session_events (workspace_id, id, session_id, event_type, sequence, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          this.workspaceId,
+          eventId,
+          input.session_id,
+          input.event_type,
+          nextSequence,
+          sanitizePayloadJson(input.payload),
+          fromIsoDateTime(createdAt),
+        );
+
+      this.db
+        .prepare(
+          "DELETE FROM runtime_session_events WHERE workspace_id = ? AND session_id = ? AND id NOT IN (SELECT id FROM runtime_session_events WHERE workspace_id = ? AND session_id = ? ORDER BY sequence DESC LIMIT ?)",
+        )
+        .run(
+          this.workspaceId,
+          input.session_id,
+          this.workspaceId,
+          input.session_id,
+          this.runtimeSessionEventRetentionPerSession,
+        );
+
+      return this.db
+        .query<RuntimeSessionEventRow, [string, string]>(
+          "SELECT * FROM runtime_session_events WHERE workspace_id = ? AND id = ? LIMIT 1",
+        )
+        .get(this.workspaceId, eventId);
+    })();
+
+    if (row === null) {
+      throw new Error(`Runtime session event ${eventId} was not found in workspace ${this.workspaceId}`);
+    }
+
+    return parseRuntimeSessionEventRow(row);
+  }
+
+  public listRuntimeSessionEvents(sessionId: string, limit = 100): StoredRuntimeSessionEvent[] {
+    return this.db
+      .query<RuntimeSessionEventRow, [string, string, number]>(
+        `SELECT * FROM (
+          SELECT * FROM runtime_session_events WHERE workspace_id = ? AND session_id = ? ORDER BY created_at DESC, sequence DESC LIMIT ?
+        ) ORDER BY created_at ASC, sequence ASC`,
+      )
+      .all(this.workspaceId, sessionId, limit)
+      .map(parseRuntimeSessionEventRow);
+  }
+
+  public saveRuntimeArtifact(input: SaveRuntimeArtifactInput): StoredRuntimeArtifact {
+    const artifact = runtimeArtifactDescriptorSchema.parse(input.artifact);
+    const createdAt = input.created_at ?? new Date().toISOString();
+
+    this.db
+      .prepare(
+        "INSERT INTO runtime_artifacts (workspace_id, id, session_id, path, kind, content_type, size_bytes, source_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET session_id = excluded.session_id, path = excluded.path, kind = excluded.kind, content_type = excluded.content_type, size_bytes = excluded.size_bytes, source_json = excluded.source_json, created_at = excluded.created_at",
+      )
+      .run(
+        this.workspaceId,
+        artifact.artifact_id,
+        artifact.session_id,
+        artifact.path,
+        artifact.kind,
+        artifact.content_type,
+        artifact.size_bytes,
+        serializeWithSchema(jsonObjectSchema, artifact.source),
+        fromIsoDateTime(createdAt),
+      );
+
+    const row = this.db
+      .query<RuntimeArtifactRow, [string, string]>(
+        "SELECT * FROM runtime_artifacts WHERE workspace_id = ? AND id = ? LIMIT 1",
+      )
+      .get(this.workspaceId, artifact.artifact_id);
+
+    if (row === null) {
+      throw new Error(`Runtime artifact ${artifact.artifact_id} was not found in workspace ${this.workspaceId}`);
+    }
+
+    return parseRuntimeArtifactRow(row);
+  }
+
+  public listRuntimeArtifacts(sessionId: string): StoredRuntimeArtifact[] {
+    return this.db
+      .query<RuntimeArtifactRow, [string, string]>(
+        "SELECT * FROM runtime_artifacts WHERE workspace_id = ? AND session_id = ? ORDER BY created_at ASC, id ASC",
+      )
+      .all(this.workspaceId, sessionId)
+      .map(parseRuntimeArtifactRow);
+  }
+
   public saveLease(leaseInput: SaveLeaseInput): StoredLease {
     const lease = leaseSchema.parse(leaseInput.lease);
     assertWorkspaceMatch("lease input", this.workspaceId, leaseInput.workspace_id);
@@ -831,11 +1172,13 @@ export class ControlPlaneDatabase {
   public readonly sqlite: Database;
   private readonly staleNodeThresholdMs: number;
   private readonly jobEventRetentionPerJob: number;
+  private readonly runtimeSessionEventRetentionPerSession: number;
 
   public constructor(options: DatabaseOptions = {}) {
     this.sqlite = new Database(options.path ?? ":memory:");
     this.staleNodeThresholdMs = options.staleNodeThresholdMs ?? 60_000;
     this.jobEventRetentionPerJob = options.jobEventRetentionPerJob ?? 200;
+    this.runtimeSessionEventRetentionPerSession = options.runtimeSessionEventRetentionPerSession ?? 200;
     this.sqlite.run("PRAGMA journal_mode = WAL;");
     this.sqlite.run("PRAGMA foreign_keys = ON;");
   }
@@ -909,7 +1252,12 @@ export class ControlPlaneDatabase {
   }
 
   public workspace(workspaceId: string): WorkspaceStore {
-    return new WorkspaceStore(this.sqlite, workspaceId, this.jobEventRetentionPerJob);
+    return new WorkspaceStore(
+      this.sqlite,
+      workspaceId,
+      this.jobEventRetentionPerJob,
+      this.runtimeSessionEventRetentionPerSession,
+    );
   }
 
   public saveApiKey(input: {

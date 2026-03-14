@@ -139,32 +139,32 @@ This task list owns the reusable runtime substrate only.
 
 ### 16. Schema migration (`src/db/schema.ts`) [Req 13, 14]
 
-- [ ] Add migration version 6 `"runtime-sessions-and-artifacts"` with:
+- [x] Add migration version 6 `"runtime-sessions-and-artifacts"` with:
   - `CREATE TABLE runtime_sessions (...)` with workspace-scoped composite PK.
   - `CREATE TABLE runtime_session_events (...)` with workspace-scoped composite PK.
   - `CREATE TABLE runtime_artifacts (...)` with workspace-scoped composite PK.
   - Required indexes per design.
-- [ ] Add `RuntimeSessionRow`, `RuntimeSessionEventRow`, `RuntimeArtifactRow` interfaces.
-- [ ] Add `StoredRuntimeSession`, `StoredRuntimeSessionEvent`, `StoredRuntimeArtifact` interfaces.
+- [x] Add `RuntimeSessionRow`, `RuntimeSessionEventRow`, `RuntimeArtifactRow` interfaces.
+- [x] Add `StoredRuntimeSession`, `StoredRuntimeSessionEvent`, `StoredRuntimeArtifact` interfaces.
 
 ### 17. WorkspaceStore runtime methods (`src/db/client.ts`) [Req 13]
 
-- [ ] Add `saveRuntimeSession(input)` method.
-- [ ] Add `getRuntimeSession(sessionId)` method.
-- [ ] Add `listRuntimeSessions(filter?)` method with status filter and pagination.
-- [ ] Add `touchRuntimeSession(sessionId, updates)` method.
-- [ ] Add `appendRuntimeSessionEvent(input)` method with monotonic sequence.
-- [ ] Add `listRuntimeSessionEvents(sessionId, limit?)` method.
-- [ ] Add `saveRuntimeArtifact(input)` method.
-- [ ] Add `listRuntimeArtifacts(sessionId)` method.
+- [x] Add `saveRuntimeSession(input)` method.
+- [x] Add `getRuntimeSession(sessionId)` method.
+- [x] Add `listRuntimeSessions(filter?)` method with status filter and pagination.
+- [x] Add `touchRuntimeSession(sessionId, updates)` method.
+- [x] Add `appendRuntimeSessionEvent(input)` method with monotonic sequence.
+- [x] Add `listRuntimeSessionEvents(sessionId, limit?)` method.
+- [x] Add `saveRuntimeArtifact(input)` method.
+- [x] Add `listRuntimeArtifacts(sessionId)` method.
 
 ### 18. Persistence tests (`tests/db/`) [Req 13]
 
-- [ ] Test runtime session CRUD round-trip.
-- [ ] Test runtime session event append and sequence monotonicity.
-- [ ] Test runtime artifact save/list per session.
-- [ ] Test migration applies cleanly on fresh DB and after existing migrations.
-- [ ] Test no FK relationships to existing node/job/network_session tables.
+- [x] Test runtime session CRUD round-trip.
+- [x] Test runtime session event append and sequence monotonicity.
+- [x] Test runtime artifact save/list per session.
+- [x] Test migration applies cleanly on fresh DB and after existing migrations.
+- [x] Test no FK relationships to existing node/job/network_session tables.
 
 ---
 

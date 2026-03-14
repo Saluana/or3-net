@@ -9,6 +9,11 @@ import type {
   TaskPackage,
   Workspace,
 } from "../contracts/index.ts";
+import type {
+  RuntimeArtifactDescriptor,
+  RuntimeSessionCreateInput,
+  RuntimeSessionDescriptor,
+} from "../contracts/runtime/index.ts";
 import type { JsonValue } from "../contracts/shared.ts";
 
 export interface Migration {
@@ -126,6 +131,46 @@ export interface JobEventRow {
   readonly event_type: string;
   readonly sequence: number;
   readonly payload_json: string;
+  readonly created_at: number;
+}
+
+export interface RuntimeSessionRow {
+  readonly workspace_id: string;
+  readonly id: string;
+  readonly adapter_id: string;
+  readonly adapter_session_ref: string | null;
+  readonly node_id: string | null;
+  readonly preset_id: string | null;
+  readonly status: string;
+  readonly capabilities_json: string;
+  readonly config_json: string | null;
+  readonly isolation_class: string;
+  readonly trust_tier: string;
+  readonly error_json: string | null;
+  readonly created_at: number;
+  readonly updated_at: number;
+  readonly destroyed_at: number | null;
+}
+
+export interface RuntimeSessionEventRow {
+  readonly workspace_id: string;
+  readonly id: string;
+  readonly session_id: string;
+  readonly event_type: string;
+  readonly sequence: number;
+  readonly payload_json: string;
+  readonly created_at: number;
+}
+
+export interface RuntimeArtifactRow {
+  readonly workspace_id: string;
+  readonly id: string;
+  readonly session_id: string;
+  readonly path: string;
+  readonly kind: string;
+  readonly content_type: string;
+  readonly size_bytes: number;
+  readonly source_json: string | null;
   readonly created_at: number;
 }
 
@@ -258,6 +303,28 @@ export interface StoredJobEvent {
   readonly created_at: string;
 }
 
+export interface StoredRuntimeSession {
+  readonly session: RuntimeSessionDescriptor;
+  readonly adapter_session_ref: string | null;
+  readonly config: RuntimeSessionCreateInput | null;
+}
+
+export interface StoredRuntimeSessionEvent {
+  readonly event_id: string;
+  readonly workspace_id: string;
+  readonly session_id: string;
+  readonly event_type: string;
+  readonly sequence: number;
+  readonly payload_json: string;
+  readonly created_at: string;
+}
+
+export interface StoredRuntimeArtifact {
+  readonly workspace_id: string;
+  readonly artifact: RuntimeArtifactDescriptor;
+  readonly created_at: string;
+}
+
 export interface StoredIdempotencyRecord {
   readonly scope: string;
   readonly owner_key: string;
@@ -370,6 +437,19 @@ export const schemaMigrations: readonly Migration[] = [
     statements: [
       "CREATE TABLE IF NOT EXISTS idempotency_records (scope TEXT NOT NULL, owner_key TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_body TEXT NOT NULL, response_json TEXT NOT NULL, status_code INTEGER NOT NULL, resource_id TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY (scope, owner_key, idempotency_key))",
       "CREATE INDEX IF NOT EXISTS idx_idempotency_records_expires_at ON idempotency_records(expires_at)",
+    ],
+  },
+  {
+    version: 6,
+    name: "runtime-sessions-and-artifacts",
+    statements: [
+      "CREATE TABLE IF NOT EXISTS runtime_sessions (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, id TEXT NOT NULL, adapter_id TEXT NOT NULL, adapter_session_ref TEXT, node_id TEXT, preset_id TEXT, status TEXT NOT NULL, capabilities_json TEXT NOT NULL, config_json TEXT, isolation_class TEXT NOT NULL, trust_tier TEXT NOT NULL, error_json TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, destroyed_at INTEGER, PRIMARY KEY (workspace_id, id))",
+      "CREATE INDEX IF NOT EXISTS idx_runtime_sessions_workspace_status ON runtime_sessions(workspace_id, status)",
+      "CREATE INDEX IF NOT EXISTS idx_runtime_sessions_workspace_adapter ON runtime_sessions(workspace_id, adapter_id)",
+      "CREATE TABLE IF NOT EXISTS runtime_session_events (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, id TEXT NOT NULL, session_id TEXT NOT NULL, event_type TEXT NOT NULL, sequence INTEGER NOT NULL, payload_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, id), FOREIGN KEY (workspace_id, session_id) REFERENCES runtime_sessions(workspace_id, id) ON DELETE CASCADE)",
+      "CREATE INDEX IF NOT EXISTS idx_runtime_session_events_session_seq ON runtime_session_events(workspace_id, session_id, sequence)",
+      "CREATE TABLE IF NOT EXISTS runtime_artifacts (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, id TEXT NOT NULL, session_id TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes INTEGER NOT NULL, source_json TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, id), FOREIGN KEY (workspace_id, session_id) REFERENCES runtime_sessions(workspace_id, id) ON DELETE CASCADE)",
+      "CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_session ON runtime_artifacts(workspace_id, session_id)",
     ],
   },
 ];

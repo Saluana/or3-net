@@ -1,6 +1,7 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { createControlPlaneDatabase } from "../src/index.ts";
+import { createControlPlaneDatabase, RuntimeCapabilitySet, schemaMigrations } from "../src/index.ts";
 
 describe("control plane database", () => {
   let database = createControlPlaneDatabase();
@@ -750,5 +751,250 @@ describe("control plane database", () => {
     expect(events[0]?.sequence).toBe(51);
     expect(events.at(-1)?.sequence).toBe(150);
     expect(events.map((event) => event.sequence)).toEqual([...events.map((event) => event.sequence)].sort((left, right) => left - right));
+  });
+
+  test("stores runtime session CRUD round-trip with workspace scoping", () => {
+    database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
+    database.saveWorkspace({ workspace_id: "ws_beta", name: "Beta", created_at: "2024-01-01T00:00:00.000Z" });
+
+    const alpha = database.workspace("ws_alpha");
+    const beta = database.workspace("ws_beta");
+
+    alpha.saveRuntimeSession({
+      session_id: "rt_same",
+      adapter_id: "sandbox",
+      adapter_session_ref: "sbx_alpha",
+      node_id: "node_a",
+      preset_id: "python",
+      status: "creating",
+      capabilities: ["exec", "copy-in"],
+      config: {
+        preset_id: "python",
+        required_capabilities: RuntimeCapabilitySet.fromValues(["exec"]),
+        workspace_mode: "read_only",
+      },
+      isolation_class: "container",
+      trust_tier: "development",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+    });
+    beta.saveRuntimeSession({
+      session_id: "rt_same",
+      adapter_id: "remote",
+      status: "ready",
+      capabilities: ["exec"],
+      isolation_class: "vm",
+      trust_tier: "production",
+      created_at: "2024-01-01T00:01:00.000Z",
+      updated_at: "2024-01-01T00:01:00.000Z",
+    });
+
+    const touched = alpha.touchRuntimeSession("rt_same", {
+      status: "ready",
+      error: null,
+      updated_at: "2024-01-01T00:02:00.000Z",
+    });
+
+    expect(touched.session.status).toBe("ready");
+    expect(touched.adapter_session_ref).toBe("sbx_alpha");
+    expect(alpha.getRuntimeSession("rt_same").session.preset_id).toBe("python");
+    expect(beta.getRuntimeSession("rt_same").session.adapter_id).toBe("remote");
+    expect(alpha.listRuntimeSessions({ status: "ready" })).toHaveLength(1);
+    expect(alpha.listRuntimeSessions({ adapter_id: "sandbox" })).toHaveLength(1);
+  });
+
+  test("stores runtime session events with monotonic sequence", () => {
+    database.close();
+    database = createControlPlaneDatabase({ runtimeSessionEventRetentionPerSession: 3 });
+    database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
+    const store = database.workspace("ws_alpha");
+
+    store.saveRuntimeSession({
+      session_id: "rt_events",
+      adapter_id: "sandbox",
+      status: "ready",
+      capabilities: ["exec"],
+      isolation_class: "container",
+      trust_tier: "development",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+    });
+
+    store.appendRuntimeSessionEvent({
+      session_id: "rt_events",
+      event_type: "session.ready",
+      payload: { order: 1 },
+      created_at: "2024-01-01T00:00:01.000Z",
+    });
+    store.appendRuntimeSessionEvent({
+      session_id: "rt_events",
+      event_type: "exec.started",
+      payload: { order: 2 },
+      created_at: "2024-01-01T00:00:02.000Z",
+    });
+    store.appendRuntimeSessionEvent({
+      session_id: "rt_events",
+      event_type: "exec.stdout",
+      payload: { order: 3 },
+      created_at: "2024-01-01T00:00:03.000Z",
+    });
+    store.appendRuntimeSessionEvent({
+      session_id: "rt_events",
+      event_type: "exec.exit",
+      payload: { order: 4 },
+      created_at: "2024-01-01T00:00:04.000Z",
+    });
+
+    const events = store.listRuntimeSessionEvents("rt_events");
+    expect(events.map((event) => event.sequence)).toEqual([2, 3, 4]);
+    expect(events[0]?.event_type).toBe("exec.started");
+    expect(events[1]?.event_type).toBe("exec.stdout");
+    expect(events[2]?.event_type).toBe("exec.exit");
+  });
+
+  test("stores runtime artifacts per session", () => {
+    database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
+    const store = database.workspace("ws_alpha");
+
+    store.saveRuntimeSession({
+      session_id: "rt_artifacts",
+      adapter_id: "sandbox",
+      status: "ready",
+      capabilities: ["exec", "artifact-push"],
+      isolation_class: "container",
+      trust_tier: "development",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+    });
+
+    store.saveRuntimeArtifact({
+      artifact: {
+        artifact_id: "art_1",
+        session_id: "rt_artifacts",
+        path: "/workspace/out.txt",
+        kind: "file",
+        content_type: "text/plain",
+        size_bytes: 4,
+        source: { transport: "exec" },
+      },
+      created_at: "2024-01-01T00:00:01.000Z",
+    });
+    store.saveRuntimeArtifact({
+      artifact: {
+        artifact_id: "art_2",
+        session_id: "rt_artifacts",
+        path: "/workspace/out-2.txt",
+        kind: "file",
+        content_type: "text/plain",
+        size_bytes: 8,
+        source: {},
+      },
+      created_at: "2024-01-01T00:00:02.000Z",
+    });
+
+    const artifacts = store.listRuntimeArtifacts("rt_artifacts");
+    expect(artifacts).toHaveLength(2);
+    expect(artifacts[0]?.artifact.artifact_id).toBe("art_1");
+    expect(artifacts[0]?.artifact.source).toEqual({ transport: "exec" });
+    expect(artifacts[1]?.artifact.source).toEqual({});
+  });
+
+  test("preserves runtime session created_at across upserts", () => {
+    database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
+    const store = database.workspace("ws_alpha");
+
+    store.saveRuntimeSession({
+      session_id: "rt_upsert",
+      adapter_id: "sandbox",
+      status: "creating",
+      capabilities: ["exec"],
+      isolation_class: "container",
+      trust_tier: "development",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+    });
+
+    store.saveRuntimeSession({
+      session_id: "rt_upsert",
+      adapter_id: "sandbox",
+      status: "ready",
+      capabilities: ["exec", "copy-in"],
+      isolation_class: "container",
+      trust_tier: "development",
+      created_at: "2024-02-01T00:00:00.000Z",
+      updated_at: "2024-02-01T00:00:00.000Z",
+    });
+
+    const stored = store.getRuntimeSession("rt_upsert");
+    expect(stored.session.created_at).toBe("2024-01-01T00:00:00.000Z");
+    expect(stored.session.updated_at).toBe("2024-02-01T00:00:00.000Z");
+    expect(stored.session.status).toBe("ready");
+  });
+
+  test("applies runtime migration on fresh and version-5 databases", () => {
+    const freshTables = database.sqlite
+      .query<{ name: string }, []>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('runtime_sessions', 'runtime_session_events', 'runtime_artifacts') ORDER BY name ASC",
+      )
+      .all()
+      .map((row) => row.name);
+
+    expect(freshTables).toEqual(["runtime_artifacts", "runtime_session_events", "runtime_sessions"]);
+
+    const tempDir = process.env["TMPDIR"] ?? "/tmp";
+    const migrationPath = `${tempDir}/or3-net-runtime-migration-${crypto.randomUUID()}.sqlite`;
+    const seeded = new Database(migrationPath);
+    seeded.run("PRAGMA foreign_keys = ON;");
+    seeded.run(
+      "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)",
+    );
+    for (const migration of schemaMigrations.filter((entry) => entry.version <= 5)) {
+      for (const statement of migration.statements) {
+        seeded.run(statement);
+      }
+      seeded
+        .prepare("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)")
+        .run(migration.version, migration.name, Date.now());
+    }
+    seeded.close();
+
+    let migrated: ReturnType<typeof createControlPlaneDatabase> | undefined;
+
+    try {
+      migrated = createControlPlaneDatabase({ path: migrationPath });
+      const appliedVersions = migrated.sqlite
+        .query<{ version: number }, []>("SELECT version FROM schema_migrations ORDER BY version ASC")
+        .all()
+        .map((row) => row.version);
+
+      expect(appliedVersions.at(-1)).toBe(6);
+      expect(
+        migrated.sqlite
+          .query<{ name: string }, []>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('runtime_sessions', 'runtime_session_events', 'runtime_artifacts') ORDER BY name ASC",
+          )
+          .all()
+          .map((row) => row.name),
+      ).toEqual(["runtime_artifacts", "runtime_session_events", "runtime_sessions"]);
+    } finally {
+      migrated?.close();
+      void Bun.file(migrationPath).delete();
+    }
+  });
+
+  test("runtime tables stay independent from node, job, and network session foreign keys", () => {
+    const foreignKeys = ["runtime_sessions", "runtime_session_events", "runtime_artifacts"].map((table) => ({
+      table,
+      references: database.sqlite
+        .query<{ table: string }, []>(`PRAGMA foreign_key_list(${table})`)
+        .all()
+        .map((row) => row.table),
+    }));
+
+    for (const entry of foreignKeys) {
+      expect(entry.references.includes("nodes")).toBeFalse();
+      expect(entry.references.includes("jobs")).toBeFalse();
+      expect(entry.references.includes("network_sessions")).toBeFalse();
+    }
   });
 });
