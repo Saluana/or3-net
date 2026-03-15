@@ -288,6 +288,42 @@ describe("control plane database", () => {
     expect(store.getNode("node_1").health_status).toBe("stale");
   });
 
+  test("reconciles pending jobs as failed on startup", () => {
+    database.saveWorkspace({
+      workspace_id: "ws_alpha",
+      name: "Alpha",
+      created_at: "2024-01-01T00:00:00.000Z",
+    });
+    const store = database.workspace("ws_alpha");
+
+    store.saveJob({
+      job: {
+        job_id: "job_pending",
+        workspace_id: "ws_alpha",
+        status: "pending",
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+      task_package: {
+        workspace_id: "ws_alpha",
+        job_id: "job_pending",
+        kind: "turn",
+        instructions: "do thing",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+    });
+
+    const summary = database.reconcileStartupState(Date.parse("2024-01-01T00:02:00.000Z"));
+
+    expect(summary.failed_jobs).toBe(1);
+    expect(store.getJob("job_pending").job.status).toBe("failed");
+    expect(store.getJob("job_pending").error?.code).toBe("host_restart");
+  });
+
   test("preserves child rows when updating parent records", () => {
     database.saveWorkspace({
       workspace_id: "ws_alpha",
@@ -644,6 +680,91 @@ describe("control plane database", () => {
     expect(touched.last_activity_at).toBe("2024-01-01T00:01:00.000Z");
   });
 
+  test("requires network sessions to exist in the same workspace when saving jobs", () => {
+    database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
+    database.saveWorkspace({ workspace_id: "ws_beta", name: "Beta", created_at: "2024-01-01T00:00:00.000Z" });
+
+    const alpha = database.workspace("ws_alpha");
+    const beta = database.workspace("ws_beta");
+    const taskPackage = {
+      workspace_id: "ws_alpha",
+      job_id: "job_with_session",
+      kind: "turn",
+      instructions: "alpha",
+      artifacts: [],
+      tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+      timeout: { soft_ms: 1000 },
+      lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+      subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+      metadata: {},
+    };
+
+    alpha.saveNetworkSession({
+      network_session_id: "sess_alpha",
+      client_kind: "cli",
+      intern_session_key: "svc:alpha",
+      status: "active",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+      last_activity_at: "2024-01-01T00:00:00.000Z",
+    });
+    beta.saveNetworkSession({
+      network_session_id: "sess_beta",
+      client_kind: "cli",
+      intern_session_key: "svc:beta",
+      status: "active",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+      last_activity_at: "2024-01-01T00:00:00.000Z",
+    });
+
+    alpha.saveJob({
+      job: {
+        job_id: "job_with_session",
+        workspace_id: "ws_alpha",
+        status: "pending",
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+      task_package: taskPackage,
+      network_session_id: "sess_alpha",
+    });
+
+    expect(alpha.getJob("job_with_session").network_session_id).toBe("sess_alpha");
+    expect(() =>
+      alpha.saveJob({
+        job: {
+          job_id: "job_unknown_session",
+          workspace_id: "ws_alpha",
+          status: "pending",
+          created_at: "2024-01-01T00:00:00.000Z",
+        },
+        task_package: {
+          ...taskPackage,
+          job_id: "job_unknown_session",
+        },
+        network_session_id: "sess_missing",
+      }),
+    ).toThrow("Network session sess_missing was not found in workspace ws_alpha");
+    expect(() => alpha.getJob("job_unknown_session")).toThrow();
+
+    expect(() =>
+      alpha.saveJob({
+        job: {
+          job_id: "job_cross_workspace_session",
+          workspace_id: "ws_alpha",
+          status: "pending",
+          created_at: "2024-01-01T00:00:00.000Z",
+        },
+        task_package: {
+          ...taskPackage,
+          job_id: "job_cross_workspace_session",
+        },
+        network_session_id: "sess_beta",
+      }),
+    ).toThrow("Network session sess_beta was not found in workspace ws_alpha");
+    expect(() => alpha.getJob("job_cross_workspace_session")).toThrow();
+  });
+
   test("stores bounded job events and keeps them workspace-scoped", () => {
     database.close();
     database = createControlPlaneDatabase({ jobEventRetentionPerJob: 3 });
@@ -746,6 +867,72 @@ describe("control plane database", () => {
     expect(sessionEvents).toHaveLength(3);
     expect(betaEvents).toHaveLength(1);
     expect(betaEvents[0]?.job_id).toBe("job_beta");
+  });
+
+  test("sanitizes circular payloads for retained events", () => {
+    database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
+    const store = database.workspace("ws_alpha");
+
+    store.saveJob({
+      job: {
+        job_id: "job_circular",
+        workspace_id: "ws_alpha",
+        status: "pending",
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+      task_package: {
+        workspace_id: "ws_alpha",
+        job_id: "job_circular",
+        kind: "turn",
+        instructions: "alpha",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+    });
+    store.saveRuntimeSession({
+      session_id: "rt_circular",
+      adapter_id: "sandbox",
+      status: "ready",
+      capabilities: ["exec"],
+      isolation_class: "container",
+      trust_tier: "development",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+    });
+
+    const payload: Record<string, unknown> = { label: "root" };
+    payload["self"] = payload;
+
+    expect(() =>
+      store.appendJobEvent({
+        job_id: "job_circular",
+        event_type: "job.accepted",
+        payload,
+        created_at: "2024-01-01T00:00:01.000Z",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      store.appendRuntimeSessionEvent({
+        session_id: "rt_circular",
+        event_type: "session.ready",
+        payload,
+        created_at: "2024-01-01T00:00:01.000Z",
+      }),
+    ).not.toThrow();
+
+    const jobPayload = JSON.parse(store.listJobEvents({ job_id: "job_circular" })[0]?.payload_json ?? "{}") as {
+      self?: { _circular?: boolean };
+    };
+    const runtimePayload = JSON.parse(store.listRuntimeSessionEvents("rt_circular")[0]?.payload_json ?? "{}") as {
+      self?: { _circular?: boolean };
+    };
+
+    expect(jobPayload.self?._circular).toBeTrue();
+    expect(runtimePayload.self?._circular).toBeTrue();
   });
 
   test("lists the newest bounded event tail in chronological order", () => {
@@ -944,6 +1131,53 @@ describe("control plane database", () => {
     expect(artifacts[0]?.artifact.artifact_id).toBe("art_1");
     expect(artifacts[0]?.artifact.source).toEqual({ transport: "exec" });
     expect(artifacts[1]?.artifact.source).toEqual({});
+  });
+
+  test("preserves runtime artifact created_at across upserts", () => {
+    database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
+    const store = database.workspace("ws_alpha");
+
+    store.saveRuntimeSession({
+      session_id: "rt_artifact_upsert",
+      adapter_id: "sandbox",
+      status: "ready",
+      capabilities: ["exec", "artifact-push"],
+      isolation_class: "container",
+      trust_tier: "development",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:00:00.000Z",
+    });
+
+    store.saveRuntimeArtifact({
+      artifact: {
+        artifact_id: "art_upsert",
+        session_id: "rt_artifact_upsert",
+        path: "/workspace/out.txt",
+        kind: "file",
+        content_type: "text/plain",
+        size_bytes: 4,
+        source: { transport: "exec" },
+      },
+      created_at: "2024-01-01T00:00:01.000Z",
+    });
+    store.saveRuntimeArtifact({
+      artifact: {
+        artifact_id: "art_upsert",
+        session_id: "rt_artifact_upsert",
+        path: "/workspace/out-renamed.txt",
+        kind: "file",
+        content_type: "text/plain",
+        size_bytes: 8,
+        source: { transport: "copy" },
+      },
+      created_at: "2024-02-01T00:00:01.000Z",
+    });
+
+    const artifact = store.listRuntimeArtifacts("rt_artifact_upsert")[0];
+    expect(artifact?.created_at).toBe("2024-01-01T00:00:01.000Z");
+    expect(artifact?.artifact.path).toBe("/workspace/out-renamed.txt");
+    expect(artifact?.artifact.size_bytes).toBe(8);
+    expect(artifact?.artifact.source).toEqual({ transport: "copy" });
   });
 
   test("preserves runtime session created_at across upserts", () => {

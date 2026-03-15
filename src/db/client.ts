@@ -255,7 +255,7 @@ export interface SaveIdempotencyRecordInput {
   readonly expires_at: string;
 }
 
-const runningJobStatuses = ["scheduled", "running"] as const;
+const recoverableStartupJobStatuses = ["pending", "scheduled", "running"] as const;
 const activeLeaseState = "active";
 
 const parseWorkspaceRow = (row: WorkspaceRow): StoredWorkspace => {
@@ -675,31 +675,37 @@ export class WorkspaceStore {
       throw new Error("task package job mismatch");
     }
 
-    this.db
-      .prepare(
-        "INSERT INTO jobs (workspace_id, id, agent_id, node_id, lease_id, status, task_package_json, result_json, error_json, created_at, started_at, completed_at) VALUES (?, ?, ?, ?, (SELECT lease_id FROM jobs WHERE workspace_id = ? AND id = ?), ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET agent_id = excluded.agent_id, node_id = excluded.node_id, lease_id = COALESCE(excluded.lease_id, jobs.lease_id), status = excluded.status, task_package_json = excluded.task_package_json, result_json = excluded.result_json, error_json = excluded.error_json, started_at = excluded.started_at, completed_at = excluded.completed_at",
-      )
-      .run(
-        this.workspaceId,
-        job.job_id,
-        null,
-        job.node_id ?? null,
-        this.workspaceId,
-        job.job_id,
-        job.status,
-        serializeWithSchema(taskPackageSchema, taskPackage),
-        job.result === undefined ? null : serializeWithSchema(jobResultSchema, job.result),
-        job.error === undefined ? null : serializeWithSchema(jobErrorSchema, job.error),
-        fromIsoDateTime(job.created_at),
-        job.started_at === undefined ? null : fromIsoDateTime(job.started_at),
-        job.completed_at === undefined ? null : fromIsoDateTime(job.completed_at),
-      );
+    this.db.transaction(() => {
+      if (jobInput.network_session_id !== undefined) {
+        this.getNetworkSession(jobInput.network_session_id);
+      }
 
-    if (jobInput.network_session_id !== undefined) {
       this.db
-        .prepare("UPDATE jobs SET network_session_id = ? WHERE workspace_id = ? AND id = ?")
-        .run(jobInput.network_session_id, this.workspaceId, job.job_id);
-    }
+        .prepare(
+          "INSERT INTO jobs (workspace_id, id, agent_id, node_id, lease_id, status, task_package_json, result_json, error_json, created_at, started_at, completed_at) VALUES (?, ?, ?, ?, (SELECT lease_id FROM jobs WHERE workspace_id = ? AND id = ?), ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET agent_id = excluded.agent_id, node_id = excluded.node_id, lease_id = COALESCE(excluded.lease_id, jobs.lease_id), status = excluded.status, task_package_json = excluded.task_package_json, result_json = excluded.result_json, error_json = excluded.error_json, started_at = excluded.started_at, completed_at = excluded.completed_at",
+        )
+        .run(
+          this.workspaceId,
+          job.job_id,
+          null,
+          job.node_id ?? null,
+          this.workspaceId,
+          job.job_id,
+          job.status,
+          serializeWithSchema(taskPackageSchema, taskPackage),
+          job.result === undefined ? null : serializeWithSchema(jobResultSchema, job.result),
+          job.error === undefined ? null : serializeWithSchema(jobErrorSchema, job.error),
+          fromIsoDateTime(job.created_at),
+          job.started_at === undefined ? null : fromIsoDateTime(job.started_at),
+          job.completed_at === undefined ? null : fromIsoDateTime(job.completed_at),
+        );
+
+      if (jobInput.network_session_id !== undefined) {
+        this.db
+          .prepare("UPDATE jobs SET network_session_id = ? WHERE workspace_id = ? AND id = ?")
+          .run(jobInput.network_session_id, this.workspaceId, job.job_id);
+      }
+    })();
 
     return this.getJob(job.job_id);
   }
@@ -1134,7 +1140,7 @@ export class WorkspaceStore {
 
     this.db
       .prepare(
-        "INSERT INTO runtime_artifacts (workspace_id, id, session_id, path, kind, content_type, size_bytes, source_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET session_id = excluded.session_id, path = excluded.path, kind = excluded.kind, content_type = excluded.content_type, size_bytes = excluded.size_bytes, source_json = excluded.source_json, created_at = excluded.created_at",
+        "INSERT INTO runtime_artifacts (workspace_id, id, session_id, path, kind, content_type, size_bytes, source_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET session_id = excluded.session_id, path = excluded.path, kind = excluded.kind, content_type = excluded.content_type, size_bytes = excluded.size_bytes, source_json = excluded.source_json",
       )
       .run(
         this.workspaceId,
@@ -1539,7 +1545,7 @@ export class ControlPlaneDatabase {
    * restart.
    */
   public reconcileStartupState(nowMs = Date.now()): StartupReconciliationSummary {
-    const failableStates = runningJobStatuses.map(() => "?").join(", ");
+    const failableStates = recoverableStartupJobStatuses.map(() => "?").join(", ");
     const failedJobs = this.sqlite
       .prepare(
         `UPDATE jobs SET status = 'failed', error_json = ?, completed_at = ? WHERE status IN (${failableStates})`,
@@ -1552,7 +1558,7 @@ export class ControlPlaneDatabase {
           details: {},
         }),
         nowMs,
-        ...runningJobStatuses,
+        ...recoverableStartupJobStatuses,
       ).changes;
 
     const expiredLeases = this.sqlite
@@ -1655,7 +1661,7 @@ const appendRetainedEvent = (options: AppendRetainedEventOptions): unknown => {
 
 const sanitizePayloadJson = (payload: Record<string, unknown>): string => JSON.stringify(sanitizeValue(payload));
 
-const sanitizeValue = (value: unknown): unknown => {
+const sanitizeValue = (value: unknown, seen = new WeakSet<object>()): unknown => {
   if (typeof value === "string") {
     if (value.length > 2048) {
       return {
@@ -1665,29 +1671,6 @@ const sanitizeValue = (value: unknown): unknown => {
       };
     }
     return value;
-  }
-  if (Array.isArray(value)) {
-    const items = value.slice(0, 25).map((entry) => sanitizeValue(entry));
-    if (value.length > 25) {
-      return {
-        _truncated: true,
-        _original_length: value.length,
-        items,
-      };
-    }
-    return items;
-  }
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>).slice(0, 50);
-    const mapped = Object.fromEntries(entries.map(([key, entry]) => [key, sanitizeValue(entry)]));
-    if (Object.keys(value as Record<string, unknown>).length > 50) {
-      return {
-        _truncated: true,
-        _original_length: Object.keys(value as Record<string, unknown>).length,
-        entries: mapped,
-      };
-    }
-    return mapped;
   }
   if (typeof value === "number" || typeof value === "boolean" || value === null) {
     return value;
@@ -1701,5 +1684,43 @@ const sanitizeValue = (value: unknown): unknown => {
   if (typeof value === "function") {
     return `[function ${value.name || "anonymous"}]`;
   }
-  return null;
+  if (typeof value !== "object") {
+    return null;
+  }
+  if (seen.has(value)) {
+    return {
+      _circular: true,
+    };
+  }
+
+  seen.add(value);
+
+  try {
+    if (Array.isArray(value)) {
+      const items = value.slice(0, 25).map((entry) => sanitizeValue(entry, seen));
+      if (value.length > 25) {
+        return {
+          _truncated: true,
+          _original_length: value.length,
+          items,
+        };
+      }
+      return items;
+    }
+
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record);
+    const entries = keys.slice(0, 50).map((key) => [key, sanitizeValue(record[key], seen)] as const);
+    const mapped = Object.fromEntries(entries);
+    if (keys.length > 50) {
+      return {
+        _truncated: true,
+        _original_length: keys.length,
+        entries: mapped,
+      };
+    }
+    return mapped;
+  } finally {
+    seen.delete(value);
+  }
 };
