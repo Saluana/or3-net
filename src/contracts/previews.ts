@@ -1,3 +1,14 @@
+/**
+ * @module src/contracts/previews
+ *
+ * Purpose:
+ * Preview and workspace-file contracts used to describe browser-launchable
+ * outputs from runtime sessions.
+ *
+ * Constraints:
+ * - Payloads remain snake_case to match API and persistence surfaces
+ * - Preview descriptors separate transport metadata from launch intent
+ */
 import { z } from "zod";
 
 import {
@@ -6,7 +17,9 @@ import {
   nonNegativeIntegerSchema,
 } from "./shared.ts";
 
+/** Purpose: Supported workspace file entry kinds exposed to preview flows. */
 export const workspaceFileKindValues = ["file", "directory"] as const;
+/** Purpose: Stable preview categories surfaced by the platform. */
 export const previewKindValues = ["static-site", "web-app", "dashboard", "artifact-preview"] as const;
 export const previewDeliveryModeValues = [
   "embedded",
@@ -18,6 +31,10 @@ export const previewSourceTypeValues = ["files", "live-service"] as const;
 export const previewStatusValues = ["ready", "pending", "revoked", "expired", "error"] as const;
 export const launchModeHintValues = ["pane", "new_tab", "external_browser"] as const;
 
+/**
+ * Purpose:
+ * Metadata for a file or directory within a workspace preview source.
+ */
 export const workspaceFileEntrySchema = z.object({
   workspace_id: nonEmptyStringSchema,
   path: nonEmptyStringSchema,
@@ -28,6 +45,10 @@ export const workspaceFileEntrySchema = z.object({
   modified_at: isoDateTimeSchema,
 });
 
+/**
+ * Purpose:
+ * Control-plane view of a published or pending preview.
+ */
 export const previewDescriptorSchema = z.object({
   preview_id: nonEmptyStringSchema,
   workspace_id: nonEmptyStringSchema,
@@ -47,11 +68,20 @@ export const previewDescriptorSchema = z.object({
   supports_new_tab: z.boolean(),
 });
 
+/**
+ * Purpose:
+ * Client hint payload used when asking the platform to launch a preview.
+ */
 export const previewLaunchRequestSchema = z.object({
   launch_mode_hint: z.enum(launchModeHintValues).optional(),
   path_hint: nonEmptyStringSchema.optional(),
 });
 
+/**
+ * Purpose:
+ * Normalized preview launch response describing the URL and embedding support
+ * the caller should use.
+ */
 export const previewLaunchMetadataSchema = z.object({
   preview_id: nonEmptyStringSchema,
   workspace_id: nonEmptyStringSchema,

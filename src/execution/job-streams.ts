@@ -1,3 +1,15 @@
+/**
+ * @module src/execution/job-streams
+ *
+ * Purpose:
+ * In-memory job stream broker used to fan out job events to subscribers and SSE
+ * clients.
+ *
+ * Constraints:
+ * - History is bounded per job
+ * - Terminal streams are retained only for a short post-completion window
+ * - State is process-local and not persisted across restarts
+ */
 import type { JobStreamEvent } from "../contracts/index.ts";
 import { normalizeLegacyJobStreamEvent } from "../contracts/platform/compat.ts";
 
@@ -8,6 +20,11 @@ interface JobStreamState {
   cleanupTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * Purpose:
+ * Keeps recent job stream history and live subscribers for process-local event
+ * fanout.
+ */
 export class JobStreamBroker {
   private readonly streams = new Map<string, JobStreamState>();
 
@@ -16,6 +33,7 @@ export class JobStreamBroker {
     private readonly maxHistoryEvents = 128,
   ) {}
 
+  /** Purpose: Publishes a job event to history and active subscribers. */
   public publish(jobId: string, event: JobStreamEvent): void {
     const state = this.ensure(jobId);
     state.history.push(event);
@@ -28,10 +46,16 @@ export class JobStreamBroker {
     }
   }
 
+  /** Purpose: Returns the retained event history for a job stream. */
   public history(jobId: string): JobStreamEvent[] {
     return this.ensure(jobId).history.events();
   }
 
+  /**
+   * Purpose:
+   * Creates an SSE-formatted stream for a job, replaying retained history before
+   * forwarding live events.
+   */
   public stream(jobId: string): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
     const state = this.ensure(jobId);
@@ -75,6 +99,7 @@ export class JobStreamBroker {
     });
   }
 
+  /** Purpose: Reports whether a job stream is currently known to the broker. */
   public has(jobId: string): boolean {
     return this.streams.has(jobId);
   }

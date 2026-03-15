@@ -1,3 +1,16 @@
+/**
+ * @module src/runtime/workspace-stage
+ *
+ * Purpose:
+ * Filesystem helpers for staging selected host-workspace content into runtime
+ * sessions and reconciling it back out safely.
+ *
+ * Responsibilities:
+ * - Build deterministic manifests for selected paths
+ * - Compute stage diffs and apply them with rollback support
+ * - Package and extract staged content as archives
+ * - Enforce path-safety rules to prevent directory traversal
+ */
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
@@ -7,6 +20,7 @@ import tar from "tar-stream";
 import type { Headers as TarHeaders } from "tar-stream";
 import { z } from "zod";
 
+/** Purpose: Single tracked entry in a workspace stage manifest. */
 export interface WorkspaceStageManifestEntry {
   readonly path: string;
   readonly kind: "file" | "directory";
@@ -15,17 +29,20 @@ export interface WorkspaceStageManifestEntry {
   readonly sha256?: string;
 }
 
+/** Purpose: Baseline or exported manifest for a staged workspace selection. */
 export interface WorkspaceStageManifest {
   readonly selected_paths: string[];
   readonly entries: WorkspaceStageManifestEntry[];
 }
 
+/** Purpose: Reconciliation diff between host and exported staged content. */
 export interface WorkspaceStageDiff {
   readonly written_paths: string[];
   readonly deleted_paths: string[];
   readonly conflict_paths: string[];
 }
 
+/** Purpose: Transport capabilities advertised by a runtime adapter for staging. */
 export interface WorkspaceStageTransportCapabilities {
   readonly archive: boolean;
   readonly file_api: boolean;
@@ -46,11 +63,17 @@ const workspaceStageManifestSchema = z.object({
   entries: z.array(workspaceStageManifestEntrySchema),
 });
 
+/** Purpose: Returns the root directory used to store all workspace stages. */
 export const getWorkspaceStageRoot = (baseDir = process.cwd()): string => path.join(baseDir, ".data", STAGE_ROOT_DIRNAME);
 
+/** Purpose: Returns the stage directory for a specific runtime session. */
 export const getWorkspaceStageSessionDir = (sessionId: string, baseDir = process.cwd()): string =>
   path.join(getWorkspaceStageRoot(baseDir), sessionId);
 
+/**
+ * Purpose:
+ * Normalizes a requested stage path and rejects traversal outside the workspace.
+ */
 export const normalizeStagePath = (requestedPath: string): string => {
   const normalized = requestedPath.replaceAll("\\", "/").replace(/^\/+/, "");
   if (normalized.trim() === "") {
@@ -66,6 +89,7 @@ export const normalizeStagePath = (requestedPath: string): string => {
   return cleaned;
 };
 
+/** Purpose: Resolves a relative path within a root while enforcing containment. */
 export const resolveWithinRoot = (root: string, relativePath: string): string => {
   const target = path.resolve(root, normalizeStagePath(relativePath));
   const resolvedRoot = path.resolve(root);
@@ -75,12 +99,14 @@ export const resolveWithinRoot = (root: string, relativePath: string): string =>
   return target;
 };
 
+/** Purpose: Ensures the session-specific stage directory exists. */
 export const ensureWorkspaceStageDir = async (sessionId: string, baseDir = process.cwd()): Promise<string> => {
   const dir = getWorkspaceStageSessionDir(sessionId, baseDir);
   await fs.mkdir(dir, { recursive: true });
   return dir;
 };
 
+/** Purpose: Persists the baseline manifest used for later diffing and commit. */
 export const writeBaseManifest = async (
   sessionId: string,
   manifest: WorkspaceStageManifest,
@@ -92,6 +118,7 @@ export const writeBaseManifest = async (
   return manifestPath;
 };
 
+/** Purpose: Reads and validates the persisted baseline stage manifest. */
 export const readBaseManifest = async (sessionId: string, baseDir = process.cwd()): Promise<WorkspaceStageManifest> => {
   const manifestPath = path.join(getWorkspaceStageSessionDir(sessionId, baseDir), "base-manifest.json");
   const parsed = workspaceStageManifestSchema.parse(JSON.parse(await fs.readFile(manifestPath, "utf8")));
@@ -107,10 +134,12 @@ export const readBaseManifest = async (sessionId: string, baseDir = process.cwd(
   };
 };
 
+/** Purpose: Deletes all staged filesystem state for a runtime session. */
 export const clearWorkspaceStage = async (sessionId: string, baseDir = process.cwd()): Promise<void> => {
   await fs.rm(getWorkspaceStageSessionDir(sessionId, baseDir), { recursive: true, force: true });
 };
 
+/** Purpose: Scans selected host-workspace paths into a deterministic manifest. */
 export const scanWorkspaceSelection = async (root: string, selectedPaths: readonly string[]): Promise<WorkspaceStageManifest> => {
   const uniquePaths = [...new Set(selectedPaths.map((entry) => normalizeStagePath(entry)).filter((entry) => entry !== ""))].sort();
   const entries = new Map<string, WorkspaceStageManifestEntry>();
@@ -181,6 +210,7 @@ const entrySignature = (entry: WorkspaceStageManifestEntry | undefined): string 
   return `${entry.kind}:${entry.kind === "file" ? entry.sha256 ?? "" : ""}`;
 };
 
+/** Purpose: Computes the write/delete/conflict diff for a staged workspace commit. */
 export const diffWorkspaceStage = (
   baseManifest: WorkspaceStageManifest,
   currentHostManifest: WorkspaceStageManifest,
@@ -221,6 +251,11 @@ export const diffWorkspaceStage = (
   return { written_paths: writtenPaths, deleted_paths: deletedPaths, conflict_paths: conflictPaths };
 };
 
+/**
+ * Purpose:
+ * Applies a staged workspace diff to the host workspace with rollback on
+ * partial failure.
+ */
 export const applyWorkspaceStageDiff = async (
   hostRoot: string,
   exportRoot: string,
@@ -279,6 +314,7 @@ export const applyWorkspaceStageDiff = async (
   }
 };
 
+/** Purpose: Reconstructs an exported workspace tree by reading files through a file API. */
 export const reconstructExportFromFileApi = async (
   destinationRoot: string,
   trackedFilePaths: readonly string[],
@@ -299,6 +335,7 @@ export const reconstructExportFromFileApi = async (
   return await scanWorkspaceSelection(destinationRoot, selected);
 };
 
+/** Purpose: Selects the best available workspace staging transport. */
 export const selectWorkspaceStageTransport = (
   requestedTransport: "auto" | "archive" | "file_api",
   selectedPaths: readonly string[],
@@ -330,6 +367,7 @@ export const selectWorkspaceStageTransport = (
   throw new Error(`no supported workspace staging transport for ${selectedPaths.join(", ")}`);
 };
 
+/** Purpose: Creates a gzipped tar archive for a staged workspace manifest. */
 export const createWorkspaceArchive = async (
   hostRoot: string,
   manifest: WorkspaceStageManifest,
@@ -369,6 +407,11 @@ export const createWorkspaceArchive = async (
   await done;
 };
 
+/**
+ * Purpose:
+ * Extracts a workspace archive into a destination directory with basic byte and
+ * file-count limits.
+ */
 export const extractWorkspaceArchive = async (
   archivePath: string,
   destinationRoot: string,

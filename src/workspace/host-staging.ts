@@ -1,3 +1,9 @@
+/**
+ * @module src/workspace/host-staging
+ *
+ * Purpose:
+ * Resolves host-workspace staging configuration from stored workspace metadata.
+ */
 import path from "node:path";
 import { z } from "zod";
 
@@ -13,10 +19,12 @@ const hostWorkspaceConfigSchema = z.object({
     .optional(),
 });
 
+/** Purpose: Optional parameters for resolving a host workspace root path. */
 export interface ResolveHostWorkspaceRootOptions {
   readonly baseDir?: string;
 }
 
+/** Purpose: Reads host-workspace staging config from a stored workspace record. */
 export const getHostWorkspaceConfig = (workspace: StoredWorkspace): { root: string; enabled: boolean } | null => {
   const parsed = hostWorkspaceConfigSchema.parse(workspace.config ?? {});
   if (!parsed.host_workspace?.enabled) {
@@ -25,6 +33,11 @@ export const getHostWorkspaceConfig = (workspace: StoredWorkspace): { root: stri
   return parsed.host_workspace;
 };
 
+/**
+ * Purpose:
+ * Resolves the absolute host-workspace root for a workspace when host staging is
+ * enabled.
+ */
 export const resolveHostWorkspaceRoot = (workspace: StoredWorkspace, options: ResolveHostWorkspaceRootOptions = {}): string | null => {
   const config = getHostWorkspaceConfig(workspace);
   if (config === null) {

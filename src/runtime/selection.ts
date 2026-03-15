@@ -1,3 +1,10 @@
+/**
+ * @module src/runtime/selection
+ *
+ * Purpose:
+ * Chooses the best available runtime adapter or node for a workspace based on
+ * capabilities, trust tier, locality, and health.
+ */
 import {
   type RuntimeAdapter,
   type RuntimeAdapterHealth,
@@ -29,6 +36,7 @@ const localityRank: Record<RuntimeLocality, number> = {
   remote: 1,
 };
 
+/** Purpose: Criteria used to select a runtime adapter or node. */
 export interface RuntimeSelectionCriteria {
   readonly required_capabilities?: readonly RuntimeCapability[];
   readonly preset_id?: string;
@@ -37,15 +45,21 @@ export interface RuntimeSelectionCriteria {
   readonly locality?: RuntimeLocality;
 }
 
+/** Purpose: Selected runtime target including adapter health and optional node. */
 export interface RuntimeSelectionResult {
   readonly adapter: RuntimeAdapter;
   readonly health: RuntimeAdapterHealth;
   readonly node?: RuntimeNodeDescriptor;
 }
 
+/**
+ * Purpose:
+ * Scores available runtime adapters and nodes against requested criteria.
+ */
 export class RuntimeSelectionService {
   public constructor(private readonly registry: RuntimeRegistry) {}
 
+  /** Purpose: Selects the best runtime target for the given workspace and criteria. */
   public async select(workspaceId: string, criteria: RuntimeSelectionCriteria): Promise<RuntimeSelectionResult> {
     const requiredCapabilities = [...(criteria.required_capabilities ?? [])];
     const candidates: (RuntimeSelectionResult | null)[] = await Promise.all(

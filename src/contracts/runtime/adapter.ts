@@ -1,3 +1,15 @@
+/**
+ * @module src/contracts/runtime/adapter
+ *
+ * Purpose:
+ * Defines the runtime adapter interface and the operational payloads used to
+ * manage sessions, files, logs, services, and artifacts.
+ *
+ * Responsibilities:
+ * - Standardize the minimum adapter contract OR3 Net can target
+ * - Describe optional capabilities through explicit optional methods
+ * - Keep runtime payloads transport-neutral and snake_case aligned
+ */
 import { z } from "zod";
 
 import { isoDateTimeSchema, jsonObjectSchema, nonEmptyStringSchema, nonNegativeIntegerSchema } from "../shared.ts";
@@ -10,8 +22,10 @@ import type { RuntimeAdapterManifest } from "./manifest.ts";
 import type { RuntimeSessionCreateInput, RuntimeSessionState } from "./sessions.ts";
 import { runtimeSessionStateSchema } from "./sessions.ts";
 
+/** Purpose: Port-number schema used by service-exposure contracts. */
 const runtimePortNumberSchema = z.number().int().min(1).max(65535);
 
+/** Purpose: Adapter-owned reference to a runtime session. */
 export const runtimeAdapterSessionHandleSchema = z.object({
   ref: nonEmptyStringSchema,
   adapter_id: nonEmptyStringSchema,
@@ -20,6 +34,7 @@ export const runtimeAdapterSessionHandleSchema = z.object({
   capabilities: runtimeCapabilitySetSchema.default(RuntimeCapabilitySet.fromValues([])),
 });
 
+/** Purpose: Request payload for copying host-provided content into a session. */
 export const runtimeCopyInInputSchema = z.object({
   session_ref: nonEmptyStringSchema,
   destination_path: nonEmptyStringSchema,
@@ -29,6 +44,7 @@ export const runtimeCopyInInputSchema = z.object({
   overwrite: z.boolean().default(true),
 });
 
+/** Purpose: Request payload for copying content out of a runtime session. */
 export const runtimeCopyOutInputSchema = z.object({
   session_ref: nonEmptyStringSchema,
   source_path: nonEmptyStringSchema,
@@ -36,6 +52,7 @@ export const runtimeCopyOutInputSchema = z.object({
   encoding: z.enum(["text", "base64"]).default("text"),
 });
 
+/** Purpose: Result envelope for file transfer operations. */
 export const runtimeFileTransferResultSchema = z.object({
   path: nonEmptyStringSchema,
   bytes_transferred: nonNegativeIntegerSchema,
@@ -44,12 +61,14 @@ export const runtimeFileTransferResultSchema = z.object({
   content_base64: z.string().optional(),
 });
 
+/** Purpose: Input payload for batched or cursor-based log retrieval. */
 export const runtimeGetLogsInputSchema = z.object({
   session_ref: nonEmptyStringSchema,
   cursor: z.string().optional(),
   limit: nonNegativeIntegerSchema.optional(),
 });
 
+/** Purpose: Single runtime log chunk returned from log APIs or streams. */
 export const runtimeLogChunkSchema = z.object({
   stream: z.enum(["stdout", "stderr", "system"]).default("stdout"),
   message: z.string(),
@@ -57,17 +76,20 @@ export const runtimeLogChunkSchema = z.object({
   created_at: isoDateTimeSchema.optional(),
 });
 
+/** Purpose: Paginated runtime log retrieval result. */
 export const runtimeLogsResultSchema = z.object({
   chunks: z.array(runtimeLogChunkSchema).default([]),
   next_cursor: z.string().optional(),
 });
 
+/** Purpose: Directory browsing request against an adapter-managed filesystem. */
 export const runtimeFileBrowseInputSchema = z.object({
   session_ref: nonEmptyStringSchema,
   path: nonEmptyStringSchema.optional(),
   recursive: z.boolean().default(false),
 });
 
+/** Purpose: Directory entry metadata returned by runtime file browsing. */
 export const runtimeFileEntrySchema = z.object({
   path: nonEmptyStringSchema,
   kind: z.enum(["file", "directory"]),
@@ -75,12 +97,14 @@ export const runtimeFileEntrySchema = z.object({
   modified_at: isoDateTimeSchema.optional(),
 });
 
+/** Purpose: Runtime file read request payload. */
 export const runtimeFileReadInputSchema = z.object({
   session_ref: nonEmptyStringSchema,
   path: nonEmptyStringSchema,
   encoding: z.enum(["text", "base64"]).default("text"),
 });
 
+/** Purpose: Result payload for runtime file reads. */
 export const runtimeFileReadResultSchema = z.object({
   path: nonEmptyStringSchema,
   encoding: z.enum(["text", "base64"]),
@@ -89,6 +113,7 @@ export const runtimeFileReadResultSchema = z.object({
   size_bytes: nonNegativeIntegerSchema.optional(),
 });
 
+/** Purpose: Runtime file write request payload. */
 export const runtimeFileWriteInputSchema = z.object({
   session_ref: nonEmptyStringSchema,
   path: nonEmptyStringSchema,
@@ -97,12 +122,17 @@ export const runtimeFileWriteInputSchema = z.object({
   overwrite: z.boolean().default(true),
 });
 
+/** Purpose: Runtime file deletion request payload. */
 export const runtimeFileDeleteInputSchema = z.object({
   session_ref: nonEmptyStringSchema,
   path: nonEmptyStringSchema,
   recursive: z.boolean().default(false),
 });
 
+/**
+ * Purpose:
+ * Request payload for staging workspace content into a runtime session.
+ */
 export const runtimeWorkspaceMaterializeInputSchema = z.object({
   session_ref: nonEmptyStringSchema,
   source: z.object({
@@ -114,6 +144,7 @@ export const runtimeWorkspaceMaterializeInputSchema = z.object({
   transport: z.enum(["auto", "archive", "file_api"]).default("auto"),
 });
 
+/** Purpose: Result payload returned after workspace materialization. */
 export const runtimeWorkspaceMaterializeResultSchema = z.object({
   staged_paths: z.array(nonEmptyStringSchema).default([]),
   mode: z.enum(["read_only", "read_write"]),
@@ -121,6 +152,7 @@ export const runtimeWorkspaceMaterializeResultSchema = z.object({
   metadata: jsonObjectSchema.default({}),
 });
 
+/** Purpose: Request payload for exposing a service from a runtime session. */
 export const runtimeExposeServiceInputSchema = z.object({
   session_ref: nonEmptyStringSchema,
   service_name: nonEmptyStringSchema,
@@ -128,23 +160,27 @@ export const runtimeExposeServiceInputSchema = z.object({
   visibility: z.enum(["private", "public"]).default("private"),
 });
 
+/** Purpose: Result returned after a runtime adapter exposes a service. */
 export const runtimeExposeServiceResultSchema = z.object({
   service_id: nonEmptyStringSchema,
   launch_url: z.url().optional(),
   visibility: z.enum(["private", "public"]),
 });
 
+/** Purpose: Snapshot creation request for adapters that support checkpoints. */
 export const runtimeSnapshotInputSchema = z.object({
   session_ref: nonEmptyStringSchema,
   label: nonEmptyStringSchema.optional(),
 });
 
+/** Purpose: Snapshot metadata returned by adapters that support checkpoints. */
 export const runtimeSnapshotResultSchema = z.object({
   snapshot_id: nonEmptyStringSchema,
   created_at: isoDateTimeSchema,
   metadata: jsonObjectSchema.default({}),
 });
 
+/** Purpose: Artifact upload request payload for runtime adapters. */
 export const runtimePushArtifactInputSchema = z.object({
   session_ref: nonEmptyStringSchema,
   artifact: runtimeArtifactDescriptorSchema,
@@ -170,6 +206,19 @@ export type RuntimeSnapshotInput = z.infer<typeof runtimeSnapshotInputSchema>;
 export type RuntimeSnapshotResult = z.infer<typeof runtimeSnapshotResultSchema>;
 export type RuntimePushArtifactInput = z.infer<typeof runtimePushArtifactInputSchema>;
 
+/**
+ * Purpose:
+ * Runtime adapter interface implemented by each execution backend.
+ *
+ * Behavior:
+ * Required methods cover the minimum lifecycle OR3 Net needs to create sessions,
+ * execute work, move files, and read logs. Optional methods advertise richer
+ * capabilities such as browsing, staging, snapshots, or service exposure.
+ *
+ * Non-Goals:
+ * - Does not prescribe how an adapter stores its own internal state
+ * - Does not require every adapter to support every runtime capability
+ */
 export interface RuntimeAdapter {
   readonly manifest: RuntimeAdapterManifest;
 

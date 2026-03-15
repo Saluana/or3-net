@@ -1,3 +1,14 @@
+/**
+ * @module src/scheduler/scheduler
+ *
+ * Purpose:
+ * Issues and releases node leases for remote execution jobs.
+ *
+ * Behavior:
+ * Evaluates workspace nodes against approval, health, capability, transport,
+ * credential, certification, and capacity rules before selecting the least busy
+ * eligible node.
+ */
 import type { ControlPlaneDatabase, StoredLease, StoredNode } from "../db/index.ts";
 import type { Lease, TaskPackage } from "../contracts/index.ts";
 import { createId } from "../lib/ids.ts";
@@ -14,21 +25,28 @@ type NodeEligibilityIssue =
   | "missing_valid_certification"
   | "at_capacity";
 
+/** Purpose: Construction options for the lease scheduler. */
 export interface SchedulerOptions {
   readonly database: ControlPlaneDatabase;
   readonly transportRegistry?: NodeTransportRegistry;
   readonly enforceManagedCertification?: boolean;
 }
 
+/** Purpose: Input required to issue a remote-execution lease. */
 export interface ScheduleJobInput {
   readonly workspace_id: string;
   readonly job_id: string;
   readonly task_package: TaskPackage;
 }
 
+/**
+ * Purpose:
+ * Selects nodes for remote jobs and persists the resulting lease records.
+ */
 export class LeaseScheduler {
   public constructor(private readonly options: SchedulerOptions) {}
 
+  /** Purpose: Chooses an eligible node and issues a persisted active lease. */
   public issueLease(input: ScheduleJobInput): StoredLease {
     const workspaceStore = this.options.database.workspace(input.workspace_id);
     const nowMs = Date.now();
@@ -101,6 +119,7 @@ export class LeaseScheduler {
     });
   }
 
+  /** Purpose: Releases an active lease with the supplied terminal state. */
   public releaseLease(workspaceId: string, leaseId: string, state: Exclude<Lease["state"], "active"> = "released"): StoredLease {
     const workspaceStore = this.options.database.workspace(workspaceId);
     return workspaceStore.releaseLease(leaseId, state, new Date().toISOString());

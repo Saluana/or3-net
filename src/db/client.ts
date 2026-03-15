@@ -1,3 +1,19 @@
+/**
+ * @module src/db/client
+ *
+ * Purpose:
+ * Implements the OR3 Net control-plane database on top of Bun SQLite.
+ *
+ * Responsibilities:
+ * - Validate and persist control-plane entities
+ * - Translate raw SQLite rows into typed stored objects
+ * - Provide workspace-scoped stores with bounded event retention
+ * - Reconcile stale startup state after host restarts
+ *
+ * Constraints:
+ * - Uses SQLite row shapes defined in `db/schema.ts`
+ * - Serializes nested payloads as JSON validated by contract schemas
+ */
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import type { z } from "zod";
 
@@ -69,6 +85,7 @@ import { schemaMigrations } from "./schema.ts";
 const stringArraySchema = agentSchema.shape.node_requirements.shape.capabilities;
 const terminalJobStatuses = new Set<JobRow["status"]>(["completed", "failed", "aborted"]);
 
+/** Purpose: Summary returned after startup reconciliation repairs stale state. */
 export interface StartupReconciliationSummary {
   readonly failed_jobs: number;
   readonly expired_leases: number;
@@ -76,6 +93,7 @@ export interface StartupReconciliationSummary {
   readonly stale_nodes: number;
 }
 
+/** Purpose: Construction options for the control-plane database client. */
 export interface DatabaseOptions {
   readonly path?: string;
   readonly staleNodeThresholdMs?: number;
@@ -83,6 +101,7 @@ export interface DatabaseOptions {
   readonly runtimeSessionEventRetentionPerSession?: number;
 }
 
+/** Purpose: Input shape for persisting or updating an enrolled node. */
 export interface SaveNodeInput {
   readonly manifest: Parameters<typeof nodeManifestSchema.parse>[0];
   readonly pubkey_fingerprint: string;
@@ -95,12 +114,14 @@ export interface SaveNodeInput {
   readonly created_at?: string;
 }
 
+/** Purpose: Input shape for persisting a job and its task package. */
 export interface SaveJobInput {
   readonly job: Parameters<typeof jobSchema.parse>[0];
   readonly task_package: Parameters<typeof taskPackageSchema.parse>[0];
   readonly network_session_id?: string;
 }
 
+/** Purpose: Input shape for persisting a network session binding. */
 export interface SaveNetworkSessionInput {
   readonly network_session_id: string;
   readonly client_kind: string;
@@ -115,6 +136,7 @@ export interface SaveNetworkSessionInput {
   readonly closed_at?: string;
 }
 
+/** Purpose: Partial update for an existing network session binding. */
 export interface TouchNetworkSessionInput {
   readonly status?: string;
   readonly last_job_id?: string;
@@ -122,6 +144,7 @@ export interface TouchNetworkSessionInput {
   readonly closed_at?: string;
 }
 
+/** Purpose: Input shape for appending a retained job event. */
 export interface AppendJobEventInput {
   readonly job_id: string;
   readonly network_session_id?: string;
@@ -130,12 +153,14 @@ export interface AppendJobEventInput {
   readonly created_at?: string;
 }
 
+/** Purpose: Filter options for querying retained job events. */
 export interface ListJobEventsInput {
   readonly job_id?: string;
   readonly network_session_id?: string;
   readonly limit?: number;
 }
 
+/** Purpose: Input shape for persisting a lease record. */
 export interface SaveLeaseInput {
   readonly lease: Parameters<typeof leaseSchema.parse>[0];
   readonly workspace_id: string;
@@ -145,6 +170,7 @@ export interface SaveLeaseInput {
   readonly released_at?: string;
 }
 
+/** Purpose: Input shape for creating or replacing a runtime session record. */
 export interface SaveRuntimeSessionInput {
   readonly session_id: string;
   readonly adapter_id: string;
@@ -166,6 +192,7 @@ export interface SaveRuntimeSessionInput {
   readonly destroyed_at?: string;
 }
 
+/** Purpose: Partial update for an existing runtime session record. */
 export interface TouchRuntimeSessionInput {
   readonly adapter_id?: string;
   readonly adapter_session_ref?: string | null;
@@ -186,12 +213,14 @@ export interface TouchRuntimeSessionInput {
   readonly destroyed_at?: string | null;
 }
 
+/** Purpose: Filter options for listing runtime sessions. */
 export interface ListRuntimeSessionsInput {
   readonly status?: string;
   readonly adapter_id?: string;
   readonly limit?: number;
 }
 
+/** Purpose: Input shape for appending a retained runtime session event. */
 export interface AppendRuntimeSessionEventInput {
   readonly session_id: string;
   readonly event_type: string;
@@ -199,11 +228,13 @@ export interface AppendRuntimeSessionEventInput {
   readonly created_at?: string;
 }
 
+/** Purpose: Input shape for persisting a runtime artifact. */
 export interface SaveRuntimeArtifactInput {
   readonly artifact: Parameters<typeof runtimeArtifactDescriptorSchema.parse>[0];
   readonly created_at?: string;
 }
 
+/** Purpose: Input shape for persisting a preview record. */
 export interface SavePreviewInput {
   readonly preview: Parameters<typeof previewDescriptorSchema.parse>[0];
   readonly created_at?: string;
@@ -211,6 +242,7 @@ export interface SavePreviewInput {
   readonly revoked_at?: string;
 }
 
+/** Purpose: Input shape for persisting an idempotency record. */
 export interface SaveIdempotencyRecordInput {
   readonly scope: string;
   readonly owner_key: string;
@@ -425,6 +457,14 @@ const parseIdempotencyRecordRow = (row: IdempotencyRecordRow): StoredIdempotency
   expires_at: toIsoDateTime(row.expires_at),
 });
 
+/**
+ * Purpose:
+ * Workspace-scoped database facade for the majority of control-plane entities.
+ *
+ * Behavior:
+ * Validates incoming payloads, enforces workspace scoping, and applies bounded
+ * retention for append-only event tables.
+ */
 export class WorkspaceStore {
   public constructor(
     private readonly db: Database,
@@ -433,6 +473,7 @@ export class WorkspaceStore {
     private readonly runtimeSessionEventRetentionPerSession: number,
   ) {}
 
+  /** Purpose: Persists or updates an agent within the workspace. */
   public saveAgent(agentInput: Parameters<typeof agentSchema.parse>[0], nowIso = new Date().toISOString()): StoredAgent {
     const agent = agentSchema.parse(agentInput);
     assertWorkspaceMatch("agent", this.workspaceId, agent.workspace_id);
@@ -456,6 +497,7 @@ export class WorkspaceStore {
     return this.getAgent(agent.agent_id);
   }
 
+  /** Purpose: Fetches a single stored agent. */
   public getAgent(agentId: string): StoredAgent {
     const row = this.db
       .query<AgentRow, [string, string]>(
@@ -470,6 +512,7 @@ export class WorkspaceStore {
     return parseAgentRow(row);
   }
 
+  /** Purpose: Lists stored agents for the workspace. */
   public listAgents(): StoredAgent[] {
     return this.db
       .query<AgentRow, [string]>("SELECT * FROM agents WHERE workspace_id = ? ORDER BY updated_at DESC")
@@ -477,6 +520,7 @@ export class WorkspaceStore {
       .map(parseAgentRow);
   }
 
+  /** Purpose: Deletes an agent from the workspace. */
   public deleteAgent(agentId: string): void {
     const result = this.db
       .prepare("DELETE FROM agents WHERE workspace_id = ? AND id = ?")
@@ -487,6 +531,7 @@ export class WorkspaceStore {
     }
   }
 
+  /** Purpose: Persists or updates an enrolled node. */
   public saveNode(nodeInput: SaveNodeInput): StoredNode {
     const manifest = nodeManifestSchema.parse(nodeInput.manifest);
     const createdAt = nodeInput.created_at ?? new Date().toISOString();
@@ -513,6 +558,7 @@ export class WorkspaceStore {
     return this.getNode(manifest.node_id);
   }
 
+  /** Purpose: Fetches a single stored node. */
   public getNode(nodeId: string): StoredNode {
     const row = this.db
       .query<NodeRow, [string, string]>(
@@ -527,6 +573,7 @@ export class WorkspaceStore {
     return parseNodeRow(row);
   }
 
+  /** Purpose: Lists enrolled nodes for the workspace. */
   public listNodes(): StoredNode[] {
     return this.db
       .query<NodeRow, [string]>("SELECT * FROM nodes WHERE workspace_id = ? ORDER BY created_at ASC")
@@ -534,6 +581,7 @@ export class WorkspaceStore {
       .map(parseNodeRow);
   }
 
+  /** Purpose: Persists or updates a node credential. */
   public saveNodeCredential(input: {
     readonly credential_id: string;
     readonly node_id: string;
@@ -562,6 +610,7 @@ export class WorkspaceStore {
     return this.getNodeCredential(input.credential_id);
   }
 
+  /** Purpose: Fetches a single node credential. */
   public getNodeCredential(credentialId: string): StoredNodeCredential {
     const row = this.db
       .query<NodeCredentialRow, [string, string]>(
@@ -576,6 +625,7 @@ export class WorkspaceStore {
     return parseNodeCredentialRow(row);
   }
 
+  /** Purpose: Lists node credentials, optionally filtered to a single node. */
   public listNodeCredentials(nodeId?: string): StoredNodeCredential[] {
     if (nodeId === undefined) {
       return this.db
@@ -594,6 +644,7 @@ export class WorkspaceStore {
       .map(parseNodeCredentialRow);
   }
 
+  /** Purpose: Lists unrotated, unexpired node credentials. */
   public listActiveNodeCredentials(nowMs = Date.now()): StoredNodeCredential[] {
     return this.db
       .query<NodeCredentialRow, [string, number]>(
@@ -603,6 +654,7 @@ export class WorkspaceStore {
       .map(parseNodeCredentialRow);
   }
 
+  /** Purpose: Returns the latest active credential for a node, if any. */
   public getActiveNodeCredential(nodeId: string, nowMs = Date.now()): StoredNodeCredential | null {
     const row = this.db
       .query<NodeCredentialRow, [string, string, number]>(
@@ -613,6 +665,7 @@ export class WorkspaceStore {
     return row === null ? null : parseNodeCredentialRow(row);
   }
 
+  /** Purpose: Persists or updates a job record and its task package. */
   public saveJob(jobInput: SaveJobInput): StoredJobWithDiagnostics {
     const job = jobSchema.parse(jobInput.job);
     const taskPackage = taskPackageSchema.parse(jobInput.task_package);
@@ -651,12 +704,14 @@ export class WorkspaceStore {
     return this.getJob(job.job_id);
   }
 
+  /** Purpose: Attaches a lease and optional node assignment to an existing job. */
   public attachLease(jobId: string, leaseId: string, nodeId?: string): void {
     this.db
       .prepare("UPDATE jobs SET lease_id = ?, status = 'scheduled', node_id = COALESCE(?, node_id) WHERE workspace_id = ? AND id = ?")
       .run(leaseId, nodeId ?? null, this.workspaceId, jobId);
   }
 
+  /** Purpose: Fetches a single stored job. */
   public getJob(jobId: string): StoredJobWithDiagnostics {
     const row = this.db
       .query<JobRow, [string, string]>("SELECT * FROM jobs WHERE workspace_id = ? AND id = ? LIMIT 1")
@@ -669,6 +724,7 @@ export class WorkspaceStore {
     return parseJobRow(row);
   }
 
+  /** Purpose: Lists all jobs for the workspace. */
   public listJobs(): StoredJobWithDiagnostics[] {
     return this.db
       .query<JobRow, [string]>("SELECT * FROM jobs WHERE workspace_id = ? ORDER BY created_at DESC")
@@ -676,6 +732,7 @@ export class WorkspaceStore {
       .map(parseJobRow);
   }
 
+  /** Purpose: Lists jobs by status bucket and optional network-session binding. */
   public listJobsByFilter(status?: "running" | "terminal" | "all", networkSessionId?: string): StoredJobWithDiagnostics[] {
     const clauses = ["workspace_id = ?"];
     const params: string[] = [this.workspaceId];
@@ -697,6 +754,7 @@ export class WorkspaceStore {
       .map(parseJobRow);
   }
 
+  /** Purpose: Persists or updates a network session binding. */
   public saveNetworkSession(input: SaveNetworkSessionInput): StoredNetworkSession {
     const createdAt = input.created_at ?? new Date().toISOString();
     const updatedAt = input.updated_at ?? createdAt;
@@ -724,6 +782,7 @@ export class WorkspaceStore {
     return this.getNetworkSession(input.network_session_id);
   }
 
+  /** Purpose: Fetches a single network session binding. */
   public getNetworkSession(networkSessionId: string): StoredNetworkSession {
     const row = this.db
       .query<NetworkSessionRow, [string, string]>(
@@ -738,6 +797,7 @@ export class WorkspaceStore {
     return parseNetworkSessionRow(row);
   }
 
+  /** Purpose: Lists network session bindings for the workspace. */
   public listNetworkSessions(): StoredNetworkSession[] {
     return this.db
       .query<NetworkSessionRow, [string]>(
@@ -747,6 +807,7 @@ export class WorkspaceStore {
       .map(parseNetworkSessionRow);
   }
 
+  /** Purpose: Finds the latest binding for a client-kind and client-session pair. */
   public findNetworkSessionByClient(clientKind: string, clientSessionId: string): StoredNetworkSession | null {
     const row = this.db
       .query<NetworkSessionRow, [string, string, string]>(
@@ -757,6 +818,7 @@ export class WorkspaceStore {
     return row === null ? null : parseNetworkSessionRow(row);
   }
 
+  /** Purpose: Finds the latest binding for an intern session key. */
   public findNetworkSessionByInternSessionKey(internSessionKey: string): StoredNetworkSession | null {
     const row = this.db
       .query<NetworkSessionRow, [string, string]>(
@@ -767,6 +829,7 @@ export class WorkspaceStore {
     return row === null ? null : parseNetworkSessionRow(row);
   }
 
+  /** Purpose: Updates an existing network session binding. */
   public touchNetworkSession(networkSessionId: string, input: TouchNetworkSessionInput): StoredNetworkSession {
     const existing = this.getNetworkSession(networkSessionId);
     const lastActivityAt = input.last_activity_at ?? new Date().toISOString();
@@ -792,6 +855,7 @@ export class WorkspaceStore {
     return this.getNetworkSession(networkSessionId);
   }
 
+  /** Purpose: Appends a retained job event and trims old events for that job. */
   public appendJobEvent(input: AppendJobEventInput): StoredJobEvent {
     const row = appendRetainedEvent({
       db: this.db,
@@ -822,6 +886,7 @@ export class WorkspaceStore {
     return parseJobEventRow(row as JobEventRow);
   }
 
+  /** Purpose: Lists retained job events with optional job or session filters. */
   public listJobEvents(input: ListJobEventsInput = {}): StoredJobEvent[] {
     const clauses = ["workspace_id = ?"];
     const params: (string | number)[] = [this.workspaceId];
@@ -847,6 +912,7 @@ export class WorkspaceStore {
       .map(parseJobEventRow);
   }
 
+  /** Purpose: Persists or updates a runtime session record. */
   public saveRuntimeSession(input: SaveRuntimeSessionInput): StoredRuntimeSession {
     const capabilities = runtimeCapabilitySetSchema.parse([...input.capabilities]);
     const config = input.config === undefined ? null : runtimeSessionCreateInputSchema.parse(input.config);
@@ -886,6 +952,7 @@ export class WorkspaceStore {
     return this.getRuntimeSession(input.session_id);
   }
 
+  /** Purpose: Fetches a single runtime session record. */
   public getRuntimeSession(sessionId: string): StoredRuntimeSession {
     const row = this.db
       .query<RuntimeSessionRow, [string, string]>(
@@ -900,6 +967,7 @@ export class WorkspaceStore {
     return parseRuntimeSessionRow(row);
   }
 
+  /** Purpose: Lists runtime sessions for the workspace. */
   public listRuntimeSessions(input: ListRuntimeSessionsInput = {}): StoredRuntimeSession[] {
     const clauses = ["workspace_id = ?"];
     const params: (string | number)[] = [this.workspaceId];
@@ -924,6 +992,7 @@ export class WorkspaceStore {
       .map(parseRuntimeSessionRow);
   }
 
+  /** Purpose: Finds another active read-write stage writer for a host workspace root. */
   public findActiveRuntimeStageWriter(hostWorkspaceRoot: string, excludeSessionId?: string): StoredRuntimeSession | null {
     const clauses = [
       "workspace_id = ?",
@@ -948,6 +1017,7 @@ export class WorkspaceStore {
     return row === null ? null : parseRuntimeSessionRow(row);
   }
 
+  /** Purpose: Applies a partial update to an existing runtime session. */
   public touchRuntimeSession(sessionId: string, input: TouchRuntimeSessionInput): StoredRuntimeSession {
     const existing = this.getRuntimeSession(sessionId);
     const updatedAt = input.updated_at ?? new Date().toISOString();
@@ -1013,6 +1083,7 @@ export class WorkspaceStore {
     return this.getRuntimeSession(sessionId);
   }
 
+  /** Purpose: Appends a retained runtime session event and trims old events. */
   public appendRuntimeSessionEvent(input: AppendRuntimeSessionEventInput): StoredRuntimeSessionEvent {
     const row = appendRetainedEvent({
       db: this.db,
@@ -1042,6 +1113,7 @@ export class WorkspaceStore {
     return parseRuntimeSessionEventRow(row as RuntimeSessionEventRow);
   }
 
+  /** Purpose: Lists retained runtime session events for a session. */
   public listRuntimeSessionEvents(sessionId: string, limit = 100): StoredRuntimeSessionEvent[] {
     return this.db
       .query<RuntimeSessionEventRow, [string, string, number]>(
@@ -1053,6 +1125,7 @@ export class WorkspaceStore {
       .map(parseRuntimeSessionEventRow);
   }
 
+  /** Purpose: Persists a runtime artifact record. */
   public saveRuntimeArtifact(input: SaveRuntimeArtifactInput): StoredRuntimeArtifact {
     const artifact = runtimeArtifactDescriptorSchema.parse(input.artifact);
     const createdAt = input.created_at ?? new Date().toISOString();
@@ -1086,6 +1159,7 @@ export class WorkspaceStore {
     return parseRuntimeArtifactRow(row);
   }
 
+  /** Purpose: Lists runtime artifacts produced by a session. */
   public listRuntimeArtifacts(sessionId: string): StoredRuntimeArtifact[] {
     return this.db
       .query<RuntimeArtifactRow, [string, string]>(
@@ -1095,6 +1169,7 @@ export class WorkspaceStore {
       .map(parseRuntimeArtifactRow);
   }
 
+  /** Purpose: Persists a lease and attaches it to the target job transactionally. */
   public saveLease(leaseInput: SaveLeaseInput): StoredLease {
     const lease = leaseSchema.parse(leaseInput.lease);
     assertWorkspaceMatch("lease input", this.workspaceId, leaseInput.workspace_id);
@@ -1128,6 +1203,7 @@ export class WorkspaceStore {
     return this.getLease(lease.lease_id);
   }
 
+  /** Purpose: Fetches a single lease record. */
   public getLease(leaseId: string): StoredLease {
     const row = this.db
       .query<LeaseRow, [string, string]>("SELECT * FROM leases WHERE workspace_id = ? AND id = ? LIMIT 1")
@@ -1140,6 +1216,7 @@ export class WorkspaceStore {
     return parseLeaseRow(row);
   }
 
+  /** Purpose: Lists lease records for the workspace. */
   public listLeases(): StoredLease[] {
     return this.db
       .query<LeaseRow, [string]>("SELECT * FROM leases WHERE workspace_id = ? ORDER BY created_at DESC")
@@ -1147,12 +1224,14 @@ export class WorkspaceStore {
       .map(parseLeaseRow);
   }
 
+  /** Purpose: Marks expired active leases as expired. */
   public expireActiveLeases(nowMs = Date.now(), releasedAt = new Date(nowMs).toISOString()): number {
     return this.db
       .prepare("UPDATE leases SET state = 'expired', released_at = ? WHERE workspace_id = ? AND state = 'active' AND expires_at <= ?")
       .run(fromIsoDateTime(releasedAt), this.workspaceId, nowMs).changes;
   }
 
+  /** Purpose: Releases a lease with a terminal non-active state. */
   public releaseLease(leaseId: string, state: "released" | "expired" | "failed", releasedAt = new Date().toISOString()): StoredLease {
     const result = this.db
       .prepare("UPDATE leases SET state = ?, released_at = ? WHERE workspace_id = ? AND id = ?")
@@ -1165,6 +1244,7 @@ export class WorkspaceStore {
     return this.getLease(leaseId);
   }
 
+  /** Purpose: Persists or updates a preview descriptor. */
   public savePreview(previewInput: SavePreviewInput): StoredPreview {
     const preview = previewDescriptorSchema.parse(previewInput.preview);
     assertWorkspaceMatch("preview", this.workspaceId, preview.workspace_id);
@@ -1197,6 +1277,7 @@ export class WorkspaceStore {
     return this.getPreview(preview.preview_id);
   }
 
+  /** Purpose: Fetches a single preview record. */
   public getPreview(previewId: string): StoredPreview {
     const row = this.db
       .query<PreviewRow, [string, string]>(
@@ -1211,6 +1292,7 @@ export class WorkspaceStore {
     return parsePreviewRow(row);
   }
 
+  /** Purpose: Lists preview records for the workspace. */
   public listPreviews(): StoredPreview[] {
     return this.db
       .query<PreviewRow, [string]>("SELECT * FROM previews WHERE workspace_id = ? ORDER BY updated_at DESC")
@@ -1219,6 +1301,11 @@ export class WorkspaceStore {
   }
 }
 
+/**
+ * Purpose:
+ * Top-level control-plane database entry point responsible for connection
+ * lifecycle, schema initialization, and cross-workspace queries.
+ */
 export class ControlPlaneDatabase {
   public readonly sqlite: Database;
   private readonly staleNodeThresholdMs: number;
@@ -1234,6 +1321,7 @@ export class ControlPlaneDatabase {
     this.sqlite.run("PRAGMA foreign_keys = ON;");
   }
 
+  /** Purpose: Applies any pending schema migrations. */
   public initialize(): void {
     this.sqlite.transaction(() => {
       this.sqlite.run(
@@ -1262,10 +1350,12 @@ export class ControlPlaneDatabase {
     })();
   }
 
+  /** Purpose: Closes the underlying SQLite connection. */
   public close(): void {
     this.sqlite.close();
   }
 
+  /** Purpose: Persists or updates a workspace record. */
   public saveWorkspace(workspaceInput: Parameters<typeof workspaceSchema.parse>[0]): StoredWorkspace {
     const workspace = workspaceSchema.parse(workspaceInput);
     const createdAt = fromIsoDateTime(workspace.created_at);
@@ -1286,6 +1376,7 @@ export class ControlPlaneDatabase {
     return this.getWorkspace(workspace.workspace_id);
   }
 
+  /** Purpose: Fetches a single workspace record. */
   public getWorkspace(workspaceId: string): StoredWorkspace {
     const row = this.sqlite
       .query<WorkspaceRow, [string]>("SELECT * FROM workspaces WHERE id = ? LIMIT 1")
@@ -1298,10 +1389,12 @@ export class ControlPlaneDatabase {
     return parseWorkspaceRow(row);
   }
 
+  /** Purpose: Lists all known workspaces. */
   public listWorkspaces(): StoredWorkspace[] {
     return this.sqlite.query<WorkspaceRow, []>("SELECT * FROM workspaces ORDER BY created_at ASC").all().map(parseWorkspaceRow);
   }
 
+  /** Purpose: Creates a workspace-scoped store facade. */
   public workspace(workspaceId: string): WorkspaceStore {
     return new WorkspaceStore(
       this.sqlite,
@@ -1311,6 +1404,7 @@ export class ControlPlaneDatabase {
     );
   }
 
+  /** Purpose: Persists or updates an API key record. */
   public saveApiKey(input: {
     readonly api_key_id: string;
     readonly workspace_id: string;
@@ -1341,6 +1435,7 @@ export class ControlPlaneDatabase {
     return this.getApiKey(input.workspace_id, input.api_key_id);
   }
 
+  /** Purpose: Fetches a single API key record. */
   public getApiKey(workspaceId: string, apiKeyId: string): StoredApiKey {
     const row = this.sqlite
       .query<ApiKeyRow, [string, string]>(
@@ -1355,6 +1450,7 @@ export class ControlPlaneDatabase {
     return parseApiKeyRow(row);
   }
 
+  /** Purpose: Looks up an active API key by its stored hash. */
   public findActiveApiKeyByHash(keyHash: string, nowMs = Date.now()): StoredApiKey | null {
     const row = this.sqlite
       .query<ApiKeyRow, [string, number]>(
@@ -1365,6 +1461,7 @@ export class ControlPlaneDatabase {
     return row === null ? null : parseApiKeyRow(row);
   }
 
+  /** Purpose: Lists API keys for a workspace. */
   public listApiKeys(workspaceId: string): StoredApiKey[] {
     return this.sqlite
       .query<ApiKeyRow, [string]>("SELECT * FROM api_keys WHERE workspace_id = ? ORDER BY created_at DESC")
@@ -1372,6 +1469,7 @@ export class ControlPlaneDatabase {
       .map(parseApiKeyRow);
   }
 
+  /** Purpose: Marks an API key as revoked. */
   public revokeApiKey(workspaceId: string, apiKeyId: string, revokedAt = new Date().toISOString()): StoredApiKey {
     const result = this.sqlite
       .prepare("UPDATE api_keys SET revoked_at = ? WHERE workspace_id = ? AND id = ?")
@@ -1384,6 +1482,7 @@ export class ControlPlaneDatabase {
     return this.getApiKey(workspaceId, apiKeyId);
   }
 
+  /** Purpose: Fetches a non-expired idempotency record if present. */
   public getIdempotencyRecord(
     scope: string,
     ownerKey: string,
@@ -1399,6 +1498,7 @@ export class ControlPlaneDatabase {
     return row === null ? null : parseIdempotencyRecordRow(row);
   }
 
+  /** Purpose: Persists or updates an idempotency record. */
   public saveIdempotencyRecord(input: SaveIdempotencyRecordInput): StoredIdempotencyRecord {
     const createdAt = input.created_at ?? new Date().toISOString();
 
@@ -1426,10 +1526,16 @@ export class ControlPlaneDatabase {
     return record;
   }
 
+  /** Purpose: Deletes expired idempotency records. */
   public pruneExpiredIdempotencyRecords(nowMs = Date.now()): number {
     return this.sqlite.prepare("DELETE FROM idempotency_records WHERE expires_at <= ?").run(nowMs).changes;
   }
 
+  /**
+   * Purpose:
+   * Repairs stale running jobs, expired leases, and stale node health after host
+   * restart.
+   */
   public reconcileStartupState(nowMs = Date.now()): StartupReconciliationSummary {
     const failableStates = runningJobStatuses.map(() => "?").join(", ");
     const failedJobs = this.sqlite
@@ -1474,6 +1580,11 @@ export class ControlPlaneDatabase {
   }
 }
 
+/**
+ * Purpose:
+ * Convenience factory that creates, initializes, and returns a control-plane
+ * database instance.
+ */
 export const createControlPlaneDatabase = (options?: DatabaseOptions): ControlPlaneDatabase => {
   const database = new ControlPlaneDatabase(options);
   database.initialize();

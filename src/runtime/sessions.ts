@@ -1,3 +1,16 @@
+/**
+ * @module src/runtime/sessions
+ *
+ * Purpose:
+ * Orchestrates runtime-session lifecycle, execution, and host-workspace staging
+ * on top of the runtime adapter contract.
+ *
+ * Responsibilities:
+ * - Select a runtime adapter and create sessions
+ * - Persist session state and event history
+ * - Proxy execution, file transfer, logs, and stop/destroy operations
+ * - Coordinate host-workspace staging, commit, and discard flows
+ */
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -36,23 +49,27 @@ import {
   writeBaseManifest,
 } from "./workspace-stage.ts";
 
+/** Purpose: Filter options for listing runtime sessions. */
 export interface RuntimeSessionListFilter {
   readonly status?: RuntimeSessionState;
   readonly adapter_id?: string;
   readonly limit?: number;
 }
 
+/** Purpose: Summary returned after startup runtime-session reconciliation. */
 export interface RuntimeSessionReconciliationSummary {
   readonly recovered: number;
   readonly destroyed: number;
   readonly failed: number;
 }
 
+/** Purpose: Optional filesystem roots used by the runtime session service. */
 export interface RuntimeSessionServiceOptions {
   readonly stagingBaseDir?: string;
   readonly hostWorkspaceBaseDir?: string;
 }
 
+/** Purpose: Workspace staging status summary for a runtime session. */
 export interface RuntimeSessionStageStatus {
   readonly session_id: string;
   readonly staging_status: RuntimeSessionDescriptor["staging_status"];
@@ -77,6 +94,14 @@ interface ArchiveWorkspaceStageAdapter {
   }): Promise<{ archive_bytes: Uint8Array; bytes_transferred: number }>;
 }
 
+/**
+ * Purpose:
+ * High-level service for runtime-session lifecycle and staged workspace flows.
+ *
+ * Constraints:
+ * - Requires adapters to advertise capabilities explicitly
+ * - Enforces single active read-write writer per host workspace root
+ */
 export class RuntimeSessionService {
   private readonly stagingBaseDir: string;
   private readonly hostWorkspaceBaseDir: string;
@@ -91,6 +116,7 @@ export class RuntimeSessionService {
     this.hostWorkspaceBaseDir = options.hostWorkspaceBaseDir ?? process.cwd();
   }
 
+  /** Purpose: Selects an adapter and creates a persisted runtime session. */
   public async createSession(workspaceId: string, input: RuntimeSessionCreateInput): Promise<RuntimeSessionDescriptor> {
     const config = normalizeConfig(input);
     const requiredCapabilities = [...(config.required_capabilities ?? [])];
@@ -200,10 +226,12 @@ export class RuntimeSessionService {
     }
   }
 
+  /** Purpose: Fetches a single runtime session descriptor. */
   public getSession(workspaceId: string, sessionId: string): RuntimeSessionDescriptor {
     return this.requireSession(workspaceId, sessionId).session;
   }
 
+  /** Purpose: Lists runtime session descriptors for a workspace. */
   public listSessions(workspaceId: string, filter: RuntimeSessionListFilter = {}): RuntimeSessionDescriptor[] {
     return this.database
       .workspace(workspaceId)
@@ -211,6 +239,7 @@ export class RuntimeSessionService {
       .map((entry) => entry.session);
   }
 
+  /** Purpose: Executes a command inside an existing runtime session. */
   public async exec(workspaceId: string, sessionId: string, request: Parameters<RuntimeAdapter["exec"]>[0]["request"]): Promise<RuntimeExecutionHandle> {
     const stored = this.requireSession(workspaceId, sessionId);
     const adapter = this.requireAdapter(stored.session.adapter_id);
@@ -273,6 +302,7 @@ export class RuntimeSessionService {
     };
   }
 
+  /** Purpose: Requests that a runtime session transition into a stopped state. */
   public async stopSession(workspaceId: string, sessionId: string): Promise<RuntimeSessionDescriptor> {
     const stored = this.requireSession(workspaceId, sessionId);
     const adapter = this.requireAdapter(stored.session.adapter_id);
@@ -299,6 +329,7 @@ export class RuntimeSessionService {
     return updated.session;
   }
 
+  /** Purpose: Destroys a runtime session and clears any staged workspace state. */
   public async destroySession(workspaceId: string, sessionId: string): Promise<RuntimeSessionDescriptor> {
     const stored = this.requireSession(workspaceId, sessionId);
     const adapter = this.requireAdapter(stored.session.adapter_id);

@@ -1,3 +1,9 @@
+/**
+ * @module src/runtime/registry
+ *
+ * Purpose:
+ * In-memory registry of available runtime adapter implementations.
+ */
 import {
   type RuntimeAdapter,
   type RuntimeAdapterHealth,
@@ -10,9 +16,14 @@ const unavailableHealth = (): RuntimeAdapterHealth => ({
   checked_at: new Date().toISOString(),
 });
 
+/**
+ * Purpose:
+ * Stores runtime adapters by id and exposes health aggregation utilities.
+ */
 export class RuntimeRegistry {
   private readonly adapters = new Map<string, RuntimeAdapter>();
 
+  /** Purpose: Registers a runtime adapter after validating its manifest. */
   public register(adapter: RuntimeAdapter): RuntimeAdapterManifest {
     const manifest = runtimeAdapterManifestSchema.parse(adapter.manifest);
     if (this.adapters.has(manifest.adapter_id)) {
@@ -23,14 +34,17 @@ export class RuntimeRegistry {
     return manifest;
   }
 
+  /** Purpose: Returns a runtime adapter by id when registered. */
   public get(adapterId: string): RuntimeAdapter | undefined {
     return this.adapters.get(adapterId);
   }
 
+  /** Purpose: Lists all registered runtime adapters. */
   public list(): RuntimeAdapter[] {
     return [...this.adapters.values()];
   }
 
+  /** Purpose: Aggregates runtime health across all registered adapters. */
   public async health(workspaceId?: string): Promise<Record<string, RuntimeAdapterHealth>> {
     const entries = await Promise.all(
       this.list().map(async (adapter) => {

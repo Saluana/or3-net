@@ -1,3 +1,20 @@
+/**
+ * @module src/server
+ *
+ * Purpose:
+ * Wires the high-level OR3 Net server surface together. This module turns a set
+ * of already-constructed services into a request-handling app and optional Bun
+ * HTTP server.
+ *
+ * Responsibilities:
+ * - Resolve default runtime infrastructure when the caller omits it
+ * - Start startup reconciliation for persisted runtime sessions
+ * - Expose a small API for embedding or launching the control-plane server
+ *
+ * Non-responsibilities:
+ * - Does not construct auth, database, or job services from env vars
+ * - Does not persist process lifecycle state beyond runtime-session recovery
+ */
 import type { AuthService } from "./auth/service.ts";
 import type { AgentService } from "./agents/index.ts";
 import { handleAppRequest, Or3NetApp } from "./api/app.ts";
@@ -19,6 +36,18 @@ import type { WarmPoolManager } from "./scheduler/warmpool.ts";
 import type { InMemoryWorkspaceFileService } from "./workspace/files.ts";
 import type { SandboxClient } from "../sdk/sandbox/index.ts";
 
+/**
+ * Purpose:
+ * Describes the service graph required to host an OR3 Net API server.
+ *
+ * Behavior:
+ * Callers can supply only the mandatory services and allow this module to fill
+ * in default runtime adapters and reconciliation helpers.
+ *
+ * Constraints:
+ * - `authService` and `localJobService` are always required
+ * - Runtime defaults are only created when the necessary dependencies exist
+ */
 export interface ServerOptions {
   readonly database?: ControlPlaneDatabase;
   readonly authService: AuthService;
@@ -36,9 +65,43 @@ export interface ServerOptions {
   readonly warmPoolManager?: WarmPoolManager;
 }
 
+/**
+ * Purpose:
+ * Creates an `Or3NetApp` with the default runtime wiring applied.
+ *
+ * Behavior:
+ * Resolves optional runtime infrastructure, starts background reconciliation,
+ * and returns a request handler container without binding a network port.
+ *
+ * Non-Goals:
+ * - Does not call `Bun.serve`
+ * - Does not validate environment configuration beyond the provided services
+ */
 export const createServerApp = (options: ServerOptions): Or3NetApp =>
   new Or3NetApp(resolveServerOptions(options));
 
+/**
+ * Purpose:
+ * Starts a Bun HTTP server for an OR3 Net app.
+ *
+ * Behavior:
+ * Builds the application with `createServerApp()` and routes all requests
+ * through `handleAppRequest()`.
+ *
+ * Constraints:
+ * - Uses Bun's native server runtime
+ * - Defaults to port `3001` when the caller does not supply one
+ *
+ * @example
+ * ```ts
+ * const server = startServer({
+ *   authService,
+ *   localJobService,
+ *   database,
+ *   port: 3001,
+ * });
+ * ```
+ */
 export const startServer = (
   options: ServerOptions & { readonly port?: number },
 ): ReturnType<typeof Bun.serve> => {

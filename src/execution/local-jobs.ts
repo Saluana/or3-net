@@ -1,3 +1,20 @@
+/**
+ * @module src/execution/local-jobs
+ *
+ * Purpose:
+ * Orchestrates job submission, streaming, persistence, and cancellation for the
+ * primary OR3 Net execution path.
+ *
+ * Responsibilities:
+ * - Validate incoming job requests and resolve session bindings
+ * - Persist jobs, events, and network-session touchpoints
+ * - Dispatch work to local intern execution, sandbox execution, or remote nodes
+ * - Surface normalized job stream events for clients
+ *
+ * Non-responsibilities:
+ * - Does not implement transport-specific node execution directly
+ * - Does not expose HTTP semantics; callers use the API layer for that
+ */
 import { z } from "zod";
 
 import { jobErrorSchema, type Job, type JobResult, type JobStreamEvent, taskPackageSchema, type TaskPackage } from "../contracts/index.ts";
@@ -26,6 +43,14 @@ import { JobStreamBroker } from "./job-streams.ts";
 import { SessionBindingService } from "../session/service.ts";
 import { normalizeInternError, normalizeSandboxError, toPlatformSessionRef } from "../contracts/platform/compat.ts";
 
+/**
+ * Purpose:
+ * Public schema for job-submission requests accepted by the control plane.
+ *
+ * Constraints:
+ * - Callers must provide some form of session identity
+ * - `client_kind` is required when `client_session_id` is present
+ */
 export const createJobRequestSchema = z.object({
   session_key: z.string().trim().min(1).optional(),
   network_session_id: z.string().trim().min(1).optional(),
@@ -54,6 +79,10 @@ export const createJobRequestSchema = z.object({
   }
 });
 
+/**
+ * Purpose:
+ * Dependencies and optional integration points for `LocalJobService`.
+ */
 export interface LocalJobServiceOptions {
   readonly database: ControlPlaneDatabase;
   readonly internClient: InternClient;
@@ -80,6 +109,15 @@ interface LiveJobState {
 
 const terminalStatuses = new Set<Job["status"]>(["completed", "failed", "aborted"]);
 
+/**
+ * Purpose:
+ * Coordinates job lifecycle from submission through streaming, persistence, and
+ * terminal reconciliation.
+ *
+ * Behavior:
+ * Uses session bindings to anchor job identity, records every state change in
+ * the database, and publishes normalized stream events through `JobStreamBroker`.
+ */
 export class LocalJobService {
   private readonly streamBroker: JobStreamBroker;
   private readonly sessionBindingService: SessionBindingService;
@@ -98,10 +136,15 @@ export class LocalJobService {
         : options.database.reconcileStartupState(options.startupReconciliationNowMs);
   }
 
+  /** Purpose: Returns any startup cleanup summary captured during construction. */
   public getStartupReconciliationSummary(): StartupReconciliationSummary | null {
     return this.startupReconciliationSummary;
   }
 
+  /**
+   * Purpose:
+   * Validates, persists, and dispatches a new job for a workspace.
+   */
   public submitJob(
     workspaceId: string,
     requestInput: z.input<typeof createJobRequestSchema>,
@@ -186,35 +229,43 @@ export class LocalJobService {
     };
   }
 
+  /** Purpose: Fetches a persisted job with its diagnostic metadata. */
   public getJob(workspaceId: string, jobId: string): StoredJobWithDiagnostics {
     return this.options.database.workspace(workspaceId).getJob(jobId);
   }
 
+  /** Purpose: Lists workspace jobs with optional status and session filtering. */
   public listJobs(workspaceId: string, input: { status?: "running" | "terminal" | "all"; network_session_id?: string } = {}): StoredJobWithDiagnostics[] {
     return this.options.database.workspace(workspaceId).listJobsByFilter(input.status, input.network_session_id);
   }
 
+  /** Purpose: Lists resolved network sessions known to the local job service. */
   public listSessions(workspaceId: string): StoredNetworkSession[] {
     return this.sessionBindingService.listBindings(workspaceId);
   }
 
+  /** Purpose: Fetches a single resolved network session. */
   public getSession(workspaceId: string, sessionId: string): StoredNetworkSession {
     return this.sessionBindingService.getBinding(workspaceId, sessionId);
   }
 
+  /** Purpose: Lists jobs associated with a single network session. */
   public listSessionJobs(workspaceId: string, sessionId: string): StoredJobWithDiagnostics[] {
     return this.options.database.workspace(workspaceId).listJobsByFilter("all", sessionId);
   }
 
+  /** Purpose: Lists persisted job events associated with a network session. */
   public listSessionEvents(workspaceId: string, sessionId: string): StoredJobEvent[] {
     return this.options.database.workspace(workspaceId).listJobEvents({ network_session_id: sessionId });
   }
 
+  /** Purpose: Opens an SSE stream for a job after confirming it exists. */
   public streamJob(workspaceId: string, jobId: string): ReadableStream<Uint8Array> {
     void this.getJob(workspaceId, jobId);
     return this.streamBroker.stream(jobId);
   }
 
+  /** Purpose: Attempts to abort a running or queued job. */
   public async abortJob(workspaceId: string, jobId: string): Promise<{ ok: boolean; job_id: string }> {
     const stored = this.getJob(workspaceId, jobId);
     if (terminalStatuses.has(stored.job.status)) {

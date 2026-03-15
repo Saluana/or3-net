@@ -1,9 +1,17 @@
+/**
+ * @module src/nodes/adapter-sandbox
+ *
+ * Purpose:
+ * Bridges sandbox runtime primitives into the higher-level node and preview
+ * workflows used by OR3 Net service actions.
+ */
 import type { PreviewDescriptor, PreviewLaunchMetadata, TaskPackage } from "../contracts/index.ts";
 import type { AuditContext } from "../contracts/platform/types.ts";
 import type { StoredNode } from "../db/index.ts";
 import { WarmPoolManager } from "../scheduler/warmpool.ts";
 import type { SandboxClient, SandboxExecEvent, SandboxInfo, SandboxRequestContext, SandboxTunnel } from "../../sdk/sandbox/index.ts";
 
+/** Purpose: Human-facing description of a service exposed by a sandbox-backed node. */
 export interface NodeServiceDescriptor {
   readonly service_id: string;
   readonly label: string;
@@ -22,6 +30,11 @@ interface InternalServiceLaunch {
   readonly expires_at: string;
 }
 
+/**
+ * Purpose:
+ * Provides sandbox-backed execution and service-launch helpers for nodes that
+ * map to ephemeral OR3 sandboxes.
+ */
 export class SandboxNodeAdapter {
   private readonly executionWarmPool: WarmPoolManager;
   private readonly serviceWarmPool: WarmPoolManager;
@@ -32,10 +45,12 @@ export class SandboxNodeAdapter {
     this.serviceWarmPool = new WarmPoolManager(sandboxClient, { allowTunnels: true });
   }
 
+  /** Purpose: Executes a task and returns the sandbox plus final exit code. */
   public async executeTask(workspaceId: string, taskPackage: TaskPackage): Promise<{ sandbox: SandboxInfo; exit_code: number }> {
     return await this.executeTaskWithProgress(workspaceId, taskPackage);
   }
 
+  /** Purpose: Executes a task while optionally streaming raw sandbox exec events. */
   public async executeTaskWithProgress(
     workspaceId: string,
     taskPackage: TaskPackage,
@@ -77,6 +92,7 @@ export class SandboxNodeAdapter {
     }
   }
 
+  /** Purpose: Lists service capabilities declared by a stored node manifest. */
   public listServices(node: StoredNode): NodeServiceDescriptor[] {
     return node.manifest.capabilities
       .filter((capability) => capability.startsWith("service:"))
@@ -84,6 +100,7 @@ export class SandboxNodeAdapter {
       .filter((service): service is NodeServiceDescriptor => service !== null);
   }
 
+  /** Purpose: Prepares a signed launch target for a node-owned service. */
   public async prepareServiceLaunch(
     workspaceId: string,
     node: StoredNode,
@@ -109,6 +126,7 @@ export class SandboxNodeAdapter {
     };
   }
 
+  /** Purpose: Restarts a node service by replacing its backing sandbox. */
   public async restartService(
     workspaceId: string,
     node: StoredNode,
@@ -139,6 +157,7 @@ export class SandboxNodeAdapter {
     };
   }
 
+  /** Purpose: Revokes active launch access for a node-owned service tunnel. */
   public async revokeServiceLaunch(
     workspaceId: string,
     node: StoredNode,
@@ -164,6 +183,7 @@ export class SandboxNodeAdapter {
     return 1;
   }
 
+  /** Purpose: Builds a preview descriptor from a prepared launch capability. */
   public createPreviewDescriptor(workspaceId: string, node: StoredNode, launch: PreviewLaunchMetadata): PreviewDescriptor {
     return {
       preview_id: launch.preview_id,

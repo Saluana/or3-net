@@ -1,3 +1,10 @@
+/**
+ * @module src/nodes/registry
+ *
+ * Purpose:
+ * Enrolls and approves remote nodes for a workspace, including short-lived
+ * runtime credential issuance.
+ */
 import type { z } from "zod";
 
 import type { NodeHealthStatus } from "../contracts/index.ts";
@@ -7,13 +14,19 @@ import { hashApiKey, sha256Hex } from "../lib/crypto.ts";
 import { nodeManifestSchema } from "../contracts/index.ts";
 import { verifyNodeManifestSignature } from "./signatures.ts";
 
+/** Purpose: Enrollment payload for a node manifest. */
 export const enrollNodeRequestSchema = nodeManifestSchema;
 
+/** Purpose: Construction options for the node registry service. */
 export interface NodeRegistryOptions {
   readonly database: ControlPlaneDatabase;
   readonly credentialTtlMs?: number;
 }
 
+/**
+ * Purpose:
+ * Manages node enrollment records and approval-time credential rotation.
+ */
 export class NodeRegistryService {
   private readonly credentialTtlMs: number;
 
@@ -21,6 +34,7 @@ export class NodeRegistryService {
     this.credentialTtlMs = options.credentialTtlMs ?? 60 * 60_000;
   }
 
+  /** Purpose: Verifies and stores a node manifest for a workspace. */
   public async enrollNode(workspaceId: string, manifestInput: z.input<typeof enrollNodeRequestSchema>): Promise<StoredNode> {
     const manifest = enrollNodeRequestSchema.parse(manifestInput);
     if (!verifyNodeManifestSignature(manifest)) {
@@ -43,14 +57,21 @@ export class NodeRegistryService {
     });
   }
 
+  /** Purpose: Lists enrolled nodes for a workspace. */
   public listNodes(workspaceId: string): StoredNode[] {
     return this.options.database.workspace(workspaceId).listNodes();
   }
 
+  /** Purpose: Fetches a single enrolled node. */
   public getNode(workspaceId: string, nodeId: string): StoredNode {
     return this.options.database.workspace(workspaceId).getNode(nodeId);
   }
 
+  /**
+   * Purpose:
+   * Approves a node and issues a fresh transport credential, rotating any prior
+   * active credentials for that node.
+   */
   public async approveNode(workspaceId: string, nodeId: string): Promise<{
     node: StoredNode;
     credential: { token: string; expires_at: string };

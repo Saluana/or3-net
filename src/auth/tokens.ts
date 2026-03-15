@@ -1,3 +1,16 @@
+/**
+ * @module src/auth/tokens
+ *
+ * Purpose:
+ * Implements the signed workspace-token format used by OR3 Net bearer auth.
+ * Tokens are compact, HMAC-signed payloads that carry workspace scope and
+ * expiry without requiring a database lookup.
+ *
+ * Constraints:
+ * - Signature verification uses HMAC-SHA256 over the encoded payload
+ * - Claims stay in snake_case to match the public auth contract
+ * - Validation rejects expired tokens before returning a principal
+ */
 import { z } from "zod";
 import nacl from "tweetnacl";
 
@@ -24,8 +37,16 @@ const workspaceTokenClaimsSchema = z.object({
   }
 });
 
+/**
+ * Purpose:
+ * Public workspace principal type returned after bearer-token validation.
+ */
 export type WorkspacePrincipal = WorkspacePrincipalContract;
 
+/**
+ * Purpose:
+ * Inputs required to mint a workspace-scoped bearer token.
+ */
 export interface IssueWorkspaceTokenInput {
   readonly secret: string;
   readonly subject: string;
@@ -35,6 +56,18 @@ export interface IssueWorkspaceTokenInput {
   readonly now?: Date;
 }
 
+/**
+ * Purpose:
+ * Issues a signed OR3 workspace token.
+ *
+ * Behavior:
+ * Encodes validated claims, signs them with the shared secret, and returns the
+ * token plus surfaced expiry metadata for the caller.
+ *
+ * Constraints:
+ * - Default TTL is 15 minutes
+ * - `scopes` must be non-empty
+ */
 export const issueWorkspaceToken = async (input: IssueWorkspaceTokenInput): Promise<AuthToken> => {
   const now = input.now ?? new Date();
   const expiresAt = new Date(now.getTime() + (input.ttlMs ?? 15 * 60_000));
@@ -58,6 +91,17 @@ export const issueWorkspaceToken = async (input: IssueWorkspaceTokenInput): Prom
   });
 };
 
+/**
+ * Purpose:
+ * Validates a previously issued workspace token and converts it into the public
+ * workspace principal contract.
+ *
+ * Behavior:
+ * Verifies token shape, compares signatures in constant time, validates claim
+ * structure, and rejects expired tokens.
+ *
+ * @throws Error when the token format, signature, or expiry is invalid.
+ */
 export const validateWorkspaceToken = async (
   secret: string,
   token: string,

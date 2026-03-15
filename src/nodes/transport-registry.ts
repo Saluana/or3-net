@@ -1,7 +1,17 @@
+/**
+ * @module src/nodes/transport-registry
+ *
+ * Purpose:
+ * Resolves which remote node transport should be used for a given stored node.
+ */
 import type { StoredNode } from "../db/index.ts";
 
 import type { NodeRpcTransport } from "./transport.ts";
 
+/**
+ * Purpose:
+ * Result returned when describing how a node transport was or was not resolved.
+ */
 export type NodeTransportResolution =
   | {
       readonly ok: true;
@@ -14,22 +24,30 @@ export type NodeTransportResolution =
       readonly message: string;
     };
 
+/**
+ * Purpose:
+ * Registry of transport implementations keyed by node or transport kind.
+ */
 export class NodeTransportRegistry {
   private readonly nodeTransports = new Map<string, NodeRpcTransport>();
   private readonly kindTransports = new Map<NodeRpcTransport["kind"], NodeRpcTransport>();
 
+  /** Purpose: Registers a transport override for a specific workspace-scoped node. */
   public registerNodeTransport(workspaceId: string, nodeId: string, transport: NodeRpcTransport): void {
     this.nodeTransports.set(buildNodeKey(workspaceId, nodeId), transport);
   }
 
+  /** Purpose: Registers a default transport implementation for a transport kind. */
   public registerKindTransport(kind: NodeRpcTransport["kind"], transport: NodeRpcTransport): void {
     this.kindTransports.set(kind, transport);
   }
 
+  /** Purpose: Reports whether a node can currently be resolved to a transport. */
   public canResolve(node: StoredNode): boolean {
     return this.describeResolution(node).ok;
   }
 
+  /** Purpose: Explains how a node would resolve to a transport or why it cannot. */
   public describeResolution(node: StoredNode): NodeTransportResolution {
     const direct = this.nodeTransports.get(buildNodeKey(node.workspace_id, node.manifest.node_id));
     if (direct !== undefined) {
@@ -58,6 +76,7 @@ export class NodeTransportRegistry {
     };
   }
 
+  /** Purpose: Resolves a node to a usable transport or throws. */
   public resolve(node: StoredNode): NodeRpcTransport {
     const resolution = this.describeResolution(node);
     if (resolution.ok) {

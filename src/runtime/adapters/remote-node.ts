@@ -1,3 +1,10 @@
+/**
+ * @module src/runtime/adapters/remote-node
+ *
+ * Purpose:
+ * Runtime adapter that projects remote approved nodes into the generic runtime
+ * adapter contract.
+ */
 import type {
   JobResult,
   NodeExecutionHandle,
@@ -28,6 +35,7 @@ import {
 import type { ControlPlaneDatabase } from "../../db/index.ts";
 import { createId } from "../../lib/ids.ts";
 
+/** Purpose: Required collaborating services for the remote-node runtime adapter. */
 export interface RemoteNodeRuntimeAdapterDependencies {
   readonly database: ControlPlaneDatabase;
   readonly nodeRegistryService: { listNodes(workspaceId: string): StoredNode[] };
@@ -55,6 +63,11 @@ const manifest: RuntimeAdapterManifest = {
   session_modes: ["ephemeral"],
 };
 
+/**
+ * Purpose:
+ * Adapter that delegates runtime execution to approved remote nodes via the
+ * lease scheduler and remote node executor.
+ */
 export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
   public readonly manifest = manifest;
   private readonly implementedCapabilities = this.manifest.capabilities;

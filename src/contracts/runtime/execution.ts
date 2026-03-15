@@ -1,8 +1,15 @@
+/**
+ * @module src/contracts/runtime/execution
+ *
+ * Purpose:
+ * Execution request, event, and result contracts used by runtime adapters.
+ */
 import { z } from "zod";
 
 import { jsonObjectSchema, nonEmptyStringSchema, nonNegativeIntegerSchema, positiveIntegerSchema } from "../shared.ts";
 import { runtimeArtifactDescriptorSchema } from "./artifacts.ts";
 
+/** Purpose: Command-execution request accepted by runtime adapters. */
 export const runtimeExecutionRequestSchema = z.object({
   command: nonEmptyStringSchema,
   args: z.array(z.string()).default([]),
@@ -13,28 +20,33 @@ export const runtimeExecutionRequestSchema = z.object({
   background: z.boolean().default(false),
 });
 
+/** Purpose: Incremental stdout chunk emitted during execution. */
 export const runtimeExecutionStdoutEventSchema = z.object({
   type: z.literal("stdout"),
   chunk: z.string(),
 });
 
+/** Purpose: Incremental stderr chunk emitted during execution. */
 export const runtimeExecutionStderrEventSchema = z.object({
   type: z.literal("stderr"),
   chunk: z.string(),
 });
 
+/** Purpose: Terminal execution event emitted when a process exits. */
 export const runtimeExecutionExitEventSchema = z.object({
   type: z.literal("exit"),
   exit_code: nonNegativeIntegerSchema,
   signal: z.string().optional(),
 });
 
+/** Purpose: Incremental runtime execution event union. */
 export const runtimeExecutionEventSchema = z.discriminatedUnion("type", [
   runtimeExecutionStdoutEventSchema,
   runtimeExecutionStderrEventSchema,
   runtimeExecutionExitEventSchema,
 ]);
 
+/** Purpose: Final runtime execution result captured after process completion. */
 export const runtimeExecutionResultSchema = z.object({
   exit_code: nonNegativeIntegerSchema,
   stdout: z.string().default(""),
@@ -43,6 +55,7 @@ export const runtimeExecutionResultSchema = z.object({
   meta: jsonObjectSchema.default({}),
 });
 
+/** Purpose: Result returned when an in-flight execution is aborted. */
 export const runtimeExecutionAbortResultSchema = z.object({
   acknowledged: z.boolean(),
   message: z.string().optional(),
@@ -53,6 +66,14 @@ export type RuntimeExecutionEvent = z.infer<typeof runtimeExecutionEventSchema>;
 export type RuntimeExecutionResult = z.infer<typeof runtimeExecutionResultSchema>;
 export type RuntimeExecutionAbortResult = z.infer<typeof runtimeExecutionAbortResultSchema>;
 
+/**
+ * Purpose:
+ * Handle returned by runtime adapters for an active or completed execution.
+ *
+ * Behavior:
+ * Exposes an optional incremental event stream, a completion promise, and an
+ * abort method so callers can integrate with foreground or background flows.
+ */
 export interface RuntimeExecutionHandle {
   execution_id: string;
   stream?: AsyncIterable<RuntimeExecutionEvent>;

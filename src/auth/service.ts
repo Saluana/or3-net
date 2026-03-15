@@ -1,3 +1,19 @@
+/**
+ * @module src/auth/service
+ *
+ * Purpose:
+ * Core authentication service for OR3 Net. Bridges external session proofs and
+ * stored API keys into a single workspace-scoped bearer-token model.
+ *
+ * Responsibilities:
+ * - Exchange provider session proofs for OR3 bearer tokens
+ * - Authenticate bearer tokens backed by workspace tokens or API keys
+ * - Create, list, and revoke API keys within a workspace
+ *
+ * Non-responsibilities:
+ * - Does not implement provider-specific proof validation itself
+ * - Does not authorize individual API routes beyond token scope resolution
+ */
 import type { ControlPlaneDatabase, StoredApiKey } from "../db/index.ts";
 
 import { createId } from "../lib/ids.ts";
@@ -5,6 +21,11 @@ import { hashApiKey } from "../lib/crypto.ts";
 import type { AuthToken } from "../contracts/index.ts";
 import { issueWorkspaceToken, validateWorkspaceToken, type WorkspacePrincipal } from "./tokens.ts";
 
+/**
+ * Purpose:
+ * Provider boundary for validating an upstream login artifact before OR3 issues
+ * a workspace-scoped bearer token.
+ */
 export interface SessionProofValidator {
   validateSessionProof(input: {
     provider: string;
@@ -13,6 +34,14 @@ export interface SessionProofValidator {
   }): Promise<{ user_id: string; workspace_id: string; scopes: string[] }>;
 }
 
+/**
+ * Purpose:
+ * Construction options for `AuthService`.
+ *
+ * Constraints:
+ * - `secret` must remain stable for the lifetime of issued workspace tokens
+ * - `database` must be the canonical control-plane store for API keys
+ */
 export interface AuthServiceOptions {
   readonly secret: string;
   readonly database: ControlPlaneDatabase;
@@ -20,12 +49,33 @@ export interface AuthServiceOptions {
   readonly tokenTtlMs?: number;
 }
 
+/**
+ * Purpose:
+ * Payload accepted when exchanging a provider session proof for an OR3 token.
+ */
 export interface ExchangeSessionInput {
   readonly provider: string;
   readonly session_proof: Record<string, unknown>;
   readonly workspace_id?: string;
 }
 
+/**
+ * Purpose:
+ * Authenticates incoming callers and issues workspace-scoped access tokens.
+ *
+ * Behavior:
+ * The service first prefers signed workspace tokens. If token validation fails
+ * for reasons other than expiration, it falls back to API-key lookup so both
+ * auth modes share the same bearer header surface.
+ *
+ * Constraints:
+ * - Workspace-token TTL defaults to 15 minutes
+ * - API key expiry is surfaced as an absolute Unix timestamp
+ *
+ * Non-Goals:
+ * - Does not track refresh tokens or long-lived user sessions
+ * - Does not perform per-route scope checks
+ */
 export class AuthService {
   private readonly tokenTtlMs: number;
 
@@ -33,6 +83,10 @@ export class AuthService {
     this.tokenTtlMs = options.tokenTtlMs ?? 15 * 60_000;
   }
 
+  /**
+   * Purpose:
+   * Exchanges validated provider session proof for a signed OR3 auth token.
+   */
   public async exchangeSessionProof(input: ExchangeSessionInput): Promise<AuthToken> {
     const validated = await this.options.sessionProofValidator.validateSessionProof({
       provider: input.provider,
@@ -49,6 +103,16 @@ export class AuthService {
     });
   }
 
+  /**
+   * Purpose:
+   * Resolves a bearer header into a workspace principal.
+   *
+   * Behavior:
+   * Accepts either a signed workspace token or a raw API key. Expired workspace
+   * tokens are not treated as API keys so callers get the correct auth error.
+   *
+   * @throws Error when the header is missing, malformed, expired, or invalid.
+   */
   public async authenticateBearerToken(headerValue: string | null): Promise<WorkspacePrincipal> {
     if (headerValue === null) {
       throw new Error("missing bearer token");
@@ -81,6 +145,14 @@ export class AuthService {
     }
   }
 
+  /**
+   * Purpose:
+   * Creates a new workspace API key record and returns the only plaintext copy.
+   *
+   * Constraints:
+   * - The returned `api_key` value cannot be recovered from storage later
+   * - Stored records persist only the hashed token value
+   */
   public async createApiKey(input: {
     readonly workspace_id: string;
     readonly name: string;
@@ -100,10 +172,19 @@ export class AuthService {
     return { api_key: rawToken, record };
   }
 
+  /**
+   * Purpose:
+   * Lists active and revoked API keys for a workspace from the control-plane
+   * store.
+   */
   public listApiKeys(workspaceId: string): StoredApiKey[] {
     return this.options.database.listApiKeys(workspaceId);
   }
 
+  /**
+   * Purpose:
+   * Marks an API key as revoked so future bearer authentication fails.
+   */
   public revokeApiKey(workspaceId: string, apiKeyId: string): StoredApiKey {
     return this.options.database.revokeApiKey(workspaceId, apiKeyId);
   }

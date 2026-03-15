@@ -1,3 +1,9 @@
+/**
+ * @module src/runtime/adapters/sandbox
+ *
+ * Purpose:
+ * Runtime adapter backed by the OR3 sandbox service.
+ */
 import { Buffer } from "node:buffer";
 
 import type {
@@ -20,6 +26,7 @@ import { createId } from "../../lib/ids.ts";
 import { WarmPoolManager } from "../../scheduler/warmpool.ts";
 import type { SandboxClient, SandboxRequestError } from "../../../sdk/sandbox/index.ts";
 
+/** Purpose: Construction options for the sandbox runtime adapter. */
 export interface SandboxRuntimeAdapterOptions {
   readonly sandboxClient: SandboxClient;
   readonly warmPoolManager?: WarmPoolManager;
@@ -48,6 +55,10 @@ const manifest: RuntimeAdapterManifest = {
   session_modes: ["ephemeral"],
 };
 
+/**
+ * Purpose:
+ * Adapter that maps runtime-session operations onto sandbox instances.
+ */
 export class SandboxRuntimeAdapter implements RuntimeAdapter {
   public readonly manifest = manifest;
   private readonly warmPoolManager: WarmPoolManager;

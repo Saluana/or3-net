@@ -1,3 +1,13 @@
+/**
+ * @module src/runtime/adapters/local-container
+ *
+ * Purpose:
+ * Runtime adapter that executes work inside a local Docker container.
+ *
+ * Constraints:
+ * - Requires a working `docker` CLI on the host
+ * - Supports only ephemeral sessions
+ */
 import { Buffer } from "node:buffer";
 
 import type {
@@ -18,16 +28,19 @@ import type {
 import { RuntimeCapabilitySet, RuntimeError } from "../../contracts/runtime/index.ts";
 import { createId } from "../../lib/ids.ts";
 
+/** Purpose: Result returned by the low-level container command runner. */
 export interface LocalContainerCommandResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly exitCode: number;
 }
 
+/** Purpose: Abstraction over the command runner used to invoke Docker. */
 export interface LocalContainerCommandRunner {
   run(args: string[], options?: { stdin?: string; timeoutMs?: number }): Promise<LocalContainerCommandResult>;
 }
 
+/** Purpose: Construction options for the local-container runtime adapter. */
 export interface LocalContainerRuntimeAdapterOptions {
   readonly image?: string;
   readonly runner?: LocalContainerCommandRunner;
@@ -46,6 +59,10 @@ const manifest: RuntimeAdapterManifest = {
   session_modes: ["ephemeral"],
 };
 
+/**
+ * Purpose:
+ * Docker-backed runtime adapter for local development and simple isolated exec.
+ */
 export class LocalContainerRuntimeAdapter implements RuntimeAdapter {
   public readonly manifest = manifest;
   private readonly image: string;

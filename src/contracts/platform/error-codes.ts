@@ -1,3 +1,11 @@
+/**
+ * @module src/contracts/platform/error-codes
+ *
+ * Purpose:
+ * Canonical platform error-code registry used by HTTP responses and stream
+ * events. These values are stable identifiers that clients should branch on
+ * instead of free-form error messages.
+ */
 export const platformErrorCodes = {
   authTokenExpired: "auth.token_expired",
   authTokenInvalid: "auth.token_invalid",
@@ -20,4 +28,8 @@ export const platformErrorCodes = {
   serverUnavailable: "server.unavailable",
 } as const;
 
+/**
+ * Purpose:
+ * Union of all stable platform error-code literals.
+ */
 export type PlatformErrorCode = (typeof platformErrorCodes)[keyof typeof platformErrorCodes];

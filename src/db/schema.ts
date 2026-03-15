@@ -1,3 +1,20 @@
+/**
+ * @module src/db/schema
+ *
+ * Purpose:
+ * Declares the persisted row shapes, stored-object views, and migration list for
+ * the OR3 Net control-plane database.
+ *
+ * Responsibilities:
+ * - Describe SQLite row layouts in a stable TypeScript form
+ * - Describe higher-level stored shapes returned by the database client
+ * - Keep migration ordering explicit and reviewable
+ *
+ * @remarks
+ * Internal API. Many exports here are public for composition and testing, but
+ * the higher-level contract most callers should prefer is `ControlPlaneDatabase`
+ * and `WorkspaceStore` from the database client.
+ */
 import type {
   Agent,
   Job,
@@ -16,12 +33,14 @@ import type {
 } from "../contracts/runtime/index.ts";
 import type { JsonValue } from "../contracts/shared.ts";
 
+/** Purpose: Single schema migration unit applied during database initialization. */
 export interface Migration {
   readonly version: number;
   readonly name: string;
   readonly statements: readonly string[];
 }
 
+/** Purpose: Raw SQLite row for workspace records. */
 export interface WorkspaceRow {
   readonly id: string;
   readonly name: string;
@@ -30,6 +49,7 @@ export interface WorkspaceRow {
   readonly updated_at: number;
 }
 
+/** Purpose: Raw SQLite row for persisted API key records. */
 export interface ApiKeyRow {
   readonly id: string;
   readonly workspace_id: string;
@@ -41,6 +61,7 @@ export interface ApiKeyRow {
   readonly revoked_at: number | null;
 }
 
+/** Purpose: Raw SQLite row for enrolled node records. */
 export interface NodeRow {
   readonly id: string;
   readonly workspace_id: string;
@@ -56,6 +77,7 @@ export interface NodeRow {
   readonly created_at: number;
 }
 
+/** Purpose: Raw SQLite row for node transport credentials. */
 export interface NodeCredentialRow {
   readonly id: string;
   readonly node_id: string;
@@ -67,6 +89,7 @@ export interface NodeCredentialRow {
   readonly rotated_at: number | null;
 }
 
+/** Purpose: Raw SQLite row for persisted jobs. */
 export interface JobRow {
   readonly id: string;
   readonly workspace_id: string;
@@ -83,6 +106,7 @@ export interface JobRow {
   readonly completed_at: number | null;
 }
 
+/** Purpose: Raw SQLite row for persisted lease records. */
 export interface LeaseRow {
   readonly id: string;
   readonly node_id: string;
@@ -97,6 +121,7 @@ export interface LeaseRow {
   readonly released_at: number | null;
 }
 
+/** Purpose: Raw SQLite row for stored workspace agents. */
 export interface AgentRow {
   readonly id: string;
   readonly workspace_id: string;
@@ -108,6 +133,7 @@ export interface AgentRow {
   readonly updated_at: number;
 }
 
+/** Purpose: Raw SQLite row for network session bindings. */
 export interface NetworkSessionRow {
   readonly workspace_id: string;
   readonly id: string;
@@ -123,6 +149,7 @@ export interface NetworkSessionRow {
   readonly closed_at: number | null;
 }
 
+/** Purpose: Raw SQLite row for per-job event history. */
 export interface JobEventRow {
   readonly workspace_id: string;
   readonly id: string;
@@ -134,6 +161,7 @@ export interface JobEventRow {
   readonly created_at: number;
 }
 
+/** Purpose: Raw SQLite row for persisted runtime sessions. */
 export interface RuntimeSessionRow {
   readonly workspace_id: string;
   readonly id: string;
@@ -157,6 +185,7 @@ export interface RuntimeSessionRow {
   readonly destroyed_at: number | null;
 }
 
+/** Purpose: Raw SQLite row for runtime session event history. */
 export interface RuntimeSessionEventRow {
   readonly workspace_id: string;
   readonly id: string;
@@ -167,6 +196,7 @@ export interface RuntimeSessionEventRow {
   readonly created_at: number;
 }
 
+/** Purpose: Raw SQLite row for persisted runtime artifacts. */
 export interface RuntimeArtifactRow {
   readonly workspace_id: string;
   readonly id: string;
@@ -179,6 +209,7 @@ export interface RuntimeArtifactRow {
   readonly created_at: number;
 }
 
+/** Purpose: Raw SQLite row for preview descriptors. */
 export interface PreviewRow {
   readonly id: string;
   readonly workspace_id: string;
@@ -198,6 +229,7 @@ export interface PreviewRow {
   readonly updated_at: number;
 }
 
+/** Purpose: Raw SQLite row for idempotency records. */
 export interface IdempotencyRecordRow {
   readonly scope: string;
   readonly owner_key: string;
@@ -210,6 +242,7 @@ export interface IdempotencyRecordRow {
   readonly expires_at: number;
 }
 
+/** Purpose: Parsed node record returned by the database client. */
 export interface StoredNode {
   readonly workspace_id: string;
   readonly manifest: NodeManifest;
@@ -223,17 +256,20 @@ export interface StoredNode {
   readonly created_at: string;
 }
 
+/** Purpose: Parsed job record paired with its stored task package. */
 export interface StoredJob {
   readonly job: Job;
   readonly task_package: TaskPackage;
 }
 
+/** Purpose: Parsed job record enriched with result and error diagnostics. */
 export interface StoredJobWithDiagnostics extends StoredJob {
   readonly network_session_id: string | null;
   readonly error: JobError | null;
   readonly result: JobResult | null;
 }
 
+/** Purpose: Parsed lease record returned by the database client. */
 export interface StoredLease {
   readonly workspace_id: string;
   readonly job_id: string;
@@ -243,16 +279,19 @@ export interface StoredLease {
   readonly released_at: string | null;
 }
 
+/** Purpose: Parsed agent record returned by the database client. */
 export interface StoredAgent extends Agent {
   readonly created_at: string;
   readonly updated_at: string;
 }
 
+/** Purpose: Parsed workspace record returned by the database client. */
 export interface StoredWorkspace extends Workspace {
   readonly config: Record<string, JsonValue> | undefined;
   readonly updated_at: string;
 }
 
+/** Purpose: Parsed API key record returned by the database client. */
 export interface StoredApiKey {
   readonly api_key_id: string;
   readonly workspace_id: string;
@@ -264,6 +303,7 @@ export interface StoredApiKey {
   readonly revoked_at: string | null;
 }
 
+/** Purpose: Parsed preview record returned by the database client. */
 export interface StoredPreview {
   readonly preview: PreviewDescriptor;
   readonly revoked_at: string | null;
@@ -271,6 +311,7 @@ export interface StoredPreview {
   readonly updated_at: string;
 }
 
+/** Purpose: Parsed node credential record returned by the database client. */
 export interface StoredNodeCredential {
   readonly credential_id: string;
   readonly node_id: string;
@@ -282,6 +323,7 @@ export interface StoredNodeCredential {
   readonly rotated_at: string | null;
 }
 
+/** Purpose: Parsed network session record returned by the database client. */
 export interface StoredNetworkSession {
   readonly network_session_id: string;
   readonly workspace_id: string;
@@ -297,6 +339,7 @@ export interface StoredNetworkSession {
   readonly closed_at: string | null;
 }
 
+/** Purpose: Parsed job event record returned by the database client. */
 export interface StoredJobEvent {
   readonly event_id: string;
   readonly workspace_id: string;
@@ -308,12 +351,14 @@ export interface StoredJobEvent {
   readonly created_at: string;
 }
 
+/** Purpose: Parsed runtime session record returned by the database client. */
 export interface StoredRuntimeSession {
   readonly session: RuntimeSessionDescriptor;
   readonly adapter_session_ref: string | null;
   readonly config: RuntimeSessionCreateInput | null;
 }
 
+/** Purpose: Parsed runtime session event record returned by the database client. */
 export interface StoredRuntimeSessionEvent {
   readonly event_id: string;
   readonly workspace_id: string;
@@ -324,12 +369,14 @@ export interface StoredRuntimeSessionEvent {
   readonly created_at: string;
 }
 
+/** Purpose: Parsed runtime artifact record returned by the database client. */
 export interface StoredRuntimeArtifact {
   readonly workspace_id: string;
   readonly artifact: RuntimeArtifactDescriptor;
   readonly created_at: string;
 }
 
+/** Purpose: Parsed idempotency record returned by the database client. */
 export interface StoredIdempotencyRecord {
   readonly scope: string;
   readonly owner_key: string;
@@ -342,6 +389,11 @@ export interface StoredIdempotencyRecord {
   readonly expires_at: string;
 }
 
+/**
+ * Purpose:
+ * Ordered list of schema migrations required to initialize or upgrade the
+ * control-plane database.
+ */
 export const schemaMigrations: readonly Migration[] = [
   {
     version: 1,

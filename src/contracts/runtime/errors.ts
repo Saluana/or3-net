@@ -1,9 +1,21 @@
+/**
+ * @module src/contracts/runtime/errors
+ *
+ * Purpose:
+ * Canonical runtime error vocabulary and conversion helpers between runtime and
+ * public platform error envelopes.
+ *
+ * Constraints:
+ * - Runtime error codes stay more specific than public platform codes
+ * - Mapping to HTTP-facing errors is centralized here to avoid drift
+ */
 import { z } from "zod";
 
 import { platformErrorCodes } from "../platform/error-codes.ts";
 import type { ErrorEnvelope } from "../platform/types.ts";
 import { jsonObjectSchema, nonEmptyStringSchema, nonNegativeIntegerSchema } from "../shared.ts";
 
+/** Purpose: Stable runtime error-code literals used across adapters. */
 export const runtimeErrorCodeValues = [
   "unsupported_capability",
   "policy_denied",
@@ -23,6 +35,7 @@ export const runtimeErrorCodeValues = [
 
 export const runtimeErrorCodeSchema = z.enum(runtimeErrorCodeValues);
 
+/** Purpose: Structured runtime error payload safe for storage and transport. */
 export const runtimeErrorEnvelopeSchema = z.object({
   code: runtimeErrorCodeSchema,
   message: nonEmptyStringSchema,
@@ -68,6 +81,10 @@ const runtimeErrorCodeToStatus: Record<RuntimeErrorCode, number> = {
   adapter_internal: 500,
 };
 
+/**
+ * Purpose:
+ * Rich runtime error class that preserves retriable metadata and optional cause.
+ */
 export class RuntimeError extends Error {
   readonly code: RuntimeErrorCode;
   readonly retriable: boolean;
@@ -92,6 +109,10 @@ export class RuntimeError extends Error {
     this.retryAfterMs = options.retryAfterMs;
   }
 
+  /**
+   * Purpose:
+   * Converts the runtime error instance into the canonical envelope shape.
+   */
   toEnvelope(): RuntimeErrorEnvelope {
     return runtimeErrorEnvelopeSchema.parse({
       code: this.code,
@@ -103,6 +124,10 @@ export class RuntimeError extends Error {
   }
 }
 
+/**
+ * Purpose:
+ * Converts a runtime error into the public API error-envelope shape.
+ */
 export const runtimeErrorToApiEnvelope = (
   error: RuntimeError | RuntimeErrorEnvelope,
   requestId: string,

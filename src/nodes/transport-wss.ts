@@ -1,3 +1,10 @@
+/**
+ * @module src/nodes/transport-wss
+ *
+ * Purpose:
+ * In-process outbound WebSocket style transport abstraction used for nodes that
+ * maintain a long-lived reverse connection into the control plane.
+ */
 import { createId } from "../lib/ids.ts";
 import { nodeResponseSchema, type JobResult, type JobStreamEvent, type NodeEvent, type NodeRequest, type NodeResponse, type TaskPackage } from "../contracts/index.ts";
 
@@ -12,6 +19,11 @@ import {
 type RequestHandler = (request: NodeRequest, context: NodeExecutionContext) => Promise<NodeResponse>;
 type StreamHandler = (request: NodeRequest, context: NodeExecutionContext) => AsyncIterable<NodeEvent>;
 
+/**
+ * Purpose:
+ * Simulates an outbound WSS transport using request and stream handlers attached
+ * to connected nodes.
+ */
 export class OutboundWssNodeTransport implements NodeRpcTransport {
   public readonly kind = "outbound-wss" as const;
   private readonly handlers = new Map<string, RequestHandler>();
@@ -23,6 +35,7 @@ export class OutboundWssNodeTransport implements NodeRpcTransport {
     }
   }
 
+  /** Purpose: Attaches request and optional stream handlers for a connected node. */
   public attachConnection(nodeId: string, handler: RequestHandler, streamHandler?: StreamHandler): void {
     this.handlers.set(nodeId, handler);
     if (streamHandler !== undefined) {

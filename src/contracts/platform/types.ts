@@ -1,3 +1,14 @@
+/**
+ * @module src/contracts/platform/types
+ *
+ * Purpose:
+ * Platform-scoped identity, capability, audit, and error-envelope contracts
+ * shared by OR3 Net APIs.
+ *
+ * Constraints:
+ * - These schemas define the external surface consumed by clients
+ * - Field names stay in snake_case to match API payloads and stored rows
+ */
 import { z } from "zod";
 
 import {
@@ -8,6 +19,7 @@ import {
 } from "../shared.ts";
 import { platformErrorCodes } from "./error-codes.ts";
 
+/** Purpose: Authenticated caller identity after OR3 bearer-token resolution. */
 export const workspacePrincipalSchema = z.object({
   subject: nonEmptyStringSchema,
   workspace_id: nonEmptyStringSchema,
@@ -17,8 +29,14 @@ export const workspacePrincipalSchema = z.object({
   expires_at: positiveIntegerSchema,
 });
 
+/** Purpose: Supported client kinds that can own a platform session. */
 export const platformSessionClientKindSchema = z.enum(["chat", "cli", "sdk", "console", "legacy"]);
 
+/**
+ * Purpose:
+ * Stable session reference handed back to clients so future calls can be bound
+ * to the same network session.
+ */
 export const platformSessionRefSchema = z.object({
   workspace_id: nonEmptyStringSchema,
   client_kind: platformSessionClientKindSchema,
@@ -27,8 +45,10 @@ export const platformSessionRefSchema = z.object({
   session_key: nonEmptyStringSchema,
 });
 
+/** Purpose: Capability-grant categories surfaced to clients. */
 export const capabilityGrantKindSchema = z.enum(["preview-launch", "service-launch", "tunnel-access", "file-download"]);
 
+/** Purpose: Time-bounded delegated capability grant. */
 export const capabilityGrantSchema = z.object({
   capability_id: nonEmptyStringSchema,
   workspace_id: nonEmptyStringSchema,
@@ -38,8 +58,10 @@ export const capabilityGrantSchema = z.object({
   revoked_at: isoDateTimeSchema.nullable(),
 });
 
+/** Purpose: Classification for secrets managed by the platform. */
 export const secretClassSchema = z.enum(["user-local", "control-plane", "service-bootstrap", "ephemeral-capability"]);
 
+/** Purpose: Metadata reference for a managed secret without exposing the value. */
 export const secretRefSchema = z.object({
   secret_id: nonEmptyStringSchema,
   class: secretClassSchema,
@@ -48,8 +70,13 @@ export const secretRefSchema = z.object({
   rotated_at: isoDateTimeSchema.nullable(),
 });
 
+/** Purpose: Schema view of the canonical platform error-code set. */
 export const platformErrorCodeSchema = z.enum(Object.values(platformErrorCodes));
 
+/**
+ * Purpose:
+ * Standard machine-readable error envelope returned by OR3 Net APIs.
+ */
 export const errorEnvelopeSchema = z.object({
   error: nonEmptyStringSchema,
   code: platformErrorCodeSchema,
@@ -58,6 +85,10 @@ export const errorEnvelopeSchema = z.object({
   retry_after_ms: positiveIntegerSchema.optional(),
 });
 
+/**
+ * Purpose:
+ * Audit metadata captured alongside requests and execution events.
+ */
 export const auditContextSchema = z.object({
   request_id: nonEmptyStringSchema,
   workspace_id: nonEmptyStringSchema,

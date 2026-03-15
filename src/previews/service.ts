@@ -1,3 +1,14 @@
+/**
+ * @module src/previews/service
+ *
+ * Purpose:
+ * Manages preview registration and short-lived launch capabilities for files and
+ * live services.
+ *
+ * Constraints:
+ * - Launch capabilities are process-local and short-lived
+ * - Revoked or expired previews fail with explicit preview-state errors
+ */
 import type { PreviewDescriptor, PreviewLaunchMetadata, PreviewLaunchRequest } from "../contracts/index.ts";
 import type { CapabilityGrant } from "../contracts/platform/types.ts";
 import type { ControlPlaneDatabase, StoredPreview } from "../db/index.ts";
@@ -22,6 +33,7 @@ type LaunchCapabilityRecord =
       readonly default_file_path: string;
     };
 
+/** Purpose: Publicly resolvable launch-capability result returned after token lookup. */
 export type ResolvedLaunchCapability =
   | {
       readonly kind: "redirect";
@@ -34,6 +46,11 @@ export type ResolvedLaunchCapability =
       readonly file_path: string;
     };
 
+/**
+ * Purpose:
+ * Error type used when preview or launch capability state forbids the requested
+ * operation.
+ */
 export class PreviewStateError extends Error {
   public constructor(
     public readonly status: 403 | 410,
@@ -43,6 +60,10 @@ export class PreviewStateError extends Error {
   }
 }
 
+/**
+ * Purpose:
+ * Registers previews and mints or revokes launch capabilities for them.
+ */
 export class PreviewService {
   private readonly launchCapabilities = new Map<string, LaunchCapabilityRecord>();
   private readonly previewLaunchTokens = new Map<string, Set<string>>();
@@ -53,10 +74,12 @@ export class PreviewService {
 
   public constructor(private readonly database: ControlPlaneDatabase) {}
 
+  /** Purpose: Lists previews registered for a workspace. */
   public listPreviews(workspaceId: string): StoredPreview[] {
     return this.database.workspace(workspaceId).listPreviews();
   }
 
+  /** Purpose: Registers a preview descriptor after validating caller-owned fields. */
   public registerPreview(workspaceId: string, preview: PreviewDescriptor): StoredPreview {
     if (preview.launch_url !== undefined || preview.embed_url !== undefined) {
       throw new PreviewStateError(403, "caller-supplied browser URLs are not allowed");
@@ -65,6 +88,7 @@ export class PreviewService {
     return this.database.workspace(workspaceId).savePreview({ preview });
   }
 
+  /** Purpose: Mints a short-lived launch capability for a preview. */
   public launchPreview(
     workspaceId: string,
     previewId: string,
@@ -110,6 +134,7 @@ export class PreviewService {
     });
   }
 
+  /** Purpose: Revokes a preview and any launch capabilities tied to it. */
   public revokePreview(workspaceId: string, previewId: string): StoredPreview {
     const stored = this.database.workspace(workspaceId).getPreview(previewId);
     this.revokeLaunchCapabilitiesForPreview(previewId);
@@ -122,6 +147,7 @@ export class PreviewService {
     });
   }
 
+  /** Purpose: Mints a short-lived redirect-style launch capability. */
   public mintLaunchCapability(input: {
     readonly origin?: string;
     readonly workspace_id: string;
@@ -182,6 +208,7 @@ export class PreviewService {
     };
   }
 
+  /** Purpose: Resolves a launch capability token into its effective target. */
   public resolveLaunchCapability(token: string, requestedPath?: string): ResolvedLaunchCapability {
     const revokedCapability = this.revokedLaunchCapabilities.get(token);
     if (revokedCapability !== undefined) {
@@ -211,6 +238,7 @@ export class PreviewService {
     };
   }
 
+  /** Purpose: Revokes all launch capabilities associated with a scope key. */
   public revokeLaunchScope(scopeKey: string): number {
     const tokens = this.scopedLaunchTokens.get(scopeKey);
     if (tokens === undefined) {

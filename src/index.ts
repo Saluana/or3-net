@@ -1,3 +1,19 @@
+/**
+ * @module src/index
+ *
+ * Purpose:
+ * Public package entry point for OR3 Net. Re-exports the stable surfaces used by
+ * servers, SDK consumers, runtime adapters, and control-plane integrations.
+ *
+ * Responsibilities:
+ * - Expose contract schemas and inferred types
+ * - Expose control-plane services and helpers
+ * - Keep import paths shallow for downstream packages
+ *
+ * Non-responsibilities:
+ * - Does not initialize runtime state
+ * - Does not guarantee that every re-export is appropriate for browser usage
+ */
 export * from "./contracts/index.ts";
 export * from "./agents/index.ts";
 export * from "./auth/service.ts";

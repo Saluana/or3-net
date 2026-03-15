@@ -1,3 +1,15 @@
+/**
+ * @module src/contracts/core
+ *
+ * Purpose:
+ * Canonical control-plane contracts for jobs, leases, agents, workspaces, and
+ * related policy objects. These schemas define the stable wire surface shared by
+ * the API, persistence layer, and runtime adapters.
+ *
+ * Constraints:
+ * - Field names remain snake_case to match stored rows and API payloads
+ * - Zod defaults are part of the contract, not just implementation detail
+ */
 import { z } from "zod";
 
 import {
@@ -8,7 +20,9 @@ import {
   positiveIntegerSchema,
 } from "./shared.ts";
 
+/** Purpose: Supported runtime adapter kinds. */
 export const adapterKindValues = ["local", "remote", "sandbox"] as const;
+/** Purpose: Supported node transport channels. */
 export const transportKindValues = ["https", "outbound-wss"] as const;
 export const resetMethodValues = [
   "process_kill",
@@ -35,6 +49,14 @@ export const jobStatusSchema = z.enum(jobStatusValues);
 export const nodeApprovalStatusSchema = z.enum(nodeApprovalStatusValues);
 export const nodeHealthStatusSchema = z.enum(nodeHealthStatusValues);
 
+/**
+ * Purpose:
+ * Describes how tool invocations are permitted or blocked for an agent or task.
+ *
+ * Constraints:
+ * - `allow_list` requires at least one `allowed_tools` entry
+ * - `deny_list` requires at least one `blocked_tools` entry
+ */
 export const toolPolicySchema = z
   .object({
     mode: z.enum(toolPolicyModeValues),
@@ -59,6 +81,10 @@ export const toolPolicySchema = z
     }
   });
 
+/**
+ * Purpose:
+ * Expresses node-selection hints used by scheduling and runtime selection.
+ */
 export const nodeRequirementsSchema = z.object({
   adapter_kind: adapterKindSchema.optional(),
   capabilities: z.array(nonEmptyStringSchema).default([]),
@@ -66,6 +92,10 @@ export const nodeRequirementsSchema = z.object({
   preferred_node_ids: z.array(nonEmptyStringSchema).default([]),
 });
 
+/**
+ * Purpose:
+ * Signed capability and resource declaration published by a node.
+ */
 export const nodeManifestSchema = z.object({
   node_id: nonEmptyStringSchema,
   pubkey: nonEmptyStringSchema,
@@ -95,6 +125,13 @@ export const nodeManifestSchema = z.object({
   version: nonEmptyStringSchema,
 });
 
+/**
+ * Purpose:
+ * Portable artifact payload returned by jobs and runtime operations.
+ *
+ * Constraints:
+ * - At least one content source must be provided
+ */
 export const artifactDescriptorSchema = z
   .object({
     artifact_id: nonEmptyStringSchema,
@@ -113,6 +150,7 @@ export const artifactDescriptorSchema = z
     },
   );
 
+/** Purpose: Lease request profile used during node acquisition. */
 export const leaseProfileSchema = z.object({
   profile_id: nonEmptyStringSchema,
   ttl_seconds: positiveIntegerSchema,
@@ -120,12 +158,17 @@ export const leaseProfileSchema = z.object({
   required_capabilities: z.array(nonEmptyStringSchema).default([]),
 });
 
+/** Purpose: Limits how deeply jobs may spawn delegated subagents. */
 export const subagentPolicySchema = z.object({
   enabled: z.boolean(),
   max_depth: nonNegativeIntegerSchema,
   max_jobs: nonNegativeIntegerSchema,
 });
 
+/**
+ * Purpose:
+ * Complete unit of work dispatched to a runtime node.
+ */
 export const taskPackageSchema = z.object({
   workspace_id: nonEmptyStringSchema,
   job_id: nonEmptyStringSchema,
@@ -142,6 +185,7 @@ export const taskPackageSchema = z.object({
   metadata: jsonObjectSchema.default({}),
 });
 
+/** Purpose: Active or historical node lease contract. */
 export const leaseSchema = z.object({
   lease_id: nonEmptyStringSchema,
   node_id: nonEmptyStringSchema,
@@ -151,12 +195,14 @@ export const leaseSchema = z.object({
   state: leaseStateSchema,
 });
 
+/** Purpose: Structured successful job output payload. */
 export const jobResultSchema = z.object({
   output_text: z.string().optional(),
   artifacts: z.array(artifactDescriptorSchema).default([]),
   meta: jsonObjectSchema.default({}),
 });
 
+/** Purpose: Structured failed job payload surfaced over APIs and streams. */
 export const jobErrorSchema = z.object({
   code: nonEmptyStringSchema,
   message: nonEmptyStringSchema,
@@ -164,6 +210,7 @@ export const jobErrorSchema = z.object({
   details: jsonObjectSchema.default({}),
 });
 
+/** Purpose: Persisted job state exposed by the control plane. */
 export const jobSchema = z.object({
   job_id: nonEmptyStringSchema,
   workspace_id: nonEmptyStringSchema,
@@ -176,6 +223,7 @@ export const jobSchema = z.object({
   error: jobErrorSchema.optional(),
 });
 
+/** Purpose: Saved reusable agent definition bound to a workspace. */
 export const agentSchema = z.object({
   agent_id: nonEmptyStringSchema,
   workspace_id: nonEmptyStringSchema,
@@ -187,6 +235,7 @@ export const agentSchema = z.object({
   updated_at: isoDateTimeSchema.optional(),
 });
 
+/** Purpose: Workspace metadata known to the OR3 Net control plane. */
 export const workspaceSchema = z.object({
   workspace_id: nonEmptyStringSchema,
   name: nonEmptyStringSchema,
@@ -195,6 +244,7 @@ export const workspaceSchema = z.object({
   config: jsonObjectSchema.optional(),
 });
 
+/** Purpose: Signed or minted auth token payload returned to API clients. */
 export const authTokenSchema = z.object({
   token: nonEmptyStringSchema,
   workspace_id: nonEmptyStringSchema,

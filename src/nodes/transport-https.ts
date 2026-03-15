@@ -1,3 +1,13 @@
+/**
+ * @module src/nodes/transport-https
+ *
+ * Purpose:
+ * HTTPS-based node transport for request/response style remote execution.
+ *
+ * Constraints:
+ * - Best suited to short-lived buffered execution responses
+ * - Incremental stream support is synthesized from returned node events
+ */
 import { createId } from "../lib/ids.ts";
 import { nodeEventSchema, nodeResponseSchema, type JobStreamEvent, type NodeEvent, type NodeRequest, type NodeResponse } from "../contracts/index.ts";
 
@@ -10,6 +20,10 @@ import {
   type NodeRpcTransport,
 } from "./transport.ts";
 
+/**
+ * Purpose:
+ * Talks to OR3-compatible nodes over authenticated HTTPS POST requests.
+ */
 export class HttpsNodeTransport implements NodeRpcTransport {
   public readonly kind = "https" as const;
 

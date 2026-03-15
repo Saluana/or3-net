@@ -1,9 +1,21 @@
+/**
+ * @module src/contracts/runtime/sessions
+ *
+ * Purpose:
+ * Session creation, staging, policy, and commit contracts shared by runtime
+ * adapters and the control plane.
+ *
+ * Constraints:
+ * - Workspace staging stays explicit and separate from raw workspace refs
+ * - Field names remain snake_case across persistence and API layers
+ */
 import { z } from "zod";
 
 import { jsonObjectSchema, nonEmptyStringSchema, positiveIntegerSchema } from "../shared.ts";
 import { runtimeCapabilitySetSchema } from "./capabilities.ts";
 import { runtimeSessionModeSchema, runtimeSessionModeValues } from "./manifest.ts";
 
+/** Purpose: Lifecycle states for runtime sessions. */
 export const runtimeSessionStateValues = [
   "creating",
   "ready",
@@ -14,6 +26,7 @@ export const runtimeSessionStateValues = [
   "failed",
 ] as const;
 
+/** Purpose: Workspace access modes for a runtime session. */
 export const runtimeWorkspaceModeValues = ["none", "read_only", "read_write"] as const;
 export const runtimeWorkspaceStageTransportValues = ["auto", "archive", "file_api"] as const;
 export const runtimeWorkspaceStageSourceKindValues = ["host"] as const;
@@ -33,27 +46,32 @@ export const runtimeWorkspaceModeSchema = z.enum(runtimeWorkspaceModeValues);
 export const runtimeWorkspaceStageTransportSchema = z.enum(runtimeWorkspaceStageTransportValues);
 export const runtimeWorkspaceStagingStatusSchema = z.enum(runtimeWorkspaceStagingStatusValues);
 
+/** Purpose: Reference to an environment value that should be materialized at runtime. */
 export const runtimeEnvRefSchema = z.object({
   name: nonEmptyStringSchema,
   ref: nonEmptyStringSchema,
 });
 
+/** Purpose: Reference to a managed secret that should be injected at runtime. */
 export const runtimeSecretRefSchema = z.object({
   name: nonEmptyStringSchema,
   secret_ref: nonEmptyStringSchema,
 });
 
+/** Purpose: Workspace reference used when the runtime can resolve source content directly. */
 export const runtimeWorkspaceRefSchema = z.object({
   kind: nonEmptyStringSchema,
   reference: nonEmptyStringSchema.optional(),
   paths: z.array(nonEmptyStringSchema).default([]),
 });
 
+/** Purpose: Network access policy requested for a runtime session. */
 export const runtimeNetworkPolicySchema = z.object({
   internet_access: z.boolean().default(false),
   ingress: z.enum(["none", "private", "public"]).default("none"),
 });
 
+/** Purpose: Resource hints used to influence adapter scheduling or provisioning. */
 export const runtimeResourceHintsSchema = z.object({
   cpu_cores: positiveIntegerSchema.optional(),
   memory_mb: positiveIntegerSchema.optional(),
@@ -61,17 +79,24 @@ export const runtimeResourceHintsSchema = z.object({
   metadata: jsonObjectSchema.default({}),
 });
 
+/** Purpose: Soft and hard runtime timeout rules. */
 export const runtimeTimeoutRulesSchema = z.object({
   soft_ms: positiveIntegerSchema.optional(),
   hard_ms: positiveIntegerSchema.optional(),
 });
 
+/** Purpose: Rules controlling artifact capture and upload. */
 export const runtimeArtifactRulesSchema = z.object({
   capture_paths: z.array(nonEmptyStringSchema).default([]),
   push_on_completion: z.boolean().default(false),
   metadata: jsonObjectSchema.default({}),
 });
 
+/**
+ * Purpose:
+ * Explicit workspace staging request for adapters that need host content copied
+ * into the runtime before execution.
+ */
 export const runtimeWorkspaceStageSpecSchema = z.object({
   source_kind: z.literal(runtimeWorkspaceStageSourceKindValues[0]),
   paths: z.array(nonEmptyStringSchema).min(1),
@@ -79,6 +104,7 @@ export const runtimeWorkspaceStageSpecSchema = z.object({
   transport: runtimeWorkspaceStageTransportSchema.default("auto"),
 });
 
+/** Purpose: Result payload returned after committing staged workspace changes. */
 export const workspaceCommitResultSchema = z.object({
   session_id: nonEmptyStringSchema,
   status: z.enum(["committed", "conflict", "rejected"]),
@@ -87,6 +113,10 @@ export const workspaceCommitResultSchema = z.object({
   conflict_paths: z.array(nonEmptyStringSchema).default([]),
 });
 
+/**
+ * Purpose:
+ * Complete runtime-session creation request understood by adapters.
+ */
 export const runtimeSessionCreateInputSchema = z.object({
   preset_id: nonEmptyStringSchema.optional(),
   required_capabilities: runtimeCapabilitySetSchema.optional(),

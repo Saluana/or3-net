@@ -1,3 +1,20 @@
+/**
+ * @module src/api/app
+ *
+ * Purpose:
+ * Main HTTP application surface for OR3 Net. This module maps incoming requests
+ * to auth, job, runtime, preview, node, and workspace services while enforcing
+ * consistent platform-style error handling.
+ *
+ * Responsibilities:
+ * - Register and dispatch all first-party API routes
+ * - Translate service errors into stable platform envelopes
+ * - Keep request parsing, auth, and response shaping in one place
+ *
+ * Non-responsibilities:
+ * - Does not construct service implementations
+ * - Does not perform transport-level server startup
+ */
 import { z } from "zod";
 
 import type { AuthService } from "../auth/service.ts";
@@ -67,6 +84,14 @@ interface RouteEntry {
   readonly methods: ReadonlyMap<string, RouteHandler>;
 }
 
+/**
+ * Purpose:
+ * Request router and controller bundle for the OR3 Net HTTP API.
+ *
+ * Behavior:
+ * Builds its route table once at construction time and dispatches requests to
+ * service-backed handlers. Unknown routes fall back to a structured 404.
+ */
 export class Or3NetApp {
   private readonly routes: readonly RouteEntry[];
 
@@ -74,6 +99,10 @@ export class Or3NetApp {
     this.routes = this.createRoutes();
   }
 
+  /**
+   * Purpose:
+   * Handles a single HTTP request against the registered OR3 Net route table.
+   */
   public async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
@@ -958,6 +987,11 @@ const toRuntimeDescriptor = (adapter: RuntimeAdapter, health?: RuntimeDescriptor
   session_modes: [...adapter.manifest.session_modes],
 });
 
+/**
+ * Purpose:
+ * Wraps `Or3NetApp.fetch()` with the shared top-level HTTP error normalization
+ * used by the server entry point.
+ */
 export const handleAppRequest = async (app: Or3NetApp, request: Request): Promise<Response> => {
   const requestId = resolveRequestId(request.headers.get("X-Request-Id"));
   const normalizedRequest = withRequestId(request, requestId);

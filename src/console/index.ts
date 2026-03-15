@@ -1,5 +1,25 @@
+/**
+ * @module src/console/index
+ *
+ * Purpose:
+ * Embeds a lightweight operator console used to exercise OR3 Net APIs during
+ * development and manual testing.
+ *
+ * Non-Goals:
+ * - Does not replace a full admin UI
+ * - Does not provide stronger auth or persistence than the underlying API
+ */
+/** Purpose: Canonical path where the built-in operator console is served. */
 export const consoleEntryPath = "/console";
 
+/**
+ * Purpose:
+ * Renders the self-contained HTML operator console.
+ *
+ * Behavior:
+ * Produces a static document with minimal client-side JavaScript so the API can
+ * be inspected without any external build step.
+ */
 export const renderConsoleHtml = (): string => `<!doctype html>
 <html lang="en">
 	<head>

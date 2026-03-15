@@ -1,9 +1,25 @@
+/**
+ * @module src/contracts/platform/stream-events
+ *
+ * Purpose:
+ * Defines the normalized stream-event envelope sent to OR3 Net clients during
+ * job execution.
+ *
+ * Behavior:
+ * Events present a platform-stable stream regardless of whether the underlying
+ * runtime emits legacy node events or richer adapter-specific payloads.
+ */
 import { z } from "zod";
 
 import { jobErrorSchema, jobResultSchema } from "../core.ts";
 import { isoDateTimeSchema, jsonObjectSchema, nonEmptyStringSchema } from "../shared.ts";
 import { errorEnvelopeSchema } from "./types.ts";
 
+/**
+ * Purpose:
+ * Discriminated union of platform stream events emitted over SSE or similar
+ * incremental transports.
+ */
 export const platformStreamEventSchema = z.discriminatedUnion("event", [
   z.object({
     event: z.literal("job.accepted"),
@@ -60,4 +76,8 @@ export const platformStreamEventSchema = z.discriminatedUnion("event", [
   }),
 ]);
 
+/**
+ * Purpose:
+ * Type-level view of the normalized platform stream contract.
+ */
 export type PlatformStreamEvent = z.infer<typeof platformStreamEventSchema>;

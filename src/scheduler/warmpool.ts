@@ -1,5 +1,17 @@
+/**
+ * @module src/scheduler/warmpool
+ *
+ * Purpose:
+ * Maintains a small pool of healthy sandbox instances per workspace so runtime
+ * and node flows can acquire warm sandboxes with lower latency.
+ *
+ * Constraints:
+ * - Pooling is process-local
+ * - Unhealthy sandboxes are quarantined and deleted
+ */
 import type { SandboxClient, SandboxInfo } from "../../sdk/sandbox/index.ts";
 
+/** Purpose: Optional tuning knobs for sandbox warm-pool behavior. */
 interface WarmPoolOptions {
   readonly maxPoolSizePerWorkspace?: number;
   readonly allowTunnels?: boolean;
@@ -7,6 +19,10 @@ interface WarmPoolOptions {
   readonly healthPollIntervalMs?: number;
 }
 
+/**
+ * Purpose:
+ * Acquires, reuses, and quarantines sandbox instances for low-latency execution.
+ */
 export class WarmPoolManager {
   private readonly readySandboxes = new Map<string, SandboxInfo[]>();
   private readonly quarantinedSandboxes = new Set<string>();
@@ -25,6 +41,7 @@ export class WarmPoolManager {
     this.healthPollIntervalMs = options.healthPollIntervalMs ?? 100;
   }
 
+  /** Purpose: Returns a healthy sandbox for a workspace, reusing pooled instances when possible. */
   public async acquire(workspaceId: string): Promise<SandboxInfo> {
     const pool = this.readySandboxes.get(workspaceId);
     if (pool !== undefined && pool.length > 0) {
@@ -39,6 +56,7 @@ export class WarmPoolManager {
     return this.createHealthySandbox(workspaceId);
   }
 
+  /** Purpose: Returns a sandbox to the pool or deletes it when the pool is full. */
   public async release(workspaceId: string, sandbox: SandboxInfo): Promise<void> {
     const pool = this.readySandboxes.get(workspaceId) ?? [];
     if (pool.length >= this.maxPoolSizePerWorkspace) {
@@ -56,6 +74,7 @@ export class WarmPoolManager {
     this.readySandboxes.set(workspaceId, pool);
   }
 
+  /** Purpose: Keeps a node-owned sandbox alive if healthy, otherwise replaces it. */
   public async retainForNode(workspaceId: string, sandbox: SandboxInfo): Promise<SandboxInfo> {
     if (await this.isHealthy(sandbox)) {
       return sandbox;

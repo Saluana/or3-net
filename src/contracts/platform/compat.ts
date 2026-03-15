@@ -1,3 +1,15 @@
+/**
+ * @module src/contracts/platform/compat
+ *
+ * Purpose:
+ * Compatibility helpers that normalize internal runtime state and transport
+ * errors into the stable platform contract surface.
+ *
+ * Responsibilities:
+ * - Build error envelopes from transport-specific failures
+ * - Convert stored session rows into public platform session references
+ * - Normalize legacy job stream events into platform stream events
+ */
 import type { StoredNetworkSession } from "../../db/index.ts";
 import type { JobStreamEvent } from "../protocol.ts";
 import { platformErrorCodes, type PlatformErrorCode } from "./error-codes.ts";
@@ -7,6 +19,10 @@ import { isRemoteExecutionError } from "../../nodes/transport.ts";
 import { InternRequestError } from "../../../sdk/intern/types.ts";
 import { SandboxRequestError } from "../../../sdk/sandbox/types.ts";
 
+/**
+ * Purpose:
+ * Input required to build a platform error envelope.
+ */
 export interface CreateErrorEnvelopeInput {
   readonly error: string;
   readonly code?: PlatformErrorCode;
@@ -15,6 +31,11 @@ export interface CreateErrorEnvelopeInput {
   readonly retry_after_ms?: number | undefined;
 }
 
+/**
+ * Purpose:
+ * Creates a normalized platform error envelope with a default code when the
+ * caller omits one.
+ */
 export const createErrorEnvelope = (input: CreateErrorEnvelopeInput): ErrorEnvelope => ({
   error: input.error,
   code: input.code ?? defaultErrorCodeForStatus(input.status),
@@ -23,6 +44,10 @@ export const createErrorEnvelope = (input: CreateErrorEnvelopeInput): ErrorEnvel
   ...(input.retry_after_ms === undefined ? {} : { retry_after_ms: input.retry_after_ms }),
 });
 
+/**
+ * Purpose:
+ * Maps a stored network-session row to the public `PlatformSessionRef` shape.
+ */
 export const toPlatformSessionRef = (session: StoredNetworkSession): PlatformSessionRef => ({
   workspace_id: session.workspace_id,
   client_kind: normalizeClientKind(session.client_kind),
@@ -31,6 +56,14 @@ export const toPlatformSessionRef = (session: StoredNetworkSession): PlatformSes
   session_key: session.intern_session_key,
 });
 
+/**
+ * Purpose:
+ * Normalizes legacy node job-stream events into the platform event contract.
+ *
+ * Non-Goals:
+ * - Does not preserve transport-specific fields that are not part of the public
+ *   platform stream surface
+ */
 export const normalizeLegacyJobStreamEvent = (event: JobStreamEvent): PlatformStreamEvent => {
   switch (event.event) {
     case "job.accepted":
@@ -72,6 +105,10 @@ export const normalizeLegacyJobStreamEvent = (event: JobStreamEvent): PlatformSt
   }
 };
 
+/**
+ * Purpose:
+ * Chooses the default platform error code for an HTTP status code.
+ */
 export const defaultErrorCodeForStatus = (status: number): PlatformErrorCode => {
   switch (status) {
     case 400:
@@ -93,6 +130,11 @@ export const defaultErrorCodeForStatus = (status: number): PlatformErrorCode => 
   }
 };
 
+/**
+ * Purpose:
+ * Converts errors from the intern SDK and remote execution path into the public
+ * platform error envelope shape.
+ */
 export const normalizeInternError = (error: unknown, request_id: string): ErrorEnvelope => {
   if (error instanceof InternRequestError) {
     return createErrorEnvelope({
@@ -119,6 +161,11 @@ export const normalizeInternError = (error: unknown, request_id: string): ErrorE
   });
 };
 
+/**
+ * Purpose:
+ * Converts sandbox SDK request failures into the public platform error-envelope
+ * shape.
+ */
 export const normalizeSandboxError = (error: unknown, request_id: string): ErrorEnvelope => {
   if (error instanceof SandboxRequestError) {
     return createErrorEnvelope({
