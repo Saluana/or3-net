@@ -2,7 +2,6 @@ import type { ControlPlaneDatabase, StoredLease, StoredNode } from "../db/index.
 import type { Lease, TaskPackage } from "../contracts/index.ts";
 import { createId } from "../lib/ids.ts";
 import type { NodeTransportRegistry } from "../nodes/transport-registry.ts";
-import type { WorkspaceStore } from "../db/client.ts";
 
 type NodeEligibilityIssue =
   | "not_approved"
@@ -32,52 +31,50 @@ export class LeaseScheduler {
 
   public issueLease(input: ScheduleJobInput): StoredLease {
     const workspaceStore = this.options.database.workspace(input.workspace_id);
-    const nowIso = new Date().toISOString();
-    const leases = workspaceStore.listLeases().map((lease) => {
-      if (lease.lease.state !== "active" || Date.parse(lease.expires_at) > Date.now()) {
-        return lease;
+    const nowMs = Date.now();
+    workspaceStore.expireActiveLeases(nowMs);
+
+    const activeLeaseCounts = new Map<string, number>();
+    for (const lease of workspaceStore.listLeases()) {
+      if (lease.lease.state !== "active" || Date.parse(lease.expires_at) <= nowMs) {
+        continue;
       }
 
-      return workspaceStore.saveLease({
-        workspace_id: input.workspace_id,
-        job_id: lease.job_id,
-        lease: {
-          ...lease.lease,
-          state: "expired",
-        },
-        created_at: lease.created_at,
-        expires_at: lease.expires_at,
-        released_at: lease.released_at ?? nowIso,
-      });
-    });
+      activeLeaseCounts.set(lease.lease.node_id, (activeLeaseCounts.get(lease.lease.node_id) ?? 0) + 1);
+    }
+
+    const activeCredentialNodeIds = new Set(
+      workspaceStore
+        .listActiveNodeCredentials(nowMs)
+        .filter((credential) => credential.token_ciphertext !== null)
+        .map((credential) => credential.node_id),
+    );
+
     const evaluatedNodes = workspaceStore.listNodes().map((node) => {
-      const reasons = evaluateNodeEligibility(node, workspaceStore, input.task_package, this.options.transportRegistry, this.options.enforceManagedCertification === true);
+      const reasons = evaluateNodeEligibility(
+        node,
+        input.task_package,
+        this.options.transportRegistry,
+        this.options.enforceManagedCertification === true,
+        activeCredentialNodeIds,
+      );
+      const activeLeases = activeLeaseCounts.get(node.manifest.node_id) ?? 0;
       return {
         node,
-        activeLeases: countActiveLeases(leases, node.manifest.node_id),
-        reasons,
-      };
-    });
-
-    const candidate = evaluatedNodes
-      .map((entry) => ({
-        ...entry,
-        reasons:
-          entry.activeLeases < entry.node.manifest.resource_limits.max_concurrent_jobs
-            ? entry.reasons
-            : [...entry.reasons, "at_capacity" as const],
-      }))
-      .filter(({ reasons }) => reasons.length === 0)
-      .sort((left, right) => left.activeLeases - right.activeLeases)[0];
-
-    if (candidate === undefined) {
-      throw new Error(buildLeaseFailureMessage(evaluatedNodes.map(({ node, activeLeases, reasons }) => ({
-        node,
+        activeLeases,
         reasons:
           activeLeases < node.manifest.resource_limits.max_concurrent_jobs
             ? reasons
             : [...reasons, "at_capacity" as const],
-      }))));
+      };
+    });
+
+    const candidate = evaluatedNodes
+      .filter(({ reasons }) => reasons.length === 0)
+      .sort((left, right) => left.activeLeases - right.activeLeases)[0];
+
+    if (candidate === undefined) {
+      throw new Error(buildLeaseFailureMessage(evaluatedNodes));
     }
 
     const ttlSeconds = Math.min(
@@ -124,8 +121,8 @@ const hasValidCertification = (node: StoredNode): boolean => {
 
 const isTransportEligible = (
   node: StoredNode,
-  workspaceStore: WorkspaceStore,
   transportRegistry?: NodeTransportRegistry,
+  activeCredentialNodeIds?: ReadonlySet<string>,
 ): NodeEligibilityIssue[] => {
   if (node.manifest.adapter_kind !== "remote") {
     return [];
@@ -140,16 +137,15 @@ const isTransportEligible = (
     return [resolution.reason];
   }
 
-  const credential = workspaceStore.getActiveNodeCredential(node.manifest.node_id);
-  return credential !== null && credential.token_ciphertext !== null ? [] : ["missing_runtime_credential"];
+  return activeCredentialNodeIds?.has(node.manifest.node_id) ?? false ? [] : ["missing_runtime_credential"];
 };
 
 const evaluateNodeEligibility = (
   node: StoredNode,
-  workspaceStore: WorkspaceStore,
   taskPackage: TaskPackage,
   transportRegistry: NodeTransportRegistry | undefined,
   enforceManagedCertification: boolean,
+  activeCredentialNodeIds: ReadonlySet<string>,
 ): NodeEligibilityIssue[] => {
   const reasons: NodeEligibilityIssue[] = [];
   if (node.status !== "approved") {
@@ -167,7 +163,7 @@ const evaluateNodeEligibility = (
   ) {
     reasons.push("isolation_mismatch");
   }
-  reasons.push(...isTransportEligible(node, workspaceStore, transportRegistry));
+  reasons.push(...isTransportEligible(node, transportRegistry, activeCredentialNodeIds));
   if (enforceManagedCertification && !hasValidCertification(node)) {
     reasons.push("missing_valid_certification");
   }
@@ -210,6 +206,3 @@ const describeIssue = (issue: NodeEligibilityIssue): string => {
       return "at capacity";
   }
 };
-
-const countActiveLeases = (leases: StoredLease[], nodeId: string): number =>
-  leases.filter((lease) => lease.lease.node_id === nodeId && lease.lease.state === "active").length;

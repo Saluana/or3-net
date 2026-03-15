@@ -47,6 +47,10 @@ export class NodeRegistryService {
     return this.options.database.workspace(workspaceId).listNodes();
   }
 
+  public getNode(workspaceId: string, nodeId: string): StoredNode {
+    return this.options.database.workspace(workspaceId).getNode(nodeId);
+  }
+
   public async approveNode(workspaceId: string, nodeId: string): Promise<{
     node: StoredNode;
     credential: { token: string; expires_at: string };

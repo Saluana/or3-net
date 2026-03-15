@@ -35,4 +35,50 @@ describe("job stream broker", () => {
     await Bun.sleep(20);
     expect(broker.has("job_subscribed")).toBeFalse();
   });
+
+  test("caps retained history to the most recent events", async () => {
+    const broker = new JobStreamBroker(5, 3);
+
+    broker.publish("job_bounded", {
+      event: "job.accepted",
+      data: { job_id: "job_bounded" },
+    });
+    broker.publish("job_bounded", {
+      event: "job.started",
+      data: { job_id: "job_bounded" },
+    });
+    broker.publish("job_bounded", {
+      event: "text.delta",
+      data: { text: "one" },
+    });
+    broker.publish("job_bounded", {
+      event: "text.delta",
+      data: { text: "two" },
+    });
+    broker.publish("job_bounded", {
+      event: "job.completed",
+      data: { output_text: "done", artifacts: [], meta: {} },
+    });
+
+    expect(broker.history("job_bounded").map((event) => event.event)).toEqual([
+      "text.delta",
+      "text.delta",
+      "job.completed",
+    ]);
+
+    const reader = broker.stream("job_bounded").getReader();
+    const chunks: string[] = [];
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) {
+        break;
+      }
+      chunks.push(new TextDecoder().decode(next.value));
+    }
+
+    expect(chunks).toHaveLength(3);
+    expect(chunks[0]).toContain("event: text.delta");
+    expect(chunks[1]).toContain("event: text.delta");
+    expect(chunks[2]).toContain("event: job.completed");
+  });
 });

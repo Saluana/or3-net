@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import type { z } from "zod";
 
 import {
@@ -568,6 +568,15 @@ export class WorkspaceStore {
       .map(parseNodeCredentialRow);
   }
 
+  public listActiveNodeCredentials(nowMs = Date.now()): StoredNodeCredential[] {
+    return this.db
+      .query<NodeCredentialRow, [string, number]>(
+        "SELECT * FROM node_credentials WHERE workspace_id = ? AND rotated_at IS NULL AND expires_at > ? ORDER BY issued_at DESC",
+      )
+      .all(this.workspaceId, nowMs)
+      .map(parseNodeCredentialRow);
+  }
+
   public getActiveNodeCredential(nodeId: string, nowMs = Date.now()): StoredNodeCredential | null {
     const row = this.db
       .query<NodeCredentialRow, [string, string, number]>(
@@ -758,45 +767,31 @@ export class WorkspaceStore {
   }
 
   public appendJobEvent(input: AppendJobEventInput): StoredJobEvent {
-    const createdAt = input.created_at ?? new Date().toISOString();
-    const eventId = createEventId();
-    const nextSequence =
-      (this.db
-        .query<{ sequence: number }, [string, string]>(
-          "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM job_events WHERE workspace_id = ? AND job_id = ?",
-        )
-        .get(this.workspaceId, input.job_id)?.sequence ?? 0) + 1;
-
-    this.db.transaction(() => {
-      this.db
-        .prepare(
-          "INSERT INTO job_events (workspace_id, id, job_id, network_session_id, event_type, sequence, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .run(
-          this.workspaceId,
-          eventId,
-          input.job_id,
-          input.network_session_id ?? null,
-          input.event_type,
-          nextSequence,
-          sanitizePayloadJson(input.payload),
-          fromIsoDateTime(createdAt),
-        );
-
-      this.db
-        .prepare(
-          "DELETE FROM job_events WHERE workspace_id = ? AND job_id = ? AND id NOT IN (SELECT id FROM job_events WHERE workspace_id = ? AND job_id = ? ORDER BY sequence DESC LIMIT ?)",
-        )
-        .run(this.workspaceId, input.job_id, this.workspaceId, input.job_id, this.jobEventRetentionPerJob);
-    })();
-
-    const row = this.db
-      .query<JobEventRow, [string, string]>("SELECT * FROM job_events WHERE workspace_id = ? AND id = ? LIMIT 1")
-      .get(this.workspaceId, eventId);
-
-    if (row === null) {
-      throw new Error(`Job event ${eventId} was not found in workspace ${this.workspaceId}`);
-    }
+    const row = appendRetainedEvent<JobEventRow>({
+      db: this.db,
+      workspaceId: this.workspaceId,
+      keyValue: input.job_id,
+      retention: this.jobEventRetentionPerJob,
+      createdAt: input.created_at,
+      payload: input.payload,
+      selectLatestSequenceSql: "SELECT sequence FROM job_events WHERE workspace_id = ? AND job_id = ? ORDER BY sequence DESC LIMIT 1",
+      insertSql:
+        "INSERT INTO job_events (workspace_id, id, job_id, network_session_id, event_type, sequence, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      insertParams: (eventId, nextSequence, payloadJson, createdAtMs) => [
+        this.workspaceId,
+        eventId,
+        input.job_id,
+        input.network_session_id ?? null,
+        input.event_type,
+        nextSequence,
+        payloadJson,
+        createdAtMs,
+      ],
+      trimSql: "DELETE FROM job_events WHERE workspace_id = ? AND job_id = ? AND sequence <= ?",
+      trimParams: (cutoffSequence) => [this.workspaceId, input.job_id, cutoffSequence],
+      selectByIdSql: "SELECT * FROM job_events WHERE workspace_id = ? AND id = ? LIMIT 1",
+      parseErrorLabel: "Job event",
+    });
 
     return parseJobEventRow(row);
   }
@@ -947,53 +942,31 @@ export class WorkspaceStore {
   }
 
   public appendRuntimeSessionEvent(input: AppendRuntimeSessionEventInput): StoredRuntimeSessionEvent {
-    const createdAt = input.created_at ?? new Date().toISOString();
-    const eventId = createEventId();
-    const row = this.db.transaction(() => {
-      const nextSequence =
-        (this.db
-          .query<{ sequence: number }, [string, string]>(
-            "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM runtime_session_events WHERE workspace_id = ? AND session_id = ?",
-          )
-          .get(this.workspaceId, input.session_id)?.sequence ?? 0) + 1;
-
-      this.db
-        .prepare(
-          "INSERT INTO runtime_session_events (workspace_id, id, session_id, event_type, sequence, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .run(
-          this.workspaceId,
-          eventId,
-          input.session_id,
-          input.event_type,
-          nextSequence,
-          sanitizePayloadJson(input.payload),
-          fromIsoDateTime(createdAt),
-        );
-
-      this.db
-        .prepare(
-          "DELETE FROM runtime_session_events WHERE workspace_id = ? AND session_id = ? AND id NOT IN (SELECT id FROM runtime_session_events WHERE workspace_id = ? AND session_id = ? ORDER BY sequence DESC LIMIT ?)",
-        )
-        .run(
-          this.workspaceId,
-          input.session_id,
-          this.workspaceId,
-          input.session_id,
-          this.runtimeSessionEventRetentionPerSession,
-        );
-
-      return this.db
-        .query<RuntimeSessionEventRow, [string, string]>(
-          "SELECT * FROM runtime_session_events WHERE workspace_id = ? AND id = ? LIMIT 1",
-        )
-        .get(this.workspaceId, eventId);
-    })();
-
-    if (row === null) {
-      throw new Error(`Runtime session event ${eventId} was not found in workspace ${this.workspaceId}`);
-    }
-
+    const row = appendRetainedEvent<RuntimeSessionEventRow>({
+      db: this.db,
+      workspaceId: this.workspaceId,
+      keyValue: input.session_id,
+      retention: this.runtimeSessionEventRetentionPerSession,
+      createdAt: input.created_at,
+      payload: input.payload,
+      selectLatestSequenceSql:
+        "SELECT sequence FROM runtime_session_events WHERE workspace_id = ? AND session_id = ? ORDER BY sequence DESC LIMIT 1",
+      insertSql:
+        "INSERT INTO runtime_session_events (workspace_id, id, session_id, event_type, sequence, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      insertParams: (eventId, nextSequence, payloadJson, createdAtMs) => [
+        this.workspaceId,
+        eventId,
+        input.session_id,
+        input.event_type,
+        nextSequence,
+        payloadJson,
+        createdAtMs,
+      ],
+      trimSql: "DELETE FROM runtime_session_events WHERE workspace_id = ? AND session_id = ? AND sequence <= ?",
+      trimParams: (cutoffSequence) => [this.workspaceId, input.session_id, cutoffSequence],
+      selectByIdSql: "SELECT * FROM runtime_session_events WHERE workspace_id = ? AND id = ? LIMIT 1",
+      parseErrorLabel: "Runtime session event",
+    });
     return parseRuntimeSessionEventRow(row);
   }
 
@@ -1100,6 +1073,12 @@ export class WorkspaceStore {
       .query<LeaseRow, [string]>("SELECT * FROM leases WHERE workspace_id = ? ORDER BY created_at DESC")
       .all(this.workspaceId)
       .map(parseLeaseRow);
+  }
+
+  public expireActiveLeases(nowMs = Date.now(), releasedAt = new Date(nowMs).toISOString()): number {
+    return this.db
+      .prepare("UPDATE leases SET state = 'expired', released_at = ? WHERE workspace_id = ? AND state = 'active' AND expires_at <= ?")
+      .run(fromIsoDateTime(releasedAt), this.workspaceId, nowMs).changes;
   }
 
   public releaseLease(leaseId: string, state: "released" | "expired" | "failed", releasedAt = new Date().toISOString()): StoredLease {
@@ -1436,6 +1415,58 @@ const assertWorkspaceMatch = (label: string, expectedWorkspaceId: string, actual
 };
 
 const createEventId = (): string => `evt_${crypto.randomUUID().replace(/-/g, "")}`;
+
+interface AppendRetainedEventOptions {
+  readonly db: Database;
+  readonly workspaceId: string;
+  readonly keyValue: string;
+  readonly retention: number;
+  readonly createdAt: string | undefined;
+  readonly payload: Record<string, unknown>;
+  readonly selectLatestSequenceSql: string;
+  readonly insertSql: string;
+  readonly insertParams: (
+    eventId: string,
+    nextSequence: number,
+    payloadJson: string,
+    createdAtMs: number,
+  ) => readonly SQLQueryBindings[];
+  readonly trimSql: string;
+  readonly trimParams: (cutoffSequence: number) => readonly SQLQueryBindings[];
+  readonly selectByIdSql: string;
+  readonly parseErrorLabel: string;
+}
+
+const appendRetainedEvent = <TRow>(options: AppendRetainedEventOptions): TRow => {
+  const createdAt = options.createdAt ?? new Date().toISOString();
+  const eventId = createEventId();
+  const payloadJson = sanitizePayloadJson(options.payload);
+  const createdAtMs = fromIsoDateTime(createdAt);
+
+  const row = options.db.transaction(() => {
+    const latestSequence = options.db
+      .query<{ sequence: number }, [string, string]>(options.selectLatestSequenceSql)
+      .get(options.workspaceId, options.keyValue)?.sequence ?? 0;
+    const nextSequence = latestSequence + 1;
+
+    options.db.prepare(options.insertSql).run(...options.insertParams(eventId, nextSequence, payloadJson, createdAtMs));
+
+    const cutoffSequence = nextSequence - options.retention;
+    if (cutoffSequence > 0) {
+      options.db.prepare(options.trimSql).run(...options.trimParams(cutoffSequence));
+    }
+
+    return options.db
+      .query<TRow, [string, string]>(options.selectByIdSql)
+      .get(options.workspaceId, eventId);
+  })();
+
+  if (row === null) {
+    throw new Error(`${options.parseErrorLabel} ${eventId} was not found in workspace ${options.workspaceId}`);
+  }
+
+  return row;
+};
 
 const sanitizePayloadJson = (payload: Record<string, unknown>): string => JSON.stringify(sanitizeValue(payload));
 

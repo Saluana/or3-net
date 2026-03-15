@@ -452,4 +452,12 @@ export const schemaMigrations: readonly Migration[] = [
       "CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_session ON runtime_artifacts(workspace_id, session_id)",
     ],
   },
+  {
+    version: 7,
+    name: "hot-path-lookup-indexes",
+    statements: [
+      "CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash)",
+      "CREATE INDEX IF NOT EXISTS idx_node_credentials_lookup ON node_credentials(workspace_id, node_id, rotated_at, expires_at)",
+    ],
+  },
 ];

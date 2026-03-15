@@ -71,6 +71,13 @@ interface SubmitJobOptions {
   readonly request_id?: string;
 }
 
+interface LiveJobState {
+  readonly workspaceId: string;
+  readonly taskPackage: TaskPackage;
+  readonly networkSessionId: string | null;
+  job: Job;
+}
+
 const terminalStatuses = new Set<Job["status"]>(["completed", "failed", "aborted"]);
 
 export class LocalJobService {
@@ -79,6 +86,7 @@ export class LocalJobService {
   private readonly backendJobIds = new Map<string, string>();
   private readonly pendingAbortJobs = new Set<string>();
   private readonly activeRemoteRuns = new Map<string, { workspaceId: string; leaseId: string; run: NodeExecutionHandle }>();
+  private readonly liveJobs = new Map<string, LiveJobState>();
   private readonly startupReconciliationSummary: StartupReconciliationSummary | null;
 
   public constructor(private readonly options: LocalJobServiceOptions) {
@@ -120,16 +128,23 @@ export class LocalJobService {
       job_id: jobId,
     };
     const taskPackage = this.buildTaskPackage(workspaceId, jobId, sessionBinding, request, auditContext);
+    const initialJob: Job = {
+      job_id: jobId,
+      workspace_id: workspaceId,
+      status: "pending",
+      created_at: now,
+    };
 
     this.options.database.workspace(workspaceId).saveJob({
-      job: {
-        job_id: jobId,
-        workspace_id: workspaceId,
-        status: "pending",
-        created_at: now,
-      },
+      job: initialJob,
       task_package: taskPackage,
       network_session_id: sessionBinding.network_session_id,
+    });
+    this.liveJobs.set(jobId, {
+      workspaceId,
+      taskPackage,
+      networkSessionId: sessionBinding.network_session_id,
+      job: initialJob,
     });
     this.sessionBindingService.touchBinding(workspaceId, sessionBinding.network_session_id, {
       last_job_id: jobId,
@@ -370,6 +385,11 @@ export class LocalJobService {
       });
       const node = this.options.database.workspace(workspaceId).getNode(lease.lease.node_id);
       this.options.database.workspace(workspaceId).attachLease(jobId, lease.lease.lease_id, node.manifest.node_id);
+      const liveJob = this.getOrHydrateLiveJobState(workspaceId, jobId, taskPackage);
+      liveJob.job = {
+        ...liveJob.job,
+        node_id: node.manifest.node_id,
+      };
 
       if (node.manifest.adapter_kind === "sandbox") {
         this.publishIfApplied(workspaceId, jobId, taskPackage, {
@@ -489,84 +509,70 @@ export class LocalJobService {
     taskPackage: TaskPackage,
     event: JobStreamEvent,
   ): boolean {
-    const workspaceStore = this.options.database.workspace(workspaceId);
-    const stored = workspaceStore.getJob(jobId);
-    if (terminalStatuses.has(stored.job.status)) {
+    const liveJob = this.getOrHydrateLiveJobState(workspaceId, jobId, taskPackage);
+    if (terminalStatuses.has(liveJob.job.status)) {
       return false;
     }
+
     const now = new Date().toISOString();
-    let applied = true;
+    let nextJob: Job | null = null;
 
     switch (event.event) {
       case "job.accepted":
-        workspaceStore.saveJob({
-          job: {
-            ...stored.job,
-            status: "scheduled",
-          },
-          task_package: taskPackage,
-        });
+        nextJob = {
+          ...liveJob.job,
+          status: "scheduled",
+        };
         break;
       case "job.started":
-        workspaceStore.saveJob({
-          job: {
-            ...stored.job,
-            status: "running",
-            started_at: stored.job.started_at ?? now,
-          },
-          task_package: taskPackage,
-        });
+        nextJob = {
+          ...liveJob.job,
+          status: "running",
+          started_at: liveJob.job.started_at ?? now,
+        };
         break;
       case "job.completed":
-        workspaceStore.saveJob({
-          job: {
-            ...stored.job,
-            status: "completed",
-            started_at: stored.job.started_at ?? now,
-            completed_at: now,
-            result: event.data,
-          },
-          task_package: taskPackage,
-        });
+        nextJob = {
+          ...liveJob.job,
+          status: "completed",
+          started_at: liveJob.job.started_at ?? now,
+          completed_at: now,
+          result: event.data,
+        };
         break;
       case "job.aborted":
-        workspaceStore.saveJob({
-          job: {
-            ...stored.job,
-            status: "aborted",
-            started_at: stored.job.started_at ?? now,
-            completed_at: now,
-          },
-          task_package: taskPackage,
-        });
+        nextJob = {
+          ...liveJob.job,
+          status: "aborted",
+          started_at: liveJob.job.started_at ?? now,
+          completed_at: now,
+        };
         break;
       case "job.failed":
-        workspaceStore.saveJob({
-          job: {
-            ...stored.job,
-            status: "failed",
-            started_at: stored.job.started_at ?? now,
-            completed_at: now,
-            error: event.data,
-          },
-          task_package: taskPackage,
-        });
+        nextJob = {
+          ...liveJob.job,
+          status: "failed",
+          started_at: liveJob.job.started_at ?? now,
+          completed_at: now,
+          error: event.data,
+        };
         break;
       case "text.delta":
       case "tool.call":
       case "tool.result":
-        break;
+        return true;
       default:
-        applied = false;
+        return false;
     }
 
-    if (!applied) {
+    if (nextJob === null) {
       return false;
     }
 
-    this.persistDurableEvent(workspaceId, stored.network_session_id, jobId, event, getAuditContextFromTaskPackage(taskPackage));
-    if (stored.network_session_id !== null) {
-      this.sessionBindingService.touchBinding(workspaceId, stored.network_session_id, {
+    this.persistLiveJobState(liveJob, nextJob);
+    this.persistDurableEvent(workspaceId, liveJob.networkSessionId, jobId, event, getAuditContextFromTaskPackage(taskPackage));
+    if (liveJob.networkSessionId !== null) {
+      this.sessionBindingService.touchBinding(workspaceId, liveJob.networkSessionId, {
         last_job_id: jobId,
         ...(isTerminalEvent(event) ? { status: "active" } : {}),
       });
@@ -633,28 +639,27 @@ export class LocalJobService {
   }
 
   private finalizeAbort(workspaceId: string, jobId: string): void {
-    const stored = this.options.database.workspace(workspaceId).getJob(jobId);
-    if (terminalStatuses.has(stored.job.status)) {
+    const liveJob = this.getOrHydrateLiveJobState(workspaceId, jobId);
+    if (terminalStatuses.has(liveJob.job.status)) {
       return;
     }
 
-    this.options.database.workspace(workspaceId).saveJob({
-      job: {
-        ...stored.job,
-        status: "aborted",
-        completed_at: new Date().toISOString(),
-        started_at: stored.job.started_at ?? new Date().toISOString(),
-      },
-      task_package: stored.task_package,
-    });
+    const now = new Date().toISOString();
+    const nextJob: Job = {
+      ...liveJob.job,
+      status: "aborted",
+      completed_at: now,
+      started_at: liveJob.job.started_at ?? now,
+    };
+    this.persistLiveJobState(liveJob, nextJob);
     const event: JobStreamEvent = { event: "job.aborted", data: { job_id: jobId } };
-    this.persistDurableEvent(workspaceId, stored.network_session_id, jobId, event, getAuditContextFromTaskPackage(stored.task_package));
+    this.persistDurableEvent(workspaceId, liveJob.networkSessionId, jobId, event, getAuditContextFromTaskPackage(liveJob.taskPackage));
     this.streamBroker.publish(jobId, event);
   }
 
   private finalizeUnexpectedEof(workspaceId: string, jobId: string, taskPackage: TaskPackage): void {
-    const stored = this.options.database.workspace(workspaceId).getJob(jobId);
-    if (terminalStatuses.has(stored.job.status)) {
+    const liveJob = this.getOrHydrateLiveJobState(workspaceId, jobId, taskPackage);
+    if (terminalStatuses.has(liveJob.job.status)) {
       return;
     }
 
@@ -664,18 +669,16 @@ export class LocalJobService {
       retriable: true,
       details: {},
     });
-    this.options.database.workspace(workspaceId).saveJob({
-      job: {
-        ...stored.job,
-        status: "failed",
-        started_at: stored.job.started_at ?? new Date().toISOString(),
-        completed_at: new Date().toISOString(),
-        error: failure,
-      },
-      task_package: taskPackage,
+    const now = new Date().toISOString();
+    this.persistLiveJobState(liveJob, {
+      ...liveJob.job,
+      status: "failed",
+      started_at: liveJob.job.started_at ?? now,
+      completed_at: now,
+      error: failure,
     });
     const event: JobStreamEvent = { event: "job.failed", data: failure };
-    this.persistDurableEvent(workspaceId, stored.network_session_id, jobId, event, getAuditContextFromTaskPackage(stored.task_package));
+    this.persistDurableEvent(workspaceId, liveJob.networkSessionId, jobId, event, getAuditContextFromTaskPackage(liveJob.taskPackage));
     this.streamBroker.publish(jobId, event);
   }
 
@@ -692,6 +695,35 @@ export class LocalJobService {
       event_type: event.event,
       payload: summarizeEventData(event, auditContext),
     });
+  }
+
+  private getOrHydrateLiveJobState(workspaceId: string, jobId: string, taskPackage?: TaskPackage): LiveJobState {
+    const existing = this.liveJobs.get(jobId);
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const stored = this.options.database.workspace(workspaceId).getJob(jobId);
+    const hydrated: LiveJobState = {
+      workspaceId,
+      taskPackage: taskPackage ?? stored.task_package,
+      networkSessionId: stored.network_session_id,
+      job: stored.job,
+    };
+    this.liveJobs.set(jobId, hydrated);
+    return hydrated;
+  }
+
+  private persistLiveJobState(liveJob: LiveJobState, nextJob: Job): void {
+    this.options.database.workspace(liveJob.workspaceId).saveJob({
+      job: nextJob,
+      task_package: liveJob.taskPackage,
+      ...(liveJob.networkSessionId === null ? {} : { network_session_id: liveJob.networkSessionId }),
+    });
+    liveJob.job = nextJob;
+    if (terminalStatuses.has(nextJob.status)) {
+      this.liveJobs.delete(nextJob.job_id);
+    }
   }
 }
 

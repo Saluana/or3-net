@@ -96,53 +96,46 @@ const trackExecutionStream = (
   stream: AsyncIterable<NodeEvent>,
   fallback: ReturnType<typeof parseNodeResponseResult>,
 ): { stream: AsyncIterable<JobStreamEvent>; result: Promise<ReturnType<typeof nodeEventsToResult>> } => {
-  const queue: StreamQueueEntry[] = [];
-  let pendingResolve: ((entry: StreamQueueEntry) => void) | null = null;
-
-  const pushEntry = (entry: StreamQueueEntry): void => {
-    if (pendingResolve !== null) {
-      const resolve = pendingResolve;
-      pendingResolve = null;
-      resolve(entry);
-      return;
-    }
-
-    queue.push(entry);
-  };
-
-  const takeEntry = (): Promise<StreamQueueEntry> => {
-    const entry = queue.shift();
-    if (entry !== undefined) {
-      return Promise.resolve(entry);
-    }
-
-    return new Promise((resolve) => {
-      pendingResolve = resolve;
-    });
-  };
+  const queue = createStreamQueue();
 
   const result = (async () => {
-    const events: NodeEvent[] = [];
+    let terminalResult = fallback;
+    let terminalError: Error | null = null;
+    let sawTerminal = false;
+
     try {
       for await (const event of stream) {
-        events.push(event);
+        if (!sawTerminal && event.event === "complete") {
+          terminalResult = event.data;
+          sawTerminal = true;
+        } else if (!sawTerminal && event.event === "error") {
+          terminalError = new Error(event.data.message);
+          sawTerminal = true;
+        }
+
         const normalized = normalizeNodeEvent(event);
         if (normalized !== null) {
-          pushEntry({ type: "value", value: normalized });
+          queue.push({ type: "value", value: normalized });
         }
       }
 
-      const finalResult = nodeEventsToResult(events, fallback);
-      pushEntry({ type: "done" });
-      return finalResult;
+      if (terminalError !== null) {
+        throw terminalError;
+      }
+      if (terminalResult !== undefined) {
+        queue.push({ type: "done" });
+        return terminalResult;
+      }
+
+      throw nodeEventsToResult([], undefined);
     } catch (error) {
-      pushEntry({ type: "error", error });
+      queue.push({ type: "error", error });
       throw error;
     }
   })();
 
   return {
-    stream: createQueuedStream(takeEntry),
+    stream: createQueuedStream(() => queue.take()),
     result,
   };
 };
@@ -151,6 +144,11 @@ type StreamQueueEntry =
   | { readonly type: "value"; readonly value: JobStreamEvent }
   | { readonly type: "done" }
   | { readonly type: "error"; readonly error: unknown };
+
+interface StreamQueueNode {
+  readonly entry: StreamQueueEntry;
+  next: StreamQueueNode | null;
+}
 
 const createQueuedStream = (takeEntry: () => Promise<StreamQueueEntry>): AsyncIterable<JobStreamEvent> => ({
   [Symbol.asyncIterator](): AsyncIterator<JobStreamEvent> {
@@ -169,3 +167,47 @@ const createQueuedStream = (takeEntry: () => Promise<StreamQueueEntry>): AsyncIt
     };
   },
 });
+
+const createStreamQueue = (): {
+  push(entry: StreamQueueEntry): void;
+  take(): Promise<StreamQueueEntry>;
+} => {
+  let head: StreamQueueNode | null = null;
+  let tail: StreamQueueNode | null = null;
+  let pendingResolve: ((entry: StreamQueueEntry) => void) | null = null;
+
+  return {
+    push(entry: StreamQueueEntry): void {
+      if (pendingResolve !== null) {
+        const resolve = pendingResolve;
+        pendingResolve = null;
+        resolve(entry);
+        return;
+      }
+
+      const node: StreamQueueNode = { entry, next: null };
+      if (tail === null) {
+        head = node;
+        tail = node;
+        return;
+      }
+
+      tail.next = node;
+      tail = node;
+    },
+    take(): Promise<StreamQueueEntry> {
+      if (head !== null) {
+        const node = head;
+        head = node.next;
+        if (head === null) {
+          tail = null;
+        }
+        return Promise.resolve(node.entry);
+      }
+
+      return new Promise((resolve) => {
+        pendingResolve = resolve;
+      });
+    },
+  };
+};

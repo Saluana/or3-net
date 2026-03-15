@@ -234,6 +234,48 @@ describe("node transport abstraction", () => {
     expect(streamStarts).toBe(1);
   });
 
+  test("buffers normalized outbound-wss events until the consumer starts reading", async () => {
+    const wssTransport = new OutboundWssNodeTransport();
+    wssTransport.attachConnection(
+      "node_wss_late_reader",
+      (request) => Promise.resolve({
+        id: request.id,
+        result: { output_text: "fallback", artifacts: [], meta: {} },
+      }),
+      async function* () {
+        yield { event: "progress", data: { percent: 10, message: "warming" } };
+        yield { event: "progress", data: { percent: 20, message: "ready" } };
+        yield { event: "complete", data: { output_text: "done", artifacts: [], meta: {} } };
+      },
+    );
+
+    const run = await wssTransport.startExecution(
+      {
+        workspace_id: "ws_transport",
+        job_id: "job_wss_late_reader",
+        kind: "turn",
+        instructions: "echo hi",
+        artifacts: [],
+        tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+        timeout: { soft_ms: 1000 },
+        lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+        subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+        metadata: {},
+      },
+      {
+        workspaceId: "ws_transport",
+        nodeId: "node_wss_late_reader",
+        credential: { token: "cred_wss", expiresAt: "2099-01-01T00:00:00.000Z" },
+      },
+    );
+
+    expect((await run.result).output_text).toBe("done");
+    expect(await collect(run.stream ?? emptyAsync())).toEqual([
+      { event: "text.delta", data: { text: "warming" } },
+      { event: "text.delta", data: { text: "ready" } },
+    ]);
+  });
+
   test("sends heartbeat with issued credentials over https and outbound-wss", async () => {
     const seenMethods: string[] = [];
     const seenAuth: string[] = [];

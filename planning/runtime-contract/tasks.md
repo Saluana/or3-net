@@ -172,8 +172,8 @@ This task list owns the reusable runtime substrate only.
 
 ### 19. Runtime session service (`src/runtime/sessions.ts`) [Req 5, 6, 7]
 
-- [ ] Implement `RuntimeSessionService` class.
-- [ ] `createSession(workspaceId, input)`:
+- [x] Implement `RuntimeSessionService` class.
+- [x] `createSession(workspaceId, input)`:
   - Call `RuntimeSelectionService.select()`.
   - Validate required capabilities against adapter manifest.
   - Insert `runtime_sessions` row with `status=creating`.
@@ -181,45 +181,45 @@ This task list owns the reusable runtime substrate only.
   - Update row to `status=ready` on success, `status=failed` on error.
   - Append session events.
   - Return `RuntimeSessionDescriptor`.
-- [ ] `getSession(workspaceId, sessionId)`: DB lookup + descriptor construction.
-- [ ] `listSessions(workspaceId, filter?)`: DB query with status/adapter filter.
-- [ ] `exec(workspaceId, sessionId, input)`:
+- [x] `getSession(workspaceId, sessionId)`: DB lookup + descriptor construction.
+- [x] `listSessions(workspaceId, filter?)`: DB query with status/adapter filter.
+- [x] `exec(workspaceId, sessionId, input)`:
   - Look up session, verify `status=ready`.
   - Verify exec capability.
   - Delegate to `adapter.exec()`.
   - Append exec event.
   - Return `RuntimeExecutionHandle`.
-- [ ] `stopSession(workspaceId, sessionId)`:
+- [x] `stopSession(workspaceId, sessionId)`:
   - Verify adapter has `stop` capability.
   - Call `adapter.stop()`.
   - Update status to `stopped`.
-- [ ] `destroySession(workspaceId, sessionId)`:
+- [x] `destroySession(workspaceId, sessionId)`:
   - Call `adapter.destroySession()` (catch errors).
   - Always update status to `destroyed`.
   - Append event with optional `cleanup_error`.
-- [ ] `getLogs(workspaceId, sessionId, input)`: delegate to adapter.
-- [ ] `copyIn(workspaceId, sessionId, input)`: verify capability, delegate.
-- [ ] `copyOut(workspaceId, sessionId, input)`: verify capability, delegate.
-- [ ] Do not implement host workspace prepare / commit / discard flows in this phase; those are follow-on tasks under `planning/host-workspace-staging/tasks.md`.
+- [x] `getLogs(workspaceId, sessionId, input)`: delegate to adapter.
+- [x] `copyIn(workspaceId, sessionId, input)`: verify capability, delegate.
+- [x] `copyOut(workspaceId, sessionId, input)`: verify capability, delegate.
+- [x] Do not implement host workspace prepare / commit / discard flows in this phase; those are follow-on tasks under `planning/host-workspace-staging/tasks.md`.
 
 ### 20. Restart reconciliation (`src/runtime/sessions.ts`) [Req 13]
 
-- [ ] Add `reconcileOnStartup()` method.
-- [ ] Query non-terminal sessions (`creating`, `ready`, `stopping`).
-- [ ] For each, probe adapter health and adapter-side session status.
-- [ ] Mark recovered, destroyed, or failed as appropriate.
-- [ ] Append reconciliation events.
+- [x] Add `reconcileOnStartup()` method.
+- [x] Query non-terminal sessions (`creating`, `ready`, `stopping`).
+- [x] For each, probe adapter health and adapter-side session status.
+- [x] Mark recovered, destroyed, or failed as appropriate.
+- [x] Append reconciliation events.
 
 ### 21. Session service tests (`tests/runtime/`) [Req 5, 6, 7, 13]
 
-- [ ] Test create session happy path through mock adapter.
-- [ ] Test create session failure marks DB as failed.
-- [ ] Test exec on non-ready session is rejected.
-- [ ] Test exec on session without exec capability is rejected.
-- [ ] Test unsupported capability returns `unsupported_capability` error.
-- [ ] Test destroy always persists even when adapter throws.
-- [ ] Test restart reconciliation marks orphaned sessions.
-- [ ] Test session listing with status filter.
+- [x] Test create session happy path through mock adapter.
+- [x] Test create session failure marks DB as failed.
+- [x] Test exec on non-ready session is rejected.
+- [x] Test exec on session without exec capability is rejected.
+- [x] Test unsupported capability returns `unsupported_capability` error.
+- [x] Test destroy always persists even when adapter throws.
+- [x] Test restart reconciliation marks orphaned sessions.
+- [x] Test session listing with status filter.
 
 ---
 
@@ -227,66 +227,66 @@ This task list owns the reusable runtime substrate only.
 
 ### 22. `or3-sandbox` adapter (`src/runtime/adapters/sandbox.ts`) [Req 10]
 
-- [ ] Implement `SandboxRuntimeAdapter` implementing `RuntimeAdapter`.
-- [ ] Build manifest with capabilities: `exec`, `stop`, `copy-in`, `copy-out`, `file-browse`, `file-rw`, `log-stream`, `service-expose`, `workspace-write`.
-- [ ] `createSession()` → `WarmPoolManager.acquire()`, return sandbox ID as ref.
-- [ ] `exec()` → `SandboxClient.execStream()`, wrap as `RuntimeExecutionHandle`.
-- [ ] `copyIn()` → `SandboxClient.writeFile()`.
-- [ ] `copyOut()` → `SandboxClient.readFile()`.
-- [ ] `getLogs()` → `SandboxClient.exec(["cat", ...])`.
-- [ ] `stop()` → `SandboxClient.stop()`.
-- [ ] `destroySession()` → `SandboxClient.delete()`.
-- [ ] `health()` → `SandboxClient.runtimeHealth()`.
-- [ ] `listNodes()` → single virtual node from `SandboxClient.runtimeInfo()`.
-- [ ] Map `SandboxRequestError` to `RuntimeError`.
-- [ ] Keep sandbox workspace support limited to generic transfer/materialization substrate in this phase; explicit host staging prepare/commit flows are handled later by `host-workspace-staging`.
+- [x] Implement `SandboxRuntimeAdapter` implementing `RuntimeAdapter`.
+- [x] Build manifest with capabilities: `exec`, `stop`, `copy-in`, `copy-out`, `file-browse`, `file-rw`, `log-stream`, `service-expose`, `workspace-write`.
+- [x] `createSession()` → `WarmPoolManager.acquire()`, return sandbox ID as ref.
+- [x] `exec()` → `SandboxClient.execStream()`, wrap as `RuntimeExecutionHandle`.
+- [x] `copyIn()` → `SandboxClient.writeFile()`.
+- [x] `copyOut()` → `SandboxClient.readFile()`.
+- [x] `getLogs()` → `SandboxClient.exec(["cat", ...])`.
+- [x] `stop()` → `SandboxClient.stop()`.
+- [x] `destroySession()` → `SandboxClient.delete()`.
+- [x] `health()` → `SandboxClient.runtimeHealth()`.
+- [x] `listNodes()` → single virtual node from `SandboxClient.runtimeInfo()`.
+- [x] Map `SandboxRequestError` to `RuntimeError`.
+- [x] Keep sandbox workspace support limited to generic transfer/materialization substrate in this phase; explicit host staging prepare/commit flows are handled later by `host-workspace-staging`.
 
 ### 23. `or3-sandbox` parity tests (`tests/runtime/adapters/`) [Req 10]
 
-- [ ] Test exec produces equivalent results to direct `SandboxNodeAdapter.executeTask()`.
-- [ ] Test file operations produce equivalent results to direct `SandboxClient` calls.
-- [ ] Test health produces equivalent results to direct `SandboxClient.runtimeHealth()`.
-- [ ] Test error mapping from `SandboxRequestError` to `RuntimeError`.
+- [x] Test exec produces equivalent results to direct `SandboxNodeAdapter.executeTask()`.
+- [x] Test file operations produce equivalent results to direct `SandboxClient` calls.
+- [x] Test health produces equivalent results to direct `SandboxClient.runtimeHealth()`.
+- [x] Test error mapping from `SandboxRequestError` to `RuntimeError`.
 
 ### 24. `remote-node-agent` adapter (`src/runtime/adapters/remote-node.ts`) [Req 11]
 
-- [ ] Implement `RemoteNodeRuntimeAdapter` implementing `RuntimeAdapter`.
-- [ ] Build manifest with capabilities: `exec` (others derived from node manifests).
-- [ ] `listNodes()` → `NodeRegistryService.listNodes()` filtered to `adapter_kind: 'remote'`, `status: 'approved'`.
-- [ ] `createSession()` → `LeaseScheduler.issueLease()`, return lease ID + node ID as ref.
-- [ ] `exec()` → `RemoteNodeExecutor.startExecution()`, wrap `NodeExecutionHandle` as `RuntimeExecutionHandle`.
-- [ ] `destroySession()` → `LeaseScheduler.releaseLease()`.
-- [ ] `health()` → `RemoteNodeExecutor.heartbeat()` for a representative node.
-- [ ] Map `RemoteExecutionError` to `RuntimeError`.
+- [x] Implement `RemoteNodeRuntimeAdapter` implementing `RuntimeAdapter`.
+- [x] Build manifest with capabilities: `exec` (others derived from node manifests).
+- [x] `listNodes()` → `NodeRegistryService.listNodes()` filtered to `adapter_kind: 'remote'`, `status: 'approved'`.
+- [x] `createSession()` → `LeaseScheduler.issueLease()`, return lease ID + node ID as ref.
+- [x] `exec()` → `RemoteNodeExecutor.startExecution()`, wrap `NodeExecutionHandle` as `RuntimeExecutionHandle`.
+- [x] `destroySession()` → `LeaseScheduler.releaseLease()`.
+- [x] `health()` → `RemoteNodeExecutor.heartbeat()` for a representative node.
+- [x] Map `RemoteExecutionError` to `RuntimeError`.
 
 ### 25. `remote-node-agent` parity tests (`tests/runtime/adapters/`) [Req 11]
 
-- [ ] Test exec produces equivalent results to direct `RemoteNodeExecutor.executeTask()`.
-- [ ] Test health delegates to heartbeat correctly.
-- [ ] Test error mapping from `RemoteExecutionError` to `RuntimeError`.
-- [ ] Test node listing filters correctly.
+- [x] Test exec produces equivalent results to direct `RemoteNodeExecutor.executeTask()`.
+- [x] Test health delegates to heartbeat correctly.
+- [x] Test error mapping from `RemoteExecutionError` to `RuntimeError`.
+- [x] Test node listing filters correctly.
 
 ### 26. `local-container` adapter (`src/runtime/adapters/local-container.ts`) [Req 12]
 
-- [ ] Implement `LocalContainerRuntimeAdapter` implementing `RuntimeAdapter`.
-- [ ] Build manifest with capabilities: `exec`, `stop`, `copy-in`, `copy-out`, `file-rw`, `workspace-write`, trust tier `development`, isolation class `container`.
-- [ ] `health()` → `Bun.spawn(["docker", "info"])`, return unavailable on failure.
-- [ ] `createSession()` → `docker create` + `docker start`, return container ID as ref.
-- [ ] `exec()` → `docker exec`, capture stdout/stderr, enforce timeout with `AbortSignal.timeout()`.
-- [ ] `stop()` → `docker stop`.
-- [ ] `copyIn()` → `docker cp`.
-- [ ] `copyOut()` → `docker cp`.
-- [ ] `destroySession()` → `docker rm -f`.
-- [ ] `listNodes()` → single virtual node representing local Docker daemon.
+- [x] Implement `LocalContainerRuntimeAdapter` implementing `RuntimeAdapter`.
+- [x] Build manifest with capabilities: `exec`, `stop`, `copy-in`, `copy-out`, `file-rw`, `workspace-write`, trust tier `development`, isolation class `container`.
+- [x] `health()` → `Bun.spawn(["docker", "info"])`, return unavailable on failure.
+- [x] `createSession()` → `docker create` + `docker start`, return container ID as ref.
+- [x] `exec()` → `docker exec`, capture stdout/stderr, enforce timeout with `AbortSignal.timeout()`.
+- [x] `stop()` → `docker stop`.
+- [x] `copyIn()` → `docker cp`.
+- [x] `copyOut()` → `docker cp`.
+- [x] `destroySession()` → `docker rm -f`.
+- [x] `listNodes()` → single virtual node representing local Docker daemon.
 
 ### 27. `local-container` tests (`tests/runtime/adapters/`) [Req 12]
 
-- [ ] Test health succeeds when Docker daemon mock is available.
-- [ ] Test health returns unavailable when Docker daemon mock fails.
-- [ ] Test session create/exec/destroy lifecycle.
-- [ ] Test exec timeout enforcement.
-- [ ] Test copy-in/copy-out.
-- [ ] Test adapter_unavailable error when daemon unreachable during session create.
+- [x] Test health succeeds when Docker daemon mock is available.
+- [x] Test health returns unavailable when Docker daemon mock fails.
+- [x] Test session create/exec/destroy lifecycle.
+- [x] Test exec timeout enforcement.
+- [x] Test copy-in/copy-out.
+- [x] Test adapter_unavailable error when daemon unreachable during session create.
 
 ---
 
@@ -294,65 +294,65 @@ This task list owns the reusable runtime substrate only.
 
 ### 28. Route wiring (`src/api/app.ts`) [Req 9]
 
-- [ ] Add route patterns for all 11 runtime routes.
-- [ ] Add `RuntimeSessionService` and `RuntimeRegistry` to `AppServices` interface.
-- [ ] Wire route matching in `fetch()` method.
+- [x] Add route patterns for all 11 runtime routes.
+- [x] Add `RuntimeSessionService` and `RuntimeRegistry` to `AppServices` interface.
+- [x] Wire route matching in `fetch()` method.
 
 ### 29. Runtime catalog handlers [Req 9, 4]
 
-- [ ] `handleListRuntimes(request, workspaceId)`:
+- [x] `handleListRuntimes(request, workspaceId)`:
   - Auth + scope `runtimes:read`.
   - Return `RuntimeDescriptor[]` from registry.
-- [ ] `handleGetRuntime(request, workspaceId, runtimeId)`:
+- [x] `handleGetRuntime(request, workspaceId, runtimeId)`:
   - Auth + scope `runtimes:read`.
   - Return `RuntimeDescriptor` or 404.
-- [ ] `handleListRuntimeNodes(request, workspaceId, runtimeId)`:
+- [x] `handleListRuntimeNodes(request, workspaceId, runtimeId)`:
   - Auth + scope `runtimes:read`.
   - Delegate to adapter `listNodes()`.
 
 ### 30. Runtime session handlers [Req 9, 5, 6]
 
-- [ ] `handleCreateRuntimeSession(request, workspaceId)`:
+- [x] `handleCreateRuntimeSession(request, workspaceId)`:
   - Auth + scope `runtime-sessions:write`.
   - Parse body as `RuntimeSessionCreateInput`.
   - Delegate to `RuntimeSessionService.createSession()`.
   - Return 201 with `RuntimeSessionDescriptor`.
-- [ ] `handleListRuntimeSessions(request, workspaceId)`:
+- [x] `handleListRuntimeSessions(request, workspaceId)`:
   - Auth + scope `runtime-sessions:read`.
   - Delegate to `RuntimeSessionService.listSessions()`.
-- [ ] `handleGetRuntimeSession(request, workspaceId, sessionId)`:
+- [x] `handleGetRuntimeSession(request, workspaceId, sessionId)`:
   - Auth + scope `runtime-sessions:read`.
   - Delegate to `RuntimeSessionService.getSession()`.
-- [ ] `handleExecInRuntimeSession(request, workspaceId, sessionId)`:
+- [x] `handleExecInRuntimeSession(request, workspaceId, sessionId)`:
   - Auth + scope `runtime-sessions:write`.
   - Parse body as `RuntimeExecutionRequest`.
   - Delegate to `RuntimeSessionService.exec()`.
   - Return result or SSE stream.
-- [ ] `handleStopRuntimeSession(request, workspaceId, sessionId)`:
+- [x] `handleStopRuntimeSession(request, workspaceId, sessionId)`:
   - Auth + scope `runtime-sessions:write`.
   - Delegate to `RuntimeSessionService.stopSession()`.
-- [ ] `handleDestroyRuntimeSession(request, workspaceId, sessionId)`:
+- [x] `handleDestroyRuntimeSession(request, workspaceId, sessionId)`:
   - Auth + scope `runtime-sessions:write`.
   - Delegate to `RuntimeSessionService.destroySession()`.
-- [ ] `handleGetRuntimeSessionLogs(request, workspaceId, sessionId)`:
+- [x] `handleGetRuntimeSessionLogs(request, workspaceId, sessionId)`:
   - Auth + scope `runtime-sessions:read`.
   - Delegate to `RuntimeSessionService.getLogs()`.
-- [ ] `handleCopyInRuntimeSession(request, workspaceId, sessionId)`:
+- [x] `handleCopyInRuntimeSession(request, workspaceId, sessionId)`:
   - Auth + scope `runtime-sessions:write`.
   - Delegate to `RuntimeSessionService.copyIn()`.
-- [ ] `handleCopyOutRuntimeSession(request, workspaceId, sessionId)`:
+- [x] `handleCopyOutRuntimeSession(request, workspaceId, sessionId)`:
   - Auth + scope `runtime-sessions:read`.
   - Delegate to `RuntimeSessionService.copyOut()`.
 
 ### 31. API route tests (`tests/api/`) [Req 9, 14]
 
-- [ ] Test all runtime routes require authentication.
-- [ ] Test scope enforcement: `runtimes:read` for catalog, `runtime-sessions:write` for mutations.
-- [ ] Test 404 for nonexistent runtime ID and session ID.
-- [ ] Test `unsupported_capability` error response format.
-- [ ] Test coexistence: existing `/v1/workspaces/:wsId/sessions` routes still work.
-- [ ] Test coexistence: existing `/v1/workspaces/:wsId/nodes` routes still work.
-- [ ] Test coexistence: existing `/v1/workspaces/:wsId/jobs` routes still work.
+- [x] Test all runtime routes require authentication.
+- [x] Test scope enforcement: `runtimes:read` for catalog, `runtime-sessions:write` for mutations.
+- [x] Test 404 for nonexistent runtime ID and session ID.
+- [x] Test `unsupported_capability` error response format.
+- [x] Test coexistence: existing `/v1/workspaces/:wsId/sessions` routes still work.
+- [x] Test coexistence: existing `/v1/workspaces/:wsId/nodes` routes still work.
+- [x] Test coexistence: existing `/v1/workspaces/:wsId/jobs` routes still work.
 
 ---
 

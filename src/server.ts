@@ -6,12 +6,15 @@ import type { LocalJobService } from "./execution/local-jobs.ts";
 import type { SandboxNodeAdapter } from "./nodes/adapter-sandbox.ts";
 import type { NodeRegistryService } from "./nodes/index.ts";
 import type { PreviewService } from "./previews/service.ts";
+import type { RuntimeRegistry, RuntimeSessionService } from "./runtime/index.ts";
 import type { InMemoryWorkspaceFileService } from "./workspace/files.ts";
 
 export interface ServerOptions {
   readonly database?: ControlPlaneDatabase;
   readonly authService: AuthService;
   readonly localJobService: LocalJobService;
+  readonly runtimeRegistry?: RuntimeRegistry;
+  readonly runtimeSessionService?: RuntimeSessionService;
   readonly nodeRegistryService?: NodeRegistryService;
   readonly agentService?: AgentService;
   readonly previewService?: PreviewService;

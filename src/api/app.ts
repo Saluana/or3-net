@@ -20,6 +20,17 @@ import type { InMemoryWorkspaceFileService } from "../workspace/files.ts";
 import type { ControlPlaneDatabase } from "../db/index.ts";
 import type { StoredIdempotencyRecord } from "../db/schema.ts";
 import { sha256Hex } from "../lib/crypto.ts";
+import type { RuntimeRegistry, RuntimeSessionService } from "../runtime/index.ts";
+import type { RuntimeAdapter, RuntimeDescriptor, RuntimeSessionState } from "../contracts/runtime/index.ts";
+import {
+  RuntimeError,
+  runtimeCopyInInputSchema,
+  runtimeCopyOutInputSchema,
+  runtimeErrorToApiEnvelope,
+  runtimeExecutionRequestSchema,
+  runtimeSessionCreateInputSchema,
+  runtimeSessionStateSchema,
+} from "../contracts/runtime/index.ts";
 import { InternRequestError } from "../../sdk/intern/types.ts";
 import type { SandboxRequestContext } from "../../sdk/sandbox/types.ts";
 import { SandboxRequestError } from "../../sdk/sandbox/types.ts";
@@ -39,6 +50,8 @@ interface AppServices {
   readonly database?: ControlPlaneDatabase;
   readonly authService: AuthService;
   readonly localJobService: LocalJobService;
+  readonly runtimeRegistry?: RuntimeRegistry;
+  readonly runtimeSessionService?: RuntimeSessionService;
   readonly nodeRegistryService?: NodeRegistryService;
   readonly agentService?: AgentService;
   readonly previewService?: PreviewService;
@@ -117,6 +130,40 @@ export class Or3NetApp {
       }),
       createRoute("/v1/workspaces/:workspaceId/sessions/:sessionId/events", {
         GET: (request, groups) => this.handleListSessionEvents(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtimes", {
+        GET: (request, groups) => this.handleListRuntimes(request, requireGroup(groups, "workspaceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtimes/:runtimeId", {
+        GET: (request, groups) => this.handleGetRuntime(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "runtimeId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtimes/:runtimeId/nodes", {
+        GET: (request, groups) => this.handleListRuntimeNodes(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "runtimeId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions", {
+        GET: (request, groups, url) => this.handleListRuntimeSessions(request, requireGroup(groups, "workspaceId"), url),
+        POST: (request, groups) => this.handleCreateRuntimeSession(request, requireGroup(groups, "workspaceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId", {
+        GET: (request, groups) => this.handleGetRuntimeSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/exec", {
+        POST: (request, groups) => this.handleExecInRuntimeSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/stop", {
+        POST: (request, groups) => this.handleStopRuntimeSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/destroy", {
+        POST: (request, groups) => this.handleDestroyRuntimeSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/logs", {
+        GET: (request, groups, url) => this.handleGetRuntimeSessionLogs(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId"), url),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/files:copy-in", {
+        POST: (request, groups) => this.handleCopyInRuntimeSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/files:copy-out", {
+        POST: (request, groups) => this.handleCopyOutRuntimeSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
       }),
       createRoute("/v1/jobs/:jobId", {
         GET: (request, groups) => this.handleGetJob(request, requireGroup(groups, "jobId")),
@@ -314,6 +361,114 @@ export class Or3NetApp {
     });
   }
 
+  private async handleListRuntimes(request: Request, workspaceId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtimes:read");
+    const registry = requireRuntimeRegistry(this.services.runtimeRegistry);
+    const health = await registry.health(principal.workspace_id);
+    return jsonResponse(200, {
+      items: registry.list().map((adapter) => toRuntimeDescriptor(adapter, health[adapter.manifest.adapter_id])),
+    });
+  }
+
+  private async handleGetRuntime(request: Request, workspaceId: string, runtimeId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtimes:read");
+    const registry = requireRuntimeRegistry(this.services.runtimeRegistry);
+    const adapter = registry.get(runtimeId);
+    if (adapter === undefined) {
+      throw new HttpError(404, `runtime ${runtimeId} was not found`, { code: platformErrorCodes.resourceNotFound });
+    }
+    const health = await registry.health(principal.workspace_id);
+    return jsonResponse(200, {
+      runtime: toRuntimeDescriptor(adapter, health[adapter.manifest.adapter_id]),
+    });
+  }
+
+  private async handleListRuntimeNodes(request: Request, workspaceId: string, runtimeId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtimes:read");
+    const adapter = requireRuntimeAdapter(requireRuntimeRegistry(this.services.runtimeRegistry), runtimeId);
+    return jsonResponse(200, {
+      items: await adapter.listNodes({ workspace_id: principal.workspace_id }),
+    });
+  }
+
+  private async handleCreateRuntimeSession(request: Request, workspaceId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const payload = runtimeSessionCreateInputSchema.parse(await readJsonBody(request));
+    const session = await requireRuntimeSessionService(this.services.runtimeSessionService).createSession(principal.workspace_id, payload);
+    return jsonResponse(201, { session });
+  }
+
+  private async handleListRuntimeSessions(request: Request, workspaceId: string, url: URL): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:read");
+    const status = parseRuntimeSessionStatusFilter(url.searchParams.get("status"));
+    const adapterId = url.searchParams.get("adapter_id") ?? undefined;
+    const limit = parsePositiveIntegerQuery(url.searchParams.get("limit"));
+    return jsonResponse(200, {
+      items: requireRuntimeSessionService(this.services.runtimeSessionService).listSessions(principal.workspace_id, {
+        ...(status === undefined ? {} : { status }),
+        ...(adapterId === undefined ? {} : { adapter_id: adapterId }),
+        ...(limit === undefined ? {} : { limit }),
+      }),
+    });
+  }
+
+  private async handleGetRuntimeSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:read");
+    return jsonResponse(200, {
+      session: requireRuntimeSessionService(this.services.runtimeSessionService).getSession(principal.workspace_id, sessionId),
+    });
+  }
+
+  private async handleExecInRuntimeSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const payload = runtimeExecutionRequestSchema.parse(await readJsonBody(request));
+    const handle = await requireRuntimeSessionService(this.services.runtimeSessionService).exec(principal.workspace_id, sessionId, payload);
+    if (wantsEventStream(request) && handle.stream !== undefined) {
+      return runtimeExecutionStreamResponse(handle);
+    }
+    return jsonResponse(200, {
+      execution_id: handle.execution_id,
+      result: await handle.result,
+    });
+  }
+
+  private async handleStopRuntimeSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const session = await requireRuntimeSessionService(this.services.runtimeSessionService).stopSession(principal.workspace_id, sessionId);
+    return jsonResponse(200, { session });
+  }
+
+  private async handleDestroyRuntimeSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const session = await requireRuntimeSessionService(this.services.runtimeSessionService).destroySession(principal.workspace_id, sessionId);
+    return jsonResponse(200, { session });
+  }
+
+  private async handleGetRuntimeSessionLogs(request: Request, workspaceId: string, sessionId: string, url: URL): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:read");
+    const cursor = url.searchParams.get("cursor") ?? undefined;
+    const limit = parsePositiveIntegerQuery(url.searchParams.get("limit"));
+    const logs = await requireRuntimeSessionService(this.services.runtimeSessionService).getLogs(principal.workspace_id, sessionId, {
+      ...(cursor === undefined ? {} : { cursor }),
+      ...(limit === undefined ? {} : { limit }),
+    });
+    return jsonResponse(200, logs);
+  }
+
+  private async handleCopyInRuntimeSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const payload = runtimeCopyInInputSchema.omit({ session_ref: true }).parse(await readJsonBody(request));
+    const transfer = await requireRuntimeSessionService(this.services.runtimeSessionService).copyIn(principal.workspace_id, sessionId, payload);
+    return jsonResponse(200, { transfer });
+  }
+
+  private async handleCopyOutRuntimeSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:read");
+    const payload = runtimeCopyOutInputSchema.omit({ session_ref: true }).parse(await readJsonBody(request));
+    const transfer = await requireRuntimeSessionService(this.services.runtimeSessionService).copyOut(principal.workspace_id, sessionId, payload);
+    return jsonResponse(200, { transfer });
+  }
+
   private async handleListAgents(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "agents:read");
     const agents = requireAgentService(this.services.agentService).listAgents(principal.workspace_id);
@@ -381,11 +536,7 @@ export class Or3NetApp {
   private async handleListNodeServices(request: Request, workspaceId: string, nodeId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "services:read");
     const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
-    const node = requireNodeRegistry(this.services.nodeRegistryService).listNodes(principal.workspace_id).find((item) => item.manifest.node_id === nodeId);
-    if (node === undefined) {
-      throw new HttpError(404, "node not found");
-    }
-    ensureLaunchableNode(node);
+    const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
     return jsonResponse(200, { items: adapter.listServices(node) });
   }
 
@@ -394,11 +545,7 @@ export class Or3NetApp {
     const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
     const previewService = requirePreviewService(this.services.previewService);
     const auditContext = createRequestAuditContext(request, principal);
-    const node = requireNodeRegistry(this.services.nodeRegistryService).listNodes(principal.workspace_id).find((item) => item.manifest.node_id === nodeId);
-    if (node === undefined) {
-      throw new HttpError(404, "node not found");
-    }
-    ensureLaunchableNode(node);
+    const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
     const internalLaunch = await adapter.prepareServiceLaunch(principal.workspace_id, node, serviceId, toSandboxRequestContext(auditContext));
     const launch = previewService.mintLaunchCapability({
       origin: new URL(request.url).origin,
@@ -419,11 +566,7 @@ export class Or3NetApp {
     const principal = await this.requirePrincipal(request, workspaceId, "services:write");
     const previewService = requirePreviewService(this.services.previewService);
     const auditContext = createRequestAuditContext(request, principal);
-    const node = requireNodeRegistry(this.services.nodeRegistryService).listNodes(principal.workspace_id).find((item) => item.manifest.node_id === nodeId);
-    if (node === undefined) {
-      throw new HttpError(404, "node not found");
-    }
-    ensureLaunchableNode(node);
+    const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
     const revokedLaunches = previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
     const revokedTunnels = await requireSandboxAdapter(this.services.sandboxNodeAdapter).revokeServiceLaunch(
       principal.workspace_id,
@@ -439,11 +582,7 @@ export class Or3NetApp {
     const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
     const previewService = requirePreviewService(this.services.previewService);
     const auditContext = createRequestAuditContext(request, principal);
-    const node = requireNodeRegistry(this.services.nodeRegistryService).listNodes(principal.workspace_id).find((item) => item.manifest.node_id === nodeId);
-    if (node === undefined) {
-      throw new HttpError(404, "node not found");
-    }
-    ensureLaunchableNode(node);
+    const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
     previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
     const result = await adapter.restartService(principal.workspace_id, node, serviceId, toSandboxRequestContext(auditContext));
     return jsonResponse(200, result);
@@ -594,6 +733,19 @@ export class Or3NetApp {
       expires_at: expiresAt,
     });
   }
+
+  private requireLaunchableNode(workspaceId: string, nodeId: string) {
+    try {
+      const node = requireNodeRegistry(this.services.nodeRegistryService).getNode(workspaceId, nodeId);
+      ensureLaunchableNode(node);
+      return node;
+    } catch (error: unknown) {
+      if (error instanceof Error && isNotFoundError(error)) {
+        throw new HttpError(404, "node not found", { code: platformErrorCodes.resourceNotFound });
+      }
+      throw error;
+    }
+  }
 }
 
 class HttpError extends Error {
@@ -639,6 +791,28 @@ const requireNodeRegistry = (service: NodeRegistryService | undefined): NodeRegi
     throw new HttpError(503, "node registry is not configured", { code: platformErrorCodes.serverUnavailable });
   }
   return service;
+};
+
+const requireRuntimeRegistry = (service: RuntimeRegistry | undefined): RuntimeRegistry => {
+  if (service === undefined) {
+    throw new HttpError(503, "runtime registry is not configured", { code: platformErrorCodes.serverUnavailable });
+  }
+  return service;
+};
+
+const requireRuntimeSessionService = (service: RuntimeSessionService | undefined): RuntimeSessionService => {
+  if (service === undefined) {
+    throw new HttpError(503, "runtime session service is not configured", { code: platformErrorCodes.serverUnavailable });
+  }
+  return service;
+};
+
+const requireRuntimeAdapter = (registry: RuntimeRegistry, runtimeId: string): RuntimeAdapter => {
+  const adapter = registry.get(runtimeId);
+  if (adapter === undefined) {
+    throw new HttpError(404, `runtime ${runtimeId} was not found`, { code: platformErrorCodes.resourceNotFound });
+  }
+  return adapter;
 };
 
 const requireAgentService = (service: AgentService | undefined): AgentService => {
@@ -717,6 +891,24 @@ const parseJobStatusFilter = (value: string | null): "running" | "terminal" | "a
   throw new HttpError(400, "invalid status filter", { code: platformErrorCodes.inputInvalidParameter });
 };
 
+const parseRuntimeSessionStatusFilter = (value: string | null): RuntimeSessionState | undefined => {
+  if (value === null || value.trim() === "") {
+    return undefined;
+  }
+  return runtimeSessionStateSchema.parse(value);
+};
+
+const parsePositiveIntegerQuery = (value: string | null): number | undefined => {
+  if (value === null || value.trim() === "") {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new HttpError(400, "invalid numeric query parameter", { code: platformErrorCodes.inputInvalidParameter });
+  }
+  return parsed;
+};
+
 const toApiKeyResponse = (record: ReturnType<AuthService["listApiKeys"]>[number]): Record<string, unknown> => ({
   api_key_id: record.api_key_id,
   workspace_id: record.workspace_id,
@@ -725,6 +917,18 @@ const toApiKeyResponse = (record: ReturnType<AuthService["listApiKeys"]>[number]
   created_at: record.created_at,
   expires_at: record.expires_at,
   revoked_at: record.revoked_at,
+});
+
+const toRuntimeDescriptor = (adapter: RuntimeAdapter, health?: RuntimeDescriptor["health"]): RuntimeDescriptor => ({
+  adapter_id: adapter.manifest.adapter_id,
+  display_name: adapter.manifest.display_name,
+  isolation_class: adapter.manifest.isolation_class,
+  trust_tier: adapter.manifest.trust_tier,
+  locality: adapter.manifest.locality,
+  health: health ?? { status: "unavailable", checked_at: new Date().toISOString() },
+  capabilities: adapter.manifest.capabilities,
+  supported_presets: [...adapter.manifest.supported_presets],
+  session_modes: [...adapter.manifest.session_modes],
 });
 
 export const handleAppRequest = async (app: Or3NetApp, request: Request): Promise<Response> => {
@@ -743,6 +947,9 @@ export const handleAppRequest = async (app: Or3NetApp, request: Request): Promis
         request_id: requestId,
         ...(error.retry_after_ms === undefined ? {} : { retry_after_ms: error.retry_after_ms }),
       });
+    }
+    if (error instanceof RuntimeError) {
+      return errorResponse(runtimeErrorToApiEnvelope(error, requestId));
     }
     if (error instanceof SandboxRequestError) {
       return errorResponse(normalizeSandboxError(error, requestId));
@@ -814,6 +1021,42 @@ const isExpiredAuthError = (error: unknown): boolean =>
 const resolveIdempotencyKey = (value: string | null): string | undefined => {
   const trimmed = value?.trim() ?? "";
   return trimmed === "" ? undefined : trimmed;
+};
+
+const wantsEventStream = (request: Request): boolean =>
+  request.headers.get("Accept")?.toLowerCase().includes("text/event-stream") ?? false;
+
+const runtimeExecutionStreamResponse = (handle: Awaited<ReturnType<RuntimeSessionService["exec"]>>): Response => {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      void (async () => {
+        try {
+          if (handle.stream !== undefined) {
+            for await (const event of handle.stream) {
+              controller.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
+            }
+          }
+          const result = await handle.result;
+          controller.enqueue(encoder.encode(`event: result\ndata: ${JSON.stringify({ execution_id: handle.execution_id, result })}\n\n`));
+          controller.close();
+        } catch (error: unknown) {
+          const payload = error instanceof RuntimeError ? error.toEnvelope() : { message: error instanceof Error ? error.message : "runtime exec failed" };
+          controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify(payload)}\n\n`));
+          controller.close();
+        }
+      })();
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+    },
+  });
 };
 
 const createRoute = (pathname: string, methods: Record<string, RouteHandler>): RouteEntry => ({

@@ -2,7 +2,7 @@ import type { JobStreamEvent } from "../contracts/index.ts";
 import { normalizeLegacyJobStreamEvent } from "../contracts/platform/compat.ts";
 
 interface JobStreamState {
-  readonly history: JobStreamEvent[];
+  readonly history: JobHistoryBuffer;
   readonly subscribers: Set<(event: JobStreamEvent) => void>;
   terminal: boolean;
   cleanupTimer: ReturnType<typeof setTimeout> | null;
@@ -11,7 +11,10 @@ interface JobStreamState {
 export class JobStreamBroker {
   private readonly streams = new Map<string, JobStreamState>();
 
-  public constructor(private readonly terminalRetentionMs = 60_000) {}
+  public constructor(
+    private readonly terminalRetentionMs = 60_000,
+    private readonly maxHistoryEvents = 128,
+  ) {}
 
   public publish(jobId: string, event: JobStreamEvent): void {
     const state = this.ensure(jobId);
@@ -26,7 +29,7 @@ export class JobStreamBroker {
   }
 
   public history(jobId: string): JobStreamEvent[] {
-    return [...this.ensure(jobId).history];
+    return this.ensure(jobId).history.events();
   }
 
   public stream(jobId: string): ReadableStream<Uint8Array> {
@@ -40,8 +43,8 @@ export class JobStreamBroker {
           clearTimeout(state.cleanupTimer);
           state.cleanupTimer = null;
         }
-        for (const event of state.history) {
-          controller.enqueue(encoder.encode(formatSseEvent(event)));
+        for (const chunk of state.history.encodedChunks(encoder)) {
+          controller.enqueue(chunk);
         }
 
         if (state.terminal) {
@@ -83,7 +86,7 @@ export class JobStreamBroker {
     }
 
     const created: JobStreamState = {
-      history: [],
+      history: new JobHistoryBuffer(this.maxHistoryEvents),
       subscribers: new Set(),
       terminal: false,
       cleanupTimer: null,
@@ -112,3 +115,51 @@ const formatSseEvent = (event: JobStreamEvent): string => {
   const normalized = normalizeLegacyJobStreamEvent(event);
   return `event: ${normalized.event}\ndata: ${JSON.stringify(normalized.data)}\n\n`;
 };
+
+interface JobHistoryEntry {
+  readonly event: JobStreamEvent;
+  encoded: Uint8Array | null;
+}
+
+class JobHistoryBuffer {
+  private readonly entries: JobHistoryEntry[] = [];
+  private start = 0;
+
+  public constructor(private readonly maxEntries: number) {}
+
+  public push(event: JobStreamEvent): void {
+    this.entries.push({ event, encoded: null });
+    if (this.length() <= this.maxEntries) {
+      return;
+    }
+
+    this.start += 1;
+    if (this.start >= Math.max(32, this.maxEntries)) {
+      this.entries.splice(0, this.start);
+      this.start = 0;
+    }
+  }
+
+  public events(): JobStreamEvent[] {
+    return this.entries.slice(this.start).map((entry) => entry.event);
+  }
+
+  public encodedChunks(encoder: TextEncoder): Uint8Array[] {
+    const chunks: Uint8Array[] = [];
+    for (let index = this.start; index < this.entries.length; index += 1) {
+      const entry = this.entries[index];
+      if (entry === undefined) {
+        continue;
+      }
+      if (entry.encoded === null) {
+        entry.encoded = encoder.encode(formatSseEvent(entry.event));
+      }
+      chunks.push(entry.encoded);
+    }
+    return chunks;
+  }
+
+  private length(): number {
+    return this.entries.length - this.start;
+  }
+}
