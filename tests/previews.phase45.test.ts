@@ -346,6 +346,51 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     expect(revokedLaunchResponse.status).toBe(403);
   });
 
+  test("uses configured public base URL for launch metadata and rejects file route writes", async () => {
+    app = new Or3NetApp({
+      authService,
+      localJobService: new LocalJobService({ database, internClient: new NoopInternClient() }),
+      nodeRegistryService: nodeRegistry,
+      previewService,
+      workspaceFileService: fileService,
+      sandboxNodeAdapter: new SandboxNodeAdapter(sandboxClient),
+      publicBaseUrl: "https://control-plane.example/base/path",
+    });
+
+    const token = await exchangeToken(app, "ws_preview");
+    previewService.registerPreview("ws_preview", {
+      preview_id: "preview_base_url",
+      workspace_id: "ws_preview",
+      kind: "static-site",
+      delivery_mode: "embedded-preferred",
+      source_type: "files",
+      path: "/site",
+      entry_path: "/site/index.html",
+      status: "ready",
+      supports_iframe: true,
+      supports_new_tab: true,
+    });
+
+    const launchResponse = await handleAppRequest(
+      app,
+      new Request("http://evil.example/v1/workspaces/ws_preview/previews/preview_base_url/launch", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    const launchPayload = (await launchResponse.json()) as { launch_url: string };
+    expect(launchPayload.launch_url.startsWith("https://control-plane.example/v1/launch/")).toBeTrue();
+
+    const fileWriteResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/files/site/index.html", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(fileWriteResponse.status).toBe(405);
+  });
+
   test("returns embedded pane launch metadata for iframe-safe previews and falls back to new-tab mode", async () => {
     const token = await exchangeToken(app, "ws_preview");
     previewService.registerPreview("ws_preview", {

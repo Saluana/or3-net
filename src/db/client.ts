@@ -733,9 +733,9 @@ export class WorkspaceStore {
   }
 
   /** Purpose: Lists jobs by status bucket and optional network-session binding. */
-  public listJobsByFilter(status?: "running" | "terminal" | "all", networkSessionId?: string): StoredJobWithDiagnostics[] {
+  public listJobsByFilter(status?: "running" | "terminal" | "all", networkSessionId?: string, limit = 100): StoredJobWithDiagnostics[] {
     const clauses = ["workspace_id = ?"];
-    const params: string[] = [this.workspaceId];
+    const params: (string | number)[] = [this.workspaceId];
 
     if (status === "running") {
       clauses.push("status IN ('pending', 'scheduled', 'running')");
@@ -748,8 +748,10 @@ export class WorkspaceStore {
       params.push(networkSessionId);
     }
 
+    params.push(limit);
+
     return this.db
-      .query<JobRow, string[]>(`SELECT * FROM jobs WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC`)
+      .query<JobRow, (string | number)[]>(`SELECT * FROM jobs WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC LIMIT ?`)
       .all(...params)
       .map(parseJobRow);
   }
@@ -798,12 +800,12 @@ export class WorkspaceStore {
   }
 
   /** Purpose: Lists network session bindings for the workspace. */
-  public listNetworkSessions(): StoredNetworkSession[] {
+  public listNetworkSessions(input: { limit?: number } = {}): StoredNetworkSession[] {
     return this.db
-      .query<NetworkSessionRow, [string]>(
-        "SELECT * FROM network_sessions WHERE workspace_id = ? ORDER BY updated_at DESC",
+      .query<NetworkSessionRow, [string, number]>(
+        "SELECT * FROM network_sessions WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ?",
       )
-      .all(this.workspaceId)
+      .all(this.workspaceId, input.limit ?? 100)
       .map(parseNetworkSessionRow);
   }
 

@@ -52,6 +52,23 @@ import { InternRequestError } from "../../sdk/intern/types.ts";
 import type { SandboxRequestContext } from "../../sdk/sandbox/types.ts";
 import { SandboxRequestError } from "../../sdk/sandbox/types.ts";
 
+const DEFAULT_PUBLIC_BASE_URL = "http://localhost";
+const DEFAULT_TRUSTED_REQUEST_ORIGIN_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "or3.test"]);
+const MAX_AUTH_EXCHANGE_BODY_BYTES = 128 * 1024;
+const MAX_CREATE_JOB_BODY_BYTES = 256 * 1024;
+const MAX_API_KEY_BODY_BYTES = 32 * 1024;
+const MAX_AGENT_BODY_BYTES = 256 * 1024;
+const MAX_NODE_ENROLL_BODY_BYTES = 256 * 1024;
+const MAX_RUNTIME_SESSION_CREATE_BODY_BYTES = 128 * 1024;
+const MAX_RUNTIME_EXEC_BODY_BYTES = 256 * 1024;
+const MAX_RUNTIME_COPY_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_PREVIEW_BODY_BYTES = 128 * 1024;
+const MAX_PREVIEW_LAUNCH_BODY_BYTES = 16 * 1024;
+const MAX_LIST_QUERY_LIMIT = 100;
+const MAX_RUNTIME_LOG_LIMIT = 500;
+const MAX_SESSION_EVENT_LIMIT = 200;
+const NO_STORE_CACHE_CONTROL = "no-store";
+
 const createApiKeyRequestSchema = z.object({
   name: z.string().trim().min(1),
   scopes: z.array(z.string().trim().min(1)).min(1),
@@ -67,6 +84,7 @@ interface AppServices {
   readonly database?: ControlPlaneDatabase;
   readonly authService: AuthService;
   readonly localJobService: LocalJobService;
+  readonly publicBaseUrl?: string;
   readonly runtimeRegistry?: RuntimeRegistry;
   readonly runtimeSessionService?: RuntimeSessionService;
   readonly nodeRegistryService?: NodeRegistryService;
@@ -105,6 +123,7 @@ export class Or3NetApp {
    */
   public async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    let matchedPath = false;
 
     for (const route of this.routes) {
       const match = route.pattern.exec(url);
@@ -112,15 +131,16 @@ export class Or3NetApp {
         continue;
       }
 
+      matchedPath = true;
+
       const handler = route.methods.get(request.method);
       if (handler !== undefined) {
         return await handler(request, match.pathname.groups, url);
       }
     }
 
-    const filesPrefix = "/v1/workspaces/";
-    if (url.pathname.startsWith(filesPrefix) && url.pathname.includes("/files")) {
-      return this.handleFiles(request, url.pathname);
+    if (matchedPath) {
+      throw new HttpError(405, "method not allowed");
     }
 
     throw new HttpError(404, "route not found", { code: platformErrorCodes.resourceNotFound });
@@ -152,13 +172,13 @@ export class Or3NetApp {
         POST: (request, groups) => this.handleRevokeApiKey(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "apiKeyId")),
       }),
       createRoute("/v1/workspaces/:workspaceId/sessions", {
-        GET: (request, groups) => this.handleListSessions(request, requireGroup(groups, "workspaceId")),
+        GET: (request, groups, url) => this.handleListSessions(request, requireGroup(groups, "workspaceId"), url),
       }),
       createRoute("/v1/workspaces/:workspaceId/sessions/:sessionId", {
         GET: (request, groups) => this.handleGetSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
       }),
       createRoute("/v1/workspaces/:workspaceId/sessions/:sessionId/events", {
-        GET: (request, groups) => this.handleListSessionEvents(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+        GET: (request, groups, url) => this.handleListSessionEvents(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId"), url),
       }),
       createRoute("/v1/workspaces/:workspaceId/runtimes", {
         GET: (request, groups) => this.handleListRuntimes(request, requireGroup(groups, "workspaceId")),
@@ -253,11 +273,17 @@ export class Or3NetApp {
       createRoute("/v1/workspaces/:workspaceId/previews/:previewId/revoke", {
         POST: (request, groups) => this.handleRevokePreview(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "previewId")),
       }),
+      createRoute("/v1/workspaces/:workspaceId/files", {
+        GET: (request, groups) => this.handleFiles(request, requireGroup(groups, "workspaceId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/files/:path*", {
+        GET: (request, groups) => this.handleFiles(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "path")),
+      }),
     ];
   }
 
   private async handleExchange(request: Request): Promise<Response> {
-    const { parsed: payload, fingerprint } = await readRequiredJsonPayload(request, exchangeSessionRequestSchema);
+    const { parsed: payload, fingerprint } = await readRequiredJsonPayload(request, exchangeSessionRequestSchema, MAX_AUTH_EXCHANGE_BODY_BYTES);
     const idempotencyKey = resolveIdempotencyKey(request.headers.get("Idempotency-Key"));
     const idempotencyScope = `auth.exchange:${payload.provider}`;
     const idempotencyOwnerKey = payload.workspace_id ?? payload.provider;
@@ -276,7 +302,7 @@ export class Or3NetApp {
 
   private async handleCreateJob(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "jobs:write");
-    const { parsed: payload, fingerprint } = await readRequiredJsonPayload(request, createJobRequestSchema);
+    const { parsed: payload, fingerprint } = await readRequiredJsonPayload(request, createJobRequestSchema, MAX_CREATE_JOB_BODY_BYTES);
     const auditContext = createRequestAuditContext(request, principal);
     const idempotencyKey = resolveIdempotencyKey(request.headers.get("Idempotency-Key"));
     const existing = this.readIdempotencyRecord("jobs.create", principal.workspace_id, idempotencyKey, fingerprint);
@@ -304,9 +330,11 @@ export class Or3NetApp {
     const principal = await this.requirePrincipal(request, workspaceId, "jobs:read");
     const status = parseJobStatusFilter(url.searchParams.get("status"));
     const networkSessionId = url.searchParams.get("network_session_id") ?? undefined;
+    const limit = clampLimit(parsePositiveIntegerQuery(url.searchParams.get("limit")), MAX_LIST_QUERY_LIMIT);
     const items = this.services.localJobService.listJobs(principal.workspace_id, {
       ...(status === undefined ? {} : { status }),
       ...(networkSessionId === undefined ? {} : { network_session_id: networkSessionId }),
+      ...(limit === undefined ? {} : { limit }),
     });
     return jsonResponse(200, {
       items: items.map((item) => ({
@@ -353,7 +381,7 @@ export class Or3NetApp {
 
   private async handleCreateApiKey(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "api-keys:write");
-    const payload = createApiKeyRequestSchema.parse(await readJsonBody(request));
+    const payload = createApiKeyRequestSchema.parse(await readJsonBody(request, MAX_API_KEY_BODY_BYTES));
     const created = await this.services.authService.createApiKey({
       workspace_id: principal.workspace_id,
       name: payload.name,
@@ -373,10 +401,11 @@ export class Or3NetApp {
     });
   }
 
-  private async handleListSessions(request: Request, workspaceId: string): Promise<Response> {
+  private async handleListSessions(request: Request, workspaceId: string, url: URL): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "sessions:read");
+    const limit = clampLimit(parsePositiveIntegerQuery(url.searchParams.get("limit")), MAX_LIST_QUERY_LIMIT);
     return jsonResponse(200, {
-      items: this.services.localJobService.listSessions(principal.workspace_id),
+      items: this.services.localJobService.listSessions(principal.workspace_id, { ...(limit === undefined ? {} : { limit }) }),
     });
   }
 
@@ -392,10 +421,11 @@ export class Or3NetApp {
     });
   }
 
-  private async handleListSessionEvents(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+  private async handleListSessionEvents(request: Request, workspaceId: string, sessionId: string, url: URL): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "sessions:read");
+    const limit = clampLimit(parsePositiveIntegerQuery(url.searchParams.get("limit")), MAX_SESSION_EVENT_LIMIT);
     return jsonResponse(200, {
-      items: this.services.localJobService.listSessionEvents(principal.workspace_id, sessionId),
+      items: this.services.localJobService.listSessionEvents(principal.workspace_id, sessionId, { ...(limit === undefined ? {} : { limit }) }),
     });
   }
 
@@ -431,7 +461,7 @@ export class Or3NetApp {
 
   private async handleCreateRuntimeSession(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
-    const payload = runtimeSessionCreateInputSchema.parse(await readJsonBody(request));
+    const payload = runtimeSessionCreateInputSchema.parse(await readJsonBody(request, MAX_RUNTIME_SESSION_CREATE_BODY_BYTES));
     const session = await requireRuntimeSessionService(this.services.runtimeSessionService).createSession(principal.workspace_id, payload);
     return jsonResponse(201, { session });
   }
@@ -440,7 +470,7 @@ export class Or3NetApp {
     const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:read");
     const status = parseRuntimeSessionStatusFilter(url.searchParams.get("status"));
     const adapterId = url.searchParams.get("adapter_id") ?? undefined;
-    const limit = parsePositiveIntegerQuery(url.searchParams.get("limit"));
+    const limit = clampLimit(parsePositiveIntegerQuery(url.searchParams.get("limit")), MAX_LIST_QUERY_LIMIT);
     return jsonResponse(200, {
       items: requireRuntimeSessionService(this.services.runtimeSessionService).listSessions(principal.workspace_id, {
         ...(status === undefined ? {} : { status }),
@@ -459,7 +489,7 @@ export class Or3NetApp {
 
   private async handleExecInRuntimeSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
-    const payload = runtimeExecutionRequestSchema.parse(await readJsonBody(request));
+    const payload = runtimeExecutionRequestSchema.parse(await readJsonBody(request, MAX_RUNTIME_EXEC_BODY_BYTES));
     const handle = await requireRuntimeSessionService(this.services.runtimeSessionService).exec(principal.workspace_id, sessionId, payload);
     if (wantsEventStream(request) && handle.stream !== undefined) {
       return runtimeExecutionStreamResponse(handle);
@@ -503,7 +533,7 @@ export class Or3NetApp {
   private async handleGetRuntimeSessionLogs(request: Request, workspaceId: string, sessionId: string, url: URL): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:read");
     const cursor = url.searchParams.get("cursor") ?? undefined;
-    const limit = parsePositiveIntegerQuery(url.searchParams.get("limit"));
+    const limit = clampLimit(parsePositiveIntegerQuery(url.searchParams.get("limit")), MAX_RUNTIME_LOG_LIMIT);
     const logs = await requireRuntimeSessionService(this.services.runtimeSessionService).getLogs(principal.workspace_id, sessionId, {
       ...(cursor === undefined ? {} : { cursor }),
       ...(limit === undefined ? {} : { limit }),
@@ -513,14 +543,14 @@ export class Or3NetApp {
 
   private async handleCopyInRuntimeSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
-    const payload = runtimeCopyInInputSchema.omit({ session_ref: true }).parse(await readJsonBody(request));
+    const payload = runtimeCopyInInputSchema.omit({ session_ref: true }).parse(await readJsonBody(request, MAX_RUNTIME_COPY_BODY_BYTES));
     const transfer = await requireRuntimeSessionService(this.services.runtimeSessionService).copyIn(principal.workspace_id, sessionId, payload);
     return jsonResponse(200, { transfer });
   }
 
   private async handleCopyOutRuntimeSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:read");
-    const payload = runtimeCopyOutInputSchema.omit({ session_ref: true }).parse(await readJsonBody(request));
+    const payload = runtimeCopyOutInputSchema.omit({ session_ref: true }).parse(await readJsonBody(request, MAX_RUNTIME_COPY_BODY_BYTES));
     const transfer = await requireRuntimeSessionService(this.services.runtimeSessionService).copyOut(principal.workspace_id, sessionId, payload);
     return jsonResponse(200, { transfer });
   }
@@ -533,7 +563,7 @@ export class Or3NetApp {
 
   private async handleCreateAgent(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "agents:write");
-    const agent = agentSchema.parse(await readJsonBody(request));
+    const agent = agentSchema.parse(await readJsonBody(request, MAX_AGENT_BODY_BYTES));
     if (agent.workspace_id !== principal.workspace_id) {
       throw new HttpError(403, "workspace mismatch", { code: platformErrorCodes.authWorkspaceMismatch });
     }
@@ -550,7 +580,7 @@ export class Or3NetApp {
 
   private async handleUpdateAgent(request: Request, workspaceId: string, agentId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "agents:write");
-    const agent = agentSchema.parse(await readJsonBody(request));
+    const agent = agentSchema.parse(await readJsonBody(request, MAX_AGENT_BODY_BYTES));
     if (agent.workspace_id !== principal.workspace_id) {
       throw new HttpError(403, "workspace mismatch", { code: platformErrorCodes.authWorkspaceMismatch });
     }
@@ -577,7 +607,7 @@ export class Or3NetApp {
   private async handleEnrollNode(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "nodes:write");
     const registry = requireNodeRegistry(this.services.nodeRegistryService);
-    const payload = enrollNodeRequestSchema.parse(await readJsonBody(request));
+    const payload = enrollNodeRequestSchema.parse(await readJsonBody(request, MAX_NODE_ENROLL_BODY_BYTES));
     const node = await registry.enrollNode(principal.workspace_id, payload);
     return jsonResponse(202, { node });
   }
@@ -604,7 +634,7 @@ export class Or3NetApp {
     const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
     const internalLaunch = await adapter.prepareServiceLaunch(principal.workspace_id, node, serviceId, toSandboxRequestContext(auditContext));
     const launch = previewService.mintLaunchCapability({
-      origin: new URL(request.url).origin,
+      origin: resolvePublicBaseUrl(this.services.publicBaseUrl, request.url),
       workspace_id: principal.workspace_id,
       scope_key: buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId),
       target_url: internalLaunch.target_url,
@@ -653,7 +683,7 @@ export class Or3NetApp {
   private async handleRegisterPreview(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "previews:write");
     const previewService = requirePreviewService(this.services.previewService);
-    const preview = previewDescriptorSchema.parse(await readJsonBody(request));
+    const preview = previewDescriptorSchema.parse(await readJsonBody(request, MAX_PREVIEW_BODY_BYTES));
     if (preview.workspace_id !== principal.workspace_id) {
       throw new HttpError(403, "workspace mismatch", { code: platformErrorCodes.authWorkspaceMismatch });
     }
@@ -667,8 +697,8 @@ export class Or3NetApp {
     const principal = await this.requirePrincipal(request, workspaceId, "previews:read");
     const previewService = requirePreviewService(this.services.previewService);
     void createRequestAuditContext(request, principal);
-    const launchRequest = previewLaunchRequestSchema.parse(await readOptionalJson(request));
-    const launch = previewService.launchPreview(principal.workspace_id, previewId, launchRequest, new URL(request.url).origin);
+    const launchRequest = previewLaunchRequestSchema.parse(await readOptionalJson(request, MAX_PREVIEW_LAUNCH_BODY_BYTES));
+    const launch = previewService.launchPreview(principal.workspace_id, previewId, launchRequest, resolvePublicBaseUrl(this.services.publicBaseUrl, request.url));
     return jsonResponse(200, launch);
   }
 
@@ -678,27 +708,21 @@ export class Or3NetApp {
     return jsonResponse(200, { preview: previewService.revokePreview(principal.workspace_id, previewId) });
   }
 
-  private async handleFiles(request: Request, pathname: string): Promise<Response> {
+  private async handleFiles(request: Request, workspaceId: string, requestedPath?: string): Promise<Response> {
     const fileService = requireWorkspaceFileService(this.services.workspaceFileService);
-    const prefix = "/v1/workspaces/";
-    const segments = pathname.slice(prefix.length).split("/");
-    const workspaceId = segments[0];
-    const remainder = segments.slice(1).join("/");
-    if (workspaceId === "" || !remainder.startsWith("files")) {
-      throw new HttpError(404, "file route not found");
-    }
-
     const principal = await this.requirePrincipal(request, workspaceId, "files:read");
-    const filePath = remainder.slice("files".length).replace(/^\//, "");
-    if (filePath === "") {
+    const normalizedFilePath = requestedPath?.trim() ?? "";
+    if (normalizedFilePath === "") {
       return jsonResponse(200, { items: fileService.listFiles(principal.workspace_id) });
     }
 
-    const file = fileService.readFile(principal.workspace_id, `/${filePath}`);
+    const file = fileService.readFile(principal.workspace_id, `/${normalizedFilePath}`);
     return new Response(file.content, {
       status: 200,
       headers: {
         "Content-Type": file.entry.mime_type ?? "text/plain; charset=utf-8",
+        "Cache-Control": NO_STORE_CACHE_CONTROL,
+        "X-Content-Type-Options": "nosniff",
       },
     });
   }
@@ -712,7 +736,8 @@ export class Or3NetApp {
         status: 200,
         headers: {
           "Content-Type": file.entry.mime_type ?? "text/plain; charset=utf-8",
-          "Cache-Control": "no-store",
+          "Cache-Control": NO_STORE_CACHE_CONTROL,
+          "X-Content-Type-Options": "nosniff",
         },
       });
     }
@@ -736,7 +761,7 @@ export class Or3NetApp {
       throw new HttpError(403, "workspace mismatch", { code: platformErrorCodes.authWorkspaceMismatch });
     }
     if (!hasScope(principal, requiredScope)) {
-      throw new HttpError(403, "missing required scope");
+      throw new HttpError(403, "missing required scope", { code: platformErrorCodes.authInsufficientScope });
     }
     return principal;
   }
@@ -830,7 +855,8 @@ const htmlResponse = (html: string): Response =>
     status: 200,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
+      "Cache-Control": NO_STORE_CACHE_CONTROL,
+      "X-Content-Type-Options": "nosniff",
     },
   });
 
@@ -911,30 +937,14 @@ const ensureLaunchableNode = (node: { status: string; health_status: string }): 
 const buildServiceLaunchScope = (workspaceId: string, nodeId: string, serviceId: string): string =>
   `service:${workspaceId}:${nodeId}:${serviceId}`;
 
-const readJsonBody = async (request: Request): Promise<unknown> => {
-  try {
-    return await request.json();
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new HttpError(400, "invalid JSON body", { code: platformErrorCodes.inputMalformedBody });
-    }
-    throw error;
-  }
-};
+const readJsonBody = async (request: Request, maxBytes = MAX_PREVIEW_BODY_BYTES): Promise<unknown> => parseJsonBody(await readTextBody(request, maxBytes));
 
-const readOptionalJson = async (request: Request): Promise<unknown> => {
-  const text = await request.text();
+const readOptionalJson = async (request: Request, maxBytes = MAX_PREVIEW_LAUNCH_BODY_BYTES): Promise<unknown> => {
+  const text = await readTextBody(request, maxBytes);
   if (text.trim() === "") {
     return {};
   }
-  try {
-    return JSON.parse(text) as unknown;
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new HttpError(400, "invalid JSON body", { code: platformErrorCodes.inputMalformedBody });
-    }
-    throw error;
-  }
+  return parseJsonBody(text);
 };
 
 const parseJobStatusFilter = (value: string | null): "running" | "terminal" | "all" | undefined => {
@@ -964,6 +974,9 @@ const parsePositiveIntegerQuery = (value: string | null): number | undefined => 
   }
   return parsed;
 };
+
+const clampLimit = (value: number | undefined, max: number): number | undefined =>
+  value === undefined ? undefined : Math.min(value, max);
 
 const toApiKeyResponse = (record: ReturnType<AuthService["listApiKeys"]>[number]): Record<string, unknown> => ({
   api_key_id: record.api_key_id,
@@ -1043,7 +1056,7 @@ export const handleAppRequest = async (app: Or3NetApp, request: Request): Promis
       });
     }
     return errorResponse({
-      error: error instanceof Error ? error.message : "internal server error",
+      error: "internal server error",
       status: 500,
       code: platformErrorCodes.serverInternal,
       request_id: requestId,
@@ -1125,21 +1138,17 @@ const createRoute = (pathname: string, methods: Record<string, RouteHandler>): R
   methods: new Map(Object.entries(methods)),
 });
 
-const readRequiredJsonPayload = async <T>(request: Request, schema: z.ZodType<T>): Promise<{ parsed: T; fingerprint: string }> => {
-  const text = await request.text();
+const readRequiredJsonPayload = async <T>(
+  request: Request,
+  schema: z.ZodType<T>,
+  maxBytes: number,
+): Promise<{ parsed: T; fingerprint: string }> => {
+  const text = await readTextBody(request, maxBytes);
   if (text.trim() === "") {
     throw new HttpError(400, "invalid JSON body", { code: platformErrorCodes.inputMalformedBody });
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text) as unknown;
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new HttpError(400, "invalid JSON body", { code: platformErrorCodes.inputMalformedBody });
-    }
-    throw error;
-  }
+  const parsed = parseJsonBody(text);
 
   return {
     parsed: schema.parse(parsed),
@@ -1157,3 +1166,65 @@ const toSandboxRequestContext = (auditContext: AuditContext): SandboxRequestCont
   requestId: auditContext.request_id,
   workspaceId: auditContext.workspace_id,
 });
+
+const readTextBody = async (request: Request, maxBytes: number): Promise<string> => {
+  const body = request.body as (AsyncIterable<Uint8Array> | null);
+  if (body === null) {
+    return "";
+  }
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  for await (const chunk of body) {
+    totalBytes += chunk.byteLength;
+    if (totalBytes > maxBytes) {
+      throw new HttpError(413, "request body too large", { code: platformErrorCodes.inputMalformedBody });
+    }
+    chunks.push(chunk);
+  }
+
+  const merged = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return new TextDecoder().decode(merged);
+};
+
+const parseJsonBody = (text: string): unknown => {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new HttpError(400, "invalid JSON body", { code: platformErrorCodes.inputMalformedBody });
+    }
+    throw error;
+  }
+};
+
+const resolvePublicBaseUrl = (configuredPublicBaseUrl: string | undefined, requestUrl: string): string => {
+  if (configuredPublicBaseUrl !== undefined && configuredPublicBaseUrl.trim() !== "") {
+    return normalizePublicBaseUrl(configuredPublicBaseUrl);
+  }
+
+  const requestOrigin = new URL(requestUrl).origin;
+  const parsedOrigin = new URL(requestOrigin);
+  if (
+    (parsedOrigin.protocol === "http:" || parsedOrigin.protocol === "https:")
+    && DEFAULT_TRUSTED_REQUEST_ORIGIN_HOSTS.has(parsedOrigin.hostname)
+  ) {
+    return parsedOrigin.origin;
+  }
+
+  return DEFAULT_PUBLIC_BASE_URL;
+};
+
+const normalizePublicBaseUrl = (value: string): string => {
+  const parsed = new URL(value);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("publicBaseUrl must use http or https");
+  }
+  return parsed.origin;
+};

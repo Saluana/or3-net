@@ -84,6 +84,7 @@ class FakeInternClient implements InternClient {
 class FakeRuntimeAdapter implements RuntimeAdapter {
   public readonly manifest: RuntimeAdapterManifest;
   public readonly files = new Map<string, Map<string, string>>();
+  public lastLogsInput: ({ workspace_id: string } & RuntimeGetLogsInput) | null = null;
   private readonly states = new Map<string, RuntimeAdapterSessionHandle["status"]>();
 
   public constructor(capabilities: string[]) {
@@ -207,7 +208,7 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
   }
 
   public getLogs(input: { workspace_id: string } & RuntimeGetLogsInput): Promise<RuntimeLogsResult> {
-    void input.workspace_id;
+    this.lastLogsInput = input;
     return Promise.resolve({
       chunks: [{ stream: "stdout", message: `logs:${input.session_ref}` }],
     });
@@ -383,10 +384,11 @@ describe("phase 6 runtime api", () => {
 
     const logsResponse = await handleAppRequest(
       app,
-      new Request(`http://or3.test/v1/workspaces/ws_test/runtime-sessions/${sessionId}/logs`, { headers: authHeaders }),
+      new Request(`http://or3.test/v1/workspaces/ws_test/runtime-sessions/${sessionId}/logs?limit=999999`, { headers: authHeaders }),
     );
     const logsPayload = (await logsResponse.json()) as { chunks: { message: string }[] };
     expect(logsPayload.chunks[0]?.message).toContain(sessionId);
+    expect(runtimeAdapter.lastLogsInput?.limit).toBe(500);
 
     const copyInResponse = await handleAppRequest(
       app,
@@ -534,6 +536,40 @@ describe("phase 6 runtime api", () => {
     expect(payload.code).toBe("runtime.unsupported_capability");
     expect(payload.request_id).toBe("req_rt_unsupported");
     expect(payload.error).toContain("copy-in");
+  });
+
+  test("rejects oversized runtime copy-in bodies", async () => {
+    const token = await createToken(["runtime-sessions:read", "runtime-sessions:write"]);
+    const authHeaders = { Authorization: `Bearer ${token}` };
+
+    const createResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+    );
+    const createPayload = (await createResponse.json()) as { session: { session_id: string } };
+
+    const response = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/runtime-sessions/${createPayload.session.session_id}/files:copy-in`, {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destination_path: "/tmp/huge.txt",
+          content_text: "x".repeat(5 * 1024 * 1024),
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual(expect.objectContaining({
+      error: "request body too large",
+      code: "input.malformed_body",
+      status: 413,
+    }));
   });
 
   test("keeps existing sessions, nodes, and jobs routes working", async () => {

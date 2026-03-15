@@ -19,6 +19,12 @@ class StaticSessionProofValidator implements SessionProofValidator {
   }
 }
 
+class ThrowingSessionProofValidator implements SessionProofValidator {
+  public validateSessionProof(): Promise<{ user_id: string; workspace_id: string; scopes: string[] }> {
+    return Promise.reject(new Error("session proof backend exploded"));
+  }
+}
+
 class FakeInternClient implements InternClient {
   public abortCount = 0;
   private readonly abortSignals = new Map<string, () => void>();
@@ -519,6 +525,138 @@ describe("phase 2 host API", () => {
       code: "input.malformed_body",
       status: 400,
       request_id: "req_malformed_json",
+    });
+  });
+
+  test("rejects oversized auth exchange bodies with a stable 413 envelope", async () => {
+    const response = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/auth/exchange", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Request-Id": "req_auth_too_large",
+        },
+        body: JSON.stringify({
+          provider: "test",
+          workspace_id: "ws_test",
+          session_proof: { blob: "x".repeat(140 * 1024) },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: "request body too large",
+      code: "input.malformed_body",
+      status: 413,
+      request_id: "req_auth_too_large",
+    });
+  });
+
+  test("rejects oversized job creation bodies", async () => {
+    const { api_key: apiKey } = await authService.createApiKey({
+      workspace_id: "ws_test",
+      name: "writer",
+      scopes: ["jobs:write"],
+    });
+
+    const response = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/jobs", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_key: "svc:large",
+          message: "x".repeat(300 * 1024),
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual(expect.objectContaining({
+      error: "request body too large",
+      code: "input.malformed_body",
+      status: 413,
+    }));
+  });
+
+  test("caps session list queries at 100 items", async () => {
+    for (let index = 0; index < 150; index += 1) {
+      database.workspace("ws_test").saveNetworkSession({
+        network_session_id: `sess_${String(index)}`,
+        client_kind: "or3-chat",
+        client_session_id: `thread_${String(index)}`,
+        intern_session_key: `svc:sess_${String(index)}`,
+        status: "active",
+        created_at: `2024-01-01T00:00:${String(index % 60).padStart(2, "0")}.000Z`,
+        updated_at: `2024-01-01T00:01:${String(index % 60).padStart(2, "0")}.000Z`,
+        last_activity_at: `2024-01-01T00:02:${String(index % 60).padStart(2, "0")}.000Z`,
+      });
+    }
+
+    const tokenResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/auth/exchange", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "test",
+          session_proof: { session: "ok" },
+          workspace_id: "ws_test",
+        }),
+      }),
+    );
+    const tokenPayload = (await tokenResponse.json()) as { token: string };
+
+    const response = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/sessions?limit=999999", {
+        headers: { Authorization: `Bearer ${tokenPayload.token}` },
+      }),
+    );
+    const payload = (await response.json()) as { items: { network_session_id: string }[] };
+
+    expect(response.status).toBe(200);
+    expect(payload.items).toHaveLength(100);
+  });
+
+  test("sanitizes unexpected 500 errors", async () => {
+    const explodingApp = new Or3NetApp({
+      database,
+      authService: new AuthService({
+        secret: "phase2-secret",
+        database,
+        sessionProofValidator: new ThrowingSessionProofValidator(),
+      }),
+      localJobService: new LocalJobService({ database, internClient }),
+    });
+
+    const response = await handleAppRequest(
+      explodingApp,
+      new Request("http://or3.test/v1/auth/exchange", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Request-Id": "req_internal_sanitized",
+        },
+        body: JSON.stringify({
+          provider: "test",
+          session_proof: { session: "ok" },
+          workspace_id: "ws_test",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "internal server error",
+      code: "server.internal",
+      status: 500,
+      request_id: "req_internal_sanitized",
     });
   });
 

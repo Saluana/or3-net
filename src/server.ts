@@ -52,6 +52,7 @@ export interface ServerOptions {
   readonly database?: ControlPlaneDatabase;
   readonly authService: AuthService;
   readonly localJobService: LocalJobService;
+  readonly publicBaseUrl?: string;
   readonly runtimeRegistry?: RuntimeRegistry;
   readonly runtimeSessionService?: RuntimeSessionService;
   readonly leaseScheduler?: LeaseScheduler;

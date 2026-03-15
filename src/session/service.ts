@@ -156,8 +156,8 @@ export class SessionBindingService {
    * Purpose:
    * Lists persisted network-session bindings for a workspace.
    */
-  public listBindings(workspaceId: string): StoredNetworkSession[] {
-    return this.database.workspace(workspaceId).listNetworkSessions();
+  public listBindings(workspaceId: string, input: { limit?: number } = {}): StoredNetworkSession[] {
+    return this.database.workspace(workspaceId).listNetworkSessions(input);
   }
 
   /**

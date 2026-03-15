@@ -235,13 +235,13 @@ export class LocalJobService {
   }
 
   /** Purpose: Lists workspace jobs with optional status and session filtering. */
-  public listJobs(workspaceId: string, input: { status?: "running" | "terminal" | "all"; network_session_id?: string } = {}): StoredJobWithDiagnostics[] {
-    return this.options.database.workspace(workspaceId).listJobsByFilter(input.status, input.network_session_id);
+  public listJobs(workspaceId: string, input: { status?: "running" | "terminal" | "all"; network_session_id?: string; limit?: number } = {}): StoredJobWithDiagnostics[] {
+    return this.options.database.workspace(workspaceId).listJobsByFilter(input.status, input.network_session_id, input.limit);
   }
 
   /** Purpose: Lists resolved network sessions known to the local job service. */
-  public listSessions(workspaceId: string): StoredNetworkSession[] {
-    return this.sessionBindingService.listBindings(workspaceId);
+  public listSessions(workspaceId: string, input: { limit?: number } = {}): StoredNetworkSession[] {
+    return this.sessionBindingService.listBindings(workspaceId, input);
   }
 
   /** Purpose: Fetches a single resolved network session. */
@@ -250,13 +250,13 @@ export class LocalJobService {
   }
 
   /** Purpose: Lists jobs associated with a single network session. */
-  public listSessionJobs(workspaceId: string, sessionId: string): StoredJobWithDiagnostics[] {
-    return this.options.database.workspace(workspaceId).listJobsByFilter("all", sessionId);
+  public listSessionJobs(workspaceId: string, sessionId: string, input: { limit?: number } = {}): StoredJobWithDiagnostics[] {
+    return this.options.database.workspace(workspaceId).listJobsByFilter("all", sessionId, input.limit);
   }
 
   /** Purpose: Lists persisted job events associated with a network session. */
-  public listSessionEvents(workspaceId: string, sessionId: string): StoredJobEvent[] {
-    return this.options.database.workspace(workspaceId).listJobEvents({ network_session_id: sessionId });
+  public listSessionEvents(workspaceId: string, sessionId: string, input: { limit?: number } = {}): StoredJobEvent[] {
+    return this.options.database.workspace(workspaceId).listJobEvents({ network_session_id: sessionId, ...(input.limit === undefined ? {} : { limit: input.limit }) });
   }
 
   /** Purpose: Opens an SSE stream for a job after confirming it exists. */
