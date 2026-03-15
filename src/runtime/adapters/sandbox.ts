@@ -233,6 +233,38 @@ export class SandboxRuntimeAdapter implements RuntimeAdapter {
     }
   }
 
+  public getWorkspaceStageTransportCapabilities(): { archive: boolean; file_api: boolean } {
+    return { archive: true, file_api: true };
+  }
+
+  public async importWorkspaceArchive(input: {
+    workspace_id: string;
+    session_ref: string;
+    archive_bytes: Uint8Array;
+  }): Promise<{ bytes_transferred: number }> {
+    void input.workspace_id;
+    try {
+      await this.options.sandboxClient.importWorkspaceArchive(input.session_ref, input.archive_bytes);
+      return { bytes_transferred: input.archive_bytes.byteLength };
+    } catch (error: unknown) {
+      throw mapSandboxError(error, "copy_failed");
+    }
+  }
+
+  public async exportWorkspaceArchive(input: {
+    workspace_id: string;
+    session_ref: string;
+    paths: string[];
+  }): Promise<{ archive_bytes: Uint8Array; bytes_transferred: number }> {
+    void input.workspace_id;
+    try {
+      const archiveBytes = await this.options.sandboxClient.exportWorkspaceArchive(input.session_ref, { paths: input.paths });
+      return { archive_bytes: archiveBytes, bytes_transferred: archiveBytes.byteLength };
+    } catch (error: unknown) {
+      throw mapSandboxError(error, "copy_failed");
+    }
+  }
+
   private async collectExecResult(
     sessionRef: string,
     request: RuntimeExecutionRequest,

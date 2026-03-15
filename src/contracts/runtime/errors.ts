@@ -14,6 +14,10 @@ export const runtimeErrorCodeValues = [
   "exec_timeout",
   "copy_failed",
   "log_unavailable",
+  "stale_host_write_conflict",
+  "unsupported_staging_transport",
+  "workspace_root_missing",
+  "read_only_commit_denied",
   "adapter_internal",
 ] as const;
 
@@ -40,6 +44,10 @@ const runtimeErrorCodeToPlatformCode: Record<RuntimeErrorCode, (typeof platformE
   exec_timeout: platformErrorCodes.runtimeExecTimeout,
   copy_failed: platformErrorCodes.serverInternal,
   log_unavailable: platformErrorCodes.serverUnavailable,
+  stale_host_write_conflict: platformErrorCodes.resourceConflict,
+  unsupported_staging_transport: platformErrorCodes.inputInvalidParameter,
+  workspace_root_missing: platformErrorCodes.inputInvalidParameter,
+  read_only_commit_denied: platformErrorCodes.runtimePolicyDenied,
   adapter_internal: platformErrorCodes.serverInternal,
 };
 
@@ -53,6 +61,10 @@ const runtimeErrorCodeToStatus: Record<RuntimeErrorCode, number> = {
   exec_timeout: 504,
   copy_failed: 500,
   log_unavailable: 503,
+  stale_host_write_conflict: 409,
+  unsupported_staging_transport: 400,
+  workspace_root_missing: 400,
+  read_only_commit_denied: 403,
   adapter_internal: 500,
 };
 

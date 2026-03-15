@@ -24,6 +24,7 @@ import { SandboxRequestError } from "../../../sdk/sandbox/types.ts";
 
 class FakeSandboxClient implements SandboxClient {
   public readonly writes: { sandboxId: string; request: SandboxWriteFileRequest }[] = [];
+  public readonly importedArchives: { sandboxId: string; bytes: Uint8Array }[] = [];
   public healthError: Error | null = null;
   public execEventsFactory: ((request: SandboxExecRequest) => SandboxExecEvent[]) | null = null;
 
@@ -89,6 +90,14 @@ class FakeSandboxClient implements SandboxClient {
     void sandboxId;
     void path;
     return Promise.resolve();
+  }
+  public importWorkspaceArchive(sandboxId: string, archive: Uint8Array): Promise<void> {
+    this.importedArchives.push({ sandboxId, bytes: archive });
+    return Promise.resolve();
+  }
+  public exportWorkspaceArchive(sandboxId: string): Promise<Uint8Array> {
+    void sandboxId;
+    return Promise.resolve(new Uint8Array([1, 2, 3]));
   }
   public createTunnel(sandboxId: string, request: CreateTunnelRequest): Promise<SandboxTunnel> {
     void sandboxId;
@@ -202,6 +211,27 @@ describe("sandbox runtime adapter", () => {
     const adapter = new SandboxRuntimeAdapter({ sandboxClient: client });
 
     await expectRuntimeError(adapter.health(), "adapter_unavailable");
+  });
+
+  test("workspace archive helpers proxy to sandbox client", async () => {
+    const client = new FakeSandboxClient();
+    const adapter = new SandboxRuntimeAdapter({ sandboxClient: client });
+
+    const imported = await adapter.importWorkspaceArchive({
+      workspace_id: "ws_test",
+      session_ref: "sbx_1",
+      archive_bytes: new Uint8Array([7, 8, 9]),
+    });
+    const exported = await adapter.exportWorkspaceArchive({
+      workspace_id: "ws_test",
+      session_ref: "sbx_1",
+      paths: ["README.md"],
+    });
+
+    expect(imported.bytes_transferred).toBe(3);
+    expect(client.importedArchives[0]?.sandboxId).toBe("sbx_1");
+    expect(exported.bytes_transferred).toBe(3);
+    expect([...exported.archive_bytes]).toEqual([1, 2, 3]);
   });
 });
 

@@ -9,7 +9,13 @@ import {
   runtimeSessionModeSchema,
   runtimeTrustTierSchema,
 } from "./manifest.ts";
-import { runtimeSessionStateSchema } from "./sessions.ts";
+import {
+  runtimeSessionStateSchema,
+  runtimeWorkspaceStageSpecSchema,
+  runtimeWorkspaceStageTransportSchema,
+  runtimeWorkspaceStagingStatusSchema,
+  workspaceCommitResultSchema,
+} from "./sessions.ts";
 
 export const runtimeHealthStatusValues = ["unknown", "healthy", "degraded", "unavailable"] as const;
 export const runtimeHealthStatusSchema = z.enum(runtimeHealthStatusValues);
@@ -61,6 +67,12 @@ export const runtimeSessionDescriptorSchema = z.object({
   created_at: isoDateTimeSchema,
   updated_at: isoDateTimeSchema,
   destroyed_at: isoDateTimeSchema.optional(),
+  workspace_stage: runtimeWorkspaceStageSpecSchema.optional(),
+  host_workspace_root: nonEmptyStringSchema.optional(),
+  workspace_stage_mode: z.enum(["read_only", "read_write"]).optional(),
+  workspace_stage_transport: runtimeWorkspaceStageTransportSchema.optional(),
+  staging_status: runtimeWorkspaceStagingStatusSchema.default("none"),
+  last_commit: workspaceCommitResultSchema.optional(),
   error: runtimeErrorEnvelopeSchema.optional(),
 });
 

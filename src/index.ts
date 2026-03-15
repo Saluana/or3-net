@@ -19,3 +19,4 @@ export * from "./scheduler/warmpool.ts";
 export * from "./session/index.ts";
 export * from "./server.ts";
 export * from "./workspace/files.ts";
+export * from "./workspace/host-staging.ts";

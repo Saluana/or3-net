@@ -234,6 +234,12 @@ describe("HTTP SDK clients", () => {
       if (url.pathname.endsWith("/files/workspace.txt") && request.method === "GET") {
         return Promise.resolve(new Response(JSON.stringify({ path: "/workspace.txt", content: "hello", encoding: "utf-8" }), { status: 200, headers: { "Content-Type": "application/json" } }));
       }
+      if (url.pathname.endsWith("/workspace-import") && request.method === "POST") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.pathname.endsWith("/workspace-export") && request.method === "POST") {
+        return Promise.resolve(new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "Content-Type": "application/gzip" } }));
+      }
       if (url.pathname.endsWith("/files/workspace") && request.method === "POST") {
         return Promise.resolve(new Response(null, { status: 204 }));
       }
@@ -268,6 +274,8 @@ describe("HTTP SDK clients", () => {
     const file = await client.readFile("sbx_1", "/workspace.txt");
     expect(file.content).toBe("hello");
     await client.mkdir("sbx_1", "/workspace");
+    await client.importWorkspaceArchive("sbx_1", new Uint8Array([7, 8, 9]));
+    expect([...await client.exportWorkspaceArchive("sbx_1", { paths: ["README.md"] })]).toEqual([1, 2, 3]);
     const tunnel = await client.createTunnel("sbx_1", { target_port: 3000, protocol: "http", auth_mode: "token", visibility: "private" });
     const signedUrl = await client.createSignedTunnelUrl("tun_1", { path: "/", ttl_seconds: 300 });
     expect(await client.runtimeHealth()).toEqual({ status: "ok" });
@@ -280,6 +288,8 @@ describe("HTTP SDK clients", () => {
     expect(tunnel).toEqual({ id: "tun_1", sandbox_id: "sbx_1", target_port: 3000, endpoint: "https://sandbox.test/v1/tunnels/tun_1/proxy", auth_mode: "token", visibility: "private" });
     expect(signedUrl).toEqual({ url: "https://sandbox.test/v1/tunnels/tun_1/proxy?or3_sig=abc", expires_at: "2099-01-01T00:00:00.000Z" });
     expect(requests.some((request) => request.url.includes("/v1/sandboxes/sbx_1/files/workspace.txt") && request.method === "GET")).toBeTrue();
+    expect(requests.some((request) => request.url.includes("/v1/sandboxes/sbx_1/workspace-import") && request.method === "POST")).toBeTrue();
+    expect(requests.some((request) => request.url.includes("/v1/sandboxes/sbx_1/workspace-export") && request.method === "POST")).toBeTrue();
     expect(requests.some((request) => request.url.includes("/v1/sandboxes/sbx_1/tunnels") && request.method === "POST")).toBeTrue();
     expect(requests.some((request) => request.url.includes("/v1/tunnels/tun_1/signed-url") && request.method === "POST")).toBeTrue();
     expect(requests.some((request) => request.url.includes("/v1/runtime/health"))).toBeTrue();

@@ -23,6 +23,7 @@ import { SandboxRequestError } from "./types.ts";
 interface SandboxRequestInit {
   readonly method: string;
   readonly body?: unknown;
+  readonly rawBody?: ArrayBuffer | Blob | FormData | string | Uint8Array | URLSearchParams;
   readonly headers?: Record<string, string>;
   readonly requestContext?: SandboxRequestContext | undefined;
 }
@@ -131,6 +132,27 @@ export class HttpSandboxClient implements SandboxClient {
     });
   }
 
+  public async importWorkspaceArchive(sandboxId: string, archive: Uint8Array, requestContext?: SandboxRequestContext): Promise<void> {
+    await this.request(`/v1/sandboxes/${sandboxId}/workspace-import`, {
+      method: "POST",
+      rawBody: archive,
+      headers: { "Content-Type": "application/gzip" },
+      requestContext,
+    });
+  }
+
+  public async exportWorkspaceArchive(
+    sandboxId: string,
+    request: { paths?: string[] } = {},
+    requestContext?: SandboxRequestContext,
+  ): Promise<Uint8Array> {
+    return this.requestBytes(`/v1/sandboxes/${sandboxId}/workspace-export`, {
+      method: "POST",
+      body: request,
+      requestContext,
+    });
+  }
+
   public async createTunnel(sandboxId: string, request: CreateTunnelRequest, requestContext?: SandboxRequestContext): Promise<SandboxTunnel> {
     return this.requestJson<SandboxTunnel>(`/v1/sandboxes/${sandboxId}/tunnels`, { method: "POST", body: request, requestContext });
   }
@@ -169,21 +191,22 @@ export class HttpSandboxClient implements SandboxClient {
 
   private async request(path: string, init: SandboxRequestInit): Promise<Response> {
     const fetchImpl = this.options.fetch ?? fetch;
+    const hasRawBody = init.rawBody !== undefined;
     const requestHeaders: Record<string, string> = {
-		Authorization: `Bearer ${this.options.token}`,
-		...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
-		...(init.headers ?? {}),
-	};
-	if (init.requestContext?.requestId !== undefined && init.requestContext.requestId.trim() !== "") {
-		requestHeaders["X-Request-Id"] = init.requestContext.requestId;
-	}
-	if (init.requestContext?.workspaceId !== undefined && init.requestContext.workspaceId.trim() !== "") {
-		requestHeaders["X-Workspace-Id"] = init.requestContext.workspaceId;
-	}
+    Authorization: `Bearer ${this.options.token}`,
+    ...(init.body === undefined || hasRawBody ? {} : { "Content-Type": "application/json" }),
+    ...(init.headers ?? {}),
+  };
+  if (init.requestContext?.requestId !== undefined && init.requestContext.requestId.trim() !== "") {
+    requestHeaders["X-Request-Id"] = init.requestContext.requestId;
+  }
+  if (init.requestContext?.workspaceId !== undefined && init.requestContext.workspaceId.trim() !== "") {
+    requestHeaders["X-Workspace-Id"] = init.requestContext.workspaceId;
+  }
     const response = await fetchImpl(new URL(path, this.options.baseUrl), {
       method: init.method,
       headers: requestHeaders,
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+    ...(hasRawBody ? { body: init.rawBody } : init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
     });
     if (!response.ok) {
       throw await toSandboxRequestError(response, "Sandbox request failed");
@@ -193,6 +216,11 @@ export class HttpSandboxClient implements SandboxClient {
 
   private async requestJson<T>(path: string, init: SandboxRequestInit): Promise<T> {
     return (await (await this.request(path, init)).json()) as T;
+  }
+
+  private async requestBytes(path: string, init: SandboxRequestInit): Promise<Uint8Array> {
+    const buffer = await (await this.request(path, init)).arrayBuffer();
+    return new Uint8Array(buffer);
   }
 }
 

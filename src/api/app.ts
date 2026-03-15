@@ -156,6 +156,15 @@ export class Or3NetApp {
       createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/destroy", {
         POST: (request, groups) => this.handleDestroyRuntimeSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
       }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/commit", {
+        POST: (request, groups) => this.handleCommitRuntimeSessionWorkspace(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/discard", {
+        POST: (request, groups) => this.handleDiscardRuntimeSessionWorkspace(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/staging", {
+        GET: (request, groups) => this.handleGetRuntimeSessionStaging(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
       createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/logs", {
         GET: (request, groups, url) => this.handleGetRuntimeSessionLogs(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId"), url),
       }),
@@ -442,6 +451,24 @@ export class Or3NetApp {
     const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
     const session = await requireRuntimeSessionService(this.services.runtimeSessionService).destroySession(principal.workspace_id, sessionId);
     return jsonResponse(200, { session });
+  }
+
+  private async handleCommitRuntimeSessionWorkspace(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const result = await requireRuntimeSessionService(this.services.runtimeSessionService).commitWorkspaceStage(principal.workspace_id, sessionId);
+    return jsonResponse(200, { commit: result });
+  }
+
+  private async handleDiscardRuntimeSessionWorkspace(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const session = await requireRuntimeSessionService(this.services.runtimeSessionService).discardWorkspaceStage(principal.workspace_id, sessionId);
+    return jsonResponse(200, { session });
+  }
+
+  private async handleGetRuntimeSessionStaging(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:read");
+    const staging = await requireRuntimeSessionService(this.services.runtimeSessionService).getWorkspaceStageStatus(principal.workspace_id, sessionId);
+    return jsonResponse(200, { staging });
   }
 
   private async handleGetRuntimeSessionLogs(request: Request, workspaceId: string, sessionId: string, url: URL): Promise<Response> {

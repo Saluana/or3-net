@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import type { SessionProofValidator } from "../src/auth/service.ts";
@@ -79,7 +83,7 @@ class FakeInternClient implements InternClient {
 
 class FakeRuntimeAdapter implements RuntimeAdapter {
   public readonly manifest: RuntimeAdapterManifest;
-  private readonly files = new Map<string, Map<string, string>>();
+  public readonly files = new Map<string, Map<string, string>>();
   private readonly states = new Map<string, RuntimeAdapterSessionHandle["status"]>();
 
   public constructor(capabilities: string[]) {
@@ -220,10 +224,26 @@ describe("phase 6 runtime api", () => {
   let database = createControlPlaneDatabase();
   let authService: AuthService;
   let app: Or3NetApp;
+  let hostWorkspaceRoot: string;
+  let stagingRoot: string;
+  let runtimeAdapter: FakeRuntimeAdapter;
 
   beforeEach(() => {
     database = createControlPlaneDatabase();
-    database.saveWorkspace({ workspace_id: "ws_test", name: "Test Workspace", created_at: "2024-01-01T00:00:00.000Z" });
+    hostWorkspaceRoot = mkdtempSync(path.join(tmpdir(), "or3-net-app-stage-"));
+    stagingRoot = mkdtempSync(path.join(tmpdir(), "or3-net-phase6-stage-"));
+    writeFileSync(path.join(hostWorkspaceRoot, "notes.txt"), "hello", "utf8");
+    database.saveWorkspace({
+      workspace_id: "ws_test",
+      name: "Test Workspace",
+      created_at: "2024-01-01T00:00:00.000Z",
+      config: {
+        host_workspace: {
+          root: hostWorkspaceRoot,
+          enabled: true,
+        },
+      },
+    });
 
     authService = new AuthService({
       secret: "phase6-secret",
@@ -231,11 +251,14 @@ describe("phase 6 runtime api", () => {
       sessionProofValidator: new StaticSessionProofValidator(),
     });
 
-    app = createRuntimeApp({ adapter: new FakeRuntimeAdapter(["exec", "stop", "copy-in", "copy-out", "log-stream"]) });
+    runtimeAdapter = new FakeRuntimeAdapter(["exec", "stop", "copy-in", "copy-out", "log-stream"]);
+    app = createRuntimeApp({ adapter: runtimeAdapter });
   });
 
   afterEach(() => {
     database.close();
+    rmSync(hostWorkspaceRoot, { recursive: true, force: true });
+    rmSync(stagingRoot, { recursive: true, force: true });
   });
 
   test("all runtime routes require authentication", async () => {
@@ -249,6 +272,9 @@ describe("phase 6 runtime api", () => {
       new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions/sess_1/exec", { method: "POST", body: JSON.stringify({ command: "echo", args: [], env: {}, background: false }), headers: { "Content-Type": "application/json" } }),
       new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions/sess_1/stop", { method: "POST" }),
       new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions/sess_1/destroy", { method: "POST" }),
+      new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions/sess_1/commit", { method: "POST" }),
+      new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions/sess_1/discard", { method: "POST" }),
+      new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions/sess_1/staging"),
       new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions/sess_1/logs"),
       new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions/sess_1/files:copy-in", { method: "POST", body: JSON.stringify({ destination_path: "/tmp/x", content_text: "hi" }), headers: { "Content-Type": "application/json" } }),
       new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions/sess_1/files:copy-out", { method: "POST", body: JSON.stringify({ source_path: "/tmp/x", encoding: "text" }), headers: { "Content-Type": "application/json" } }),
@@ -403,6 +429,61 @@ describe("phase 6 runtime api", () => {
     );
     const destroyPayload = (await destroyResponse.json()) as { session: { status: string } };
     expect(destroyPayload.session.status).toBe("destroyed");
+  });
+
+  test("supports staged runtime session commit, discard, and status routes", async () => {
+    const token = await createToken(["runtime-sessions:read", "runtime-sessions:write"]);
+    const authHeaders = { Authorization: `Bearer ${token}` };
+
+    const createResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspace_stage: {
+            source_kind: "host",
+            paths: ["notes.txt"],
+            mode: "read_write",
+            transport: "auto",
+          },
+          workspace_mode: "read_write",
+        }),
+      }),
+    );
+    const createPayload = (await createResponse.json()) as { session: { session_id: string } };
+    const sessionId = createPayload.session.session_id;
+
+    const stagingResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/runtime-sessions/${sessionId}/staging`, { headers: authHeaders }),
+    );
+    const stagingPayload = (await stagingResponse.json()) as { staging: { selected_paths: string[]; staging_status: string } };
+    expect(stagingPayload.staging.selected_paths).toEqual(["notes.txt"]);
+    expect(stagingPayload.staging.staging_status).toBe("ready");
+
+    runtimeAdapter.files.get(`fake-runtime:${sessionId}`)?.set("/notes.txt", "from-api");
+
+    const commitResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/runtime-sessions/${sessionId}/commit`, {
+        method: "POST",
+        headers: authHeaders,
+      }),
+    );
+    const commitPayload = (await commitResponse.json()) as { commit: { status: string; written_paths: string[] } };
+    expect(commitPayload.commit.status).toBe("committed");
+    expect(commitPayload.commit.written_paths).toEqual(["notes.txt"]);
+
+    const discardResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/runtime-sessions/${sessionId}/discard`, {
+        method: "POST",
+        headers: authHeaders,
+      }),
+    );
+    const discardPayload = (await discardResponse.json()) as { session: { staging_status: string } };
+    expect(discardPayload.session.staging_status).toBe("discarded");
   });
 
   test("returns 404 for missing runtime and runtime session", async () => {

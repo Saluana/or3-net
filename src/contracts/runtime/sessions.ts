@@ -15,9 +15,23 @@ export const runtimeSessionStateValues = [
 ] as const;
 
 export const runtimeWorkspaceModeValues = ["none", "read_only", "read_write"] as const;
+export const runtimeWorkspaceStageTransportValues = ["auto", "archive", "file_api"] as const;
+export const runtimeWorkspaceStageSourceKindValues = ["host"] as const;
+export const runtimeWorkspaceStagingStatusValues = [
+  "none",
+  "preparing",
+  "ready",
+  "committing",
+  "conflict",
+  "committed",
+  "discarded",
+  "failed",
+] as const;
 
 export const runtimeSessionStateSchema = z.enum(runtimeSessionStateValues);
 export const runtimeWorkspaceModeSchema = z.enum(runtimeWorkspaceModeValues);
+export const runtimeWorkspaceStageTransportSchema = z.enum(runtimeWorkspaceStageTransportValues);
+export const runtimeWorkspaceStagingStatusSchema = z.enum(runtimeWorkspaceStagingStatusValues);
 
 export const runtimeEnvRefSchema = z.object({
   name: nonEmptyStringSchema,
@@ -58,10 +72,26 @@ export const runtimeArtifactRulesSchema = z.object({
   metadata: jsonObjectSchema.default({}),
 });
 
+export const runtimeWorkspaceStageSpecSchema = z.object({
+  source_kind: z.literal(runtimeWorkspaceStageSourceKindValues[0]),
+  paths: z.array(nonEmptyStringSchema).min(1),
+  mode: z.enum(["read_only", "read_write"]),
+  transport: runtimeWorkspaceStageTransportSchema.default("auto"),
+});
+
+export const workspaceCommitResultSchema = z.object({
+  session_id: nonEmptyStringSchema,
+  status: z.enum(["committed", "conflict", "rejected"]),
+  written_paths: z.array(nonEmptyStringSchema).default([]),
+  deleted_paths: z.array(nonEmptyStringSchema).default([]),
+  conflict_paths: z.array(nonEmptyStringSchema).default([]),
+});
+
 export const runtimeSessionCreateInputSchema = z.object({
   preset_id: nonEmptyStringSchema.optional(),
   required_capabilities: runtimeCapabilitySetSchema.optional(),
   workspace_ref: runtimeWorkspaceRefSchema.optional(),
+  workspace_stage: runtimeWorkspaceStageSpecSchema.optional(),
   workspace_mode: runtimeWorkspaceModeSchema.default("none"),
   network_policy: runtimeNetworkPolicySchema.default({
     internet_access: false,
@@ -83,3 +113,7 @@ export type RuntimeSessionCreateInput = z.infer<typeof runtimeSessionCreateInput
 export type RuntimeSessionState = z.infer<typeof runtimeSessionStateSchema>;
 export type RuntimeWorkspaceMode = z.infer<typeof runtimeWorkspaceModeSchema>;
 export type RuntimeWorkspaceRef = z.infer<typeof runtimeWorkspaceRefSchema>;
+export type RuntimeWorkspaceStageSpec = z.infer<typeof runtimeWorkspaceStageSpecSchema>;
+export type RuntimeWorkspaceStageTransport = z.infer<typeof runtimeWorkspaceStageTransportSchema>;
+export type RuntimeWorkspaceStagingStatus = z.infer<typeof runtimeWorkspaceStagingStatusSchema>;
+export type WorkspaceCommitResult = z.infer<typeof workspaceCommitResultSchema>;

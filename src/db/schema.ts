@@ -144,6 +144,11 @@ export interface RuntimeSessionRow {
   readonly status: string;
   readonly capabilities_json: string;
   readonly config_json: string | null;
+  readonly host_workspace_root: string | null;
+  readonly workspace_stage_mode: string | null;
+  readonly workspace_stage_transport: string | null;
+  readonly staging_status: string | null;
+  readonly last_commit_json: string | null;
   readonly isolation_class: string;
   readonly trust_tier: string;
   readonly error_json: string | null;
@@ -458,6 +463,25 @@ export const schemaMigrations: readonly Migration[] = [
     statements: [
       "CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash)",
       "CREATE INDEX IF NOT EXISTS idx_node_credentials_lookup ON node_credentials(workspace_id, node_id, rotated_at, expires_at)",
+    ],
+  },
+  {
+    version: 8,
+    name: "runtime-session-host-staging",
+    statements: [
+      "ALTER TABLE runtime_sessions ADD COLUMN host_workspace_root TEXT",
+      "ALTER TABLE runtime_sessions ADD COLUMN workspace_stage_mode TEXT",
+      "ALTER TABLE runtime_sessions ADD COLUMN staging_status TEXT",
+      "ALTER TABLE runtime_sessions ADD COLUMN last_commit_json TEXT",
+      "CREATE INDEX IF NOT EXISTS idx_runtime_sessions_workspace_host_root ON runtime_sessions(workspace_id, host_workspace_root)",
+      "CREATE INDEX IF NOT EXISTS idx_runtime_sessions_workspace_stage_status ON runtime_sessions(workspace_id, staging_status)",
+    ],
+  },
+  {
+    version: 9,
+    name: "runtime-session-stage-transport",
+    statements: [
+      "ALTER TABLE runtime_sessions ADD COLUMN workspace_stage_transport TEXT",
     ],
   },
 ];

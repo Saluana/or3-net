@@ -129,6 +129,20 @@ sequenceDiagram
 - No multi-writer merge behavior.
 - Commit is explicit and host-side validated.
 
+### V1 mental model
+
+- The host workspace is canonical.
+- A runtime session receives a staged copy of only the selected paths.
+- Sandbox workspace state is disposable runtime state until an explicit commit succeeds.
+- Runtime artifacts and preview surfaces stay separate from staged host commits.
+
+### Explicit deferrals
+
+- No distributed workspace store or background sync engine.
+- No automatic artifact promotion as part of staged commits.
+- No multi-writer merge workflow beyond conflict detection and rejection.
+- No host-path bind-mount escape hatches through the public sandbox API.
+
 ---
 
 ## Data and persistence

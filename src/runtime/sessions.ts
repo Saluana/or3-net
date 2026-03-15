@@ -1,3 +1,6 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
+
 import type {
   RuntimeAdapter,
   RuntimeCapability,
@@ -10,12 +13,28 @@ import type {
   RuntimeSessionDescriptor,
   RuntimeSessionState,
   RuntimeExecutionHandle,
+  WorkspaceCommitResult,
 } from "../contracts/runtime/index.ts";
 import { RuntimeError, runtimeErrorEnvelopeSchema } from "../contracts/runtime/index.ts";
 import type { ControlPlaneDatabase, StoredRuntimeSession } from "../db/index.ts";
 import { createId } from "../lib/ids.ts";
 import type { RuntimeSelectionService } from "./selection.ts";
 import type { RuntimeRegistry } from "./registry.ts";
+import { resolveHostWorkspaceRoot } from "../workspace/host-staging.ts";
+import {
+  applyWorkspaceStageDiff,
+  clearWorkspaceStage,
+  createWorkspaceArchive,
+  diffWorkspaceStage,
+  ensureWorkspaceStageDir,
+  extractWorkspaceArchive,
+  readBaseManifest,
+  resolveWithinRoot,
+  reconstructExportFromFileApi,
+  scanWorkspaceSelection,
+  selectWorkspaceStageTransport,
+  writeBaseManifest,
+} from "./workspace-stage.ts";
 
 export interface RuntimeSessionListFilter {
   readonly status?: RuntimeSessionState;
@@ -29,12 +48,48 @@ export interface RuntimeSessionReconciliationSummary {
   readonly failed: number;
 }
 
+export interface RuntimeSessionServiceOptions {
+  readonly stagingBaseDir?: string;
+  readonly hostWorkspaceBaseDir?: string;
+}
+
+export interface RuntimeSessionStageStatus {
+  readonly session_id: string;
+  readonly staging_status: RuntimeSessionDescriptor["staging_status"];
+  readonly host_workspace_root?: string;
+  readonly workspace_stage_mode?: RuntimeSessionDescriptor["workspace_stage_mode"];
+  readonly selected_paths: string[];
+  readonly tracked_paths: string[];
+  readonly last_commit?: WorkspaceCommitResult;
+}
+
+interface ArchiveWorkspaceStageAdapter {
+  getWorkspaceStageTransportCapabilities?: () => { archive: boolean; file_api: boolean };
+  importWorkspaceArchive(input: {
+    workspace_id: string;
+    session_ref: string;
+    archive_bytes: Uint8Array;
+  }): Promise<{ bytes_transferred: number }>;
+  exportWorkspaceArchive(input: {
+    workspace_id: string;
+    session_ref: string;
+    paths: string[];
+  }): Promise<{ archive_bytes: Uint8Array; bytes_transferred: number }>;
+}
+
 export class RuntimeSessionService {
+  private readonly stagingBaseDir: string;
+  private readonly hostWorkspaceBaseDir: string;
+
   public constructor(
     private readonly registry: RuntimeRegistry,
     private readonly selection: RuntimeSelectionService,
     private readonly database: ControlPlaneDatabase,
-  ) {}
+    options: RuntimeSessionServiceOptions = {},
+  ) {
+    this.stagingBaseDir = options.stagingBaseDir ?? process.cwd();
+    this.hostWorkspaceBaseDir = options.hostWorkspaceBaseDir ?? process.cwd();
+  }
 
   public async createSession(workspaceId: string, input: RuntimeSessionCreateInput): Promise<RuntimeSessionDescriptor> {
     const config = normalizeConfig(input);
@@ -56,6 +111,12 @@ export class RuntimeSessionService {
     const sessionId = createId("rtsess");
     const store = this.database.workspace(workspaceId);
     const initialCapabilities = selected.node?.capabilities ?? selected.adapter.manifest.capabilities;
+    const workspaceStage = config.workspace_stage;
+    const hostWorkspaceRoot = workspaceStage === undefined ? undefined : this.resolveConfiguredHostWorkspaceRoot(workspaceId);
+
+    if (workspaceStage?.mode === "read_write" && hostWorkspaceRoot !== undefined) {
+      this.ensureNoActiveWriter(store.findActiveRuntimeStageWriter(hostWorkspaceRoot, sessionId), hostWorkspaceRoot);
+    }
 
     store.saveRuntimeSession({
       session_id: sessionId,
@@ -63,6 +124,8 @@ export class RuntimeSessionService {
       status: "creating",
       capabilities: initialCapabilities,
       config,
+      ...(hostWorkspaceRoot === undefined ? {} : { host_workspace_root: hostWorkspaceRoot }),
+      ...(workspaceStage === undefined ? {} : { workspace_stage_mode: workspaceStage.mode, staging_status: "preparing" as const }),
       isolation_class: selected.adapter.manifest.isolation_class,
       trust_tier: selected.adapter.manifest.trust_tier,
       ...(selected.node?.node_id === undefined ? {} : { node_id: selected.node.node_id }),
@@ -84,11 +147,23 @@ export class RuntimeSessionService {
         config,
       });
       const capabilities = handle.capabilities.length > 0 ? handle.capabilities : initialCapabilities;
+      if (workspaceStage !== undefined && hostWorkspaceRoot !== undefined) {
+        const transport = await this.prepareWorkspaceStage({
+          workspaceId,
+          sessionId,
+          adapter: selected.adapter,
+          sessionRef: handle.ref,
+          hostWorkspaceRoot,
+          config,
+        });
+        store.touchRuntimeSession(sessionId, { workspace_stage_transport: transport });
+      }
       const stored = store.touchRuntimeSession(sessionId, {
         adapter_session_ref: handle.ref,
         node_id: handle.node_id ?? selected.node?.node_id ?? null,
         status: handle.status,
         capabilities,
+        ...(workspaceStage === undefined ? {} : { staging_status: handle.status === "ready" ? "ready" as const : "preparing" as const }),
         error: null,
       });
       store.appendRuntimeSessionEvent({
@@ -260,7 +335,96 @@ export class RuntimeSessionService {
       },
     });
 
+    await clearWorkspaceStage(sessionId, this.stagingBaseDir);
+
     return updated.session;
+  }
+
+  public async commitWorkspaceStage(workspaceId: string, sessionId: string): Promise<WorkspaceCommitResult> {
+    const stored = this.requireSession(workspaceId, sessionId);
+    ensureReadySession(stored.session);
+    const workspaceStage = stored.config?.workspace_stage;
+    if (workspaceStage === undefined || stored.session.host_workspace_root === undefined) {
+      throw new RuntimeError("policy_denied", `runtime session ${sessionId} does not have host workspace staging`, {
+        details: { session_id: sessionId },
+      });
+    }
+    if (workspaceStage.mode === "read_only") {
+      throw new RuntimeError("read_only_commit_denied", `runtime session ${sessionId} is read-only`, {
+        details: { session_id: sessionId },
+      });
+    }
+    const hostWorkspaceRoot = stored.session.host_workspace_root;
+    const store = this.database.workspace(workspaceId);
+    store.touchRuntimeSession(sessionId, { staging_status: "committing" });
+    const baseManifest = await readBaseManifest(sessionId, this.stagingBaseDir);
+    const currentHostManifest = await scanWorkspaceSelection(hostWorkspaceRoot, baseManifest.selected_paths);
+    const exportRoot = path.join(await ensureWorkspaceStageDir(sessionId, this.stagingBaseDir), "export");
+    const exportedManifest = await this.exportWorkspaceStageSnapshot({
+      workspaceId,
+      sessionId,
+      stored,
+      baseManifest,
+      exportRoot,
+    });
+    const diff = diffWorkspaceStage(baseManifest, currentHostManifest, exportedManifest);
+    if (diff.conflict_paths.length > 0) {
+      const result = {
+        session_id: sessionId,
+        status: "conflict",
+        written_paths: [],
+        deleted_paths: [],
+        conflict_paths: diff.conflict_paths,
+      } satisfies WorkspaceCommitResult;
+      store.touchRuntimeSession(sessionId, { staging_status: "conflict", last_commit: result });
+      throw new RuntimeError("stale_host_write_conflict", `host workspace changed for ${diff.conflict_paths.join(", ")}`, {
+        details: { session_id: sessionId, conflict_paths: diff.conflict_paths },
+      });
+    }
+    await applyWorkspaceStageDiff(hostWorkspaceRoot, exportRoot, diff, sessionId, this.stagingBaseDir);
+    const result = {
+      session_id: sessionId,
+      status: "committed",
+      written_paths: diff.written_paths,
+      deleted_paths: diff.deleted_paths,
+      conflict_paths: [],
+    } satisfies WorkspaceCommitResult;
+    store.touchRuntimeSession(sessionId, { staging_status: "committed", last_commit: result });
+    store.appendRuntimeSessionEvent({
+      session_id: sessionId,
+      event_type: "workspace.committed",
+      payload: result,
+    });
+    return result;
+  }
+
+  public async discardWorkspaceStage(workspaceId: string, sessionId: string): Promise<RuntimeSessionDescriptor> {
+    const stored = this.requireSession(workspaceId, sessionId);
+    if (stored.config?.workspace_stage === undefined) {
+      return stored.session;
+    }
+    await clearWorkspaceStage(sessionId, this.stagingBaseDir);
+    const updated = this.database.workspace(workspaceId).touchRuntimeSession(sessionId, { staging_status: "discarded" });
+    this.database.workspace(workspaceId).appendRuntimeSessionEvent({
+      session_id: sessionId,
+      event_type: "workspace.discarded",
+      payload: { session_id: sessionId },
+    });
+    return updated.session;
+  }
+
+  public async getWorkspaceStageStatus(workspaceId: string, sessionId: string): Promise<RuntimeSessionStageStatus> {
+    const stored = this.requireSession(workspaceId, sessionId);
+    const manifest = stored.config?.workspace_stage === undefined ? null : await readBaseManifest(sessionId, this.stagingBaseDir);
+    return {
+      session_id: stored.session.session_id,
+      staging_status: stored.session.staging_status,
+      ...(stored.session.host_workspace_root === undefined ? {} : { host_workspace_root: stored.session.host_workspace_root }),
+      ...(stored.session.workspace_stage_mode === undefined ? {} : { workspace_stage_mode: stored.session.workspace_stage_mode }),
+      selected_paths: manifest?.selected_paths ?? [],
+      tracked_paths: manifest?.entries.map((entry) => entry.path) ?? [],
+      ...(stored.session.last_commit === undefined ? {} : { last_commit: stored.session.last_commit }),
+    };
   }
 
   public async getLogs(workspaceId: string, sessionId: string, input: Omit<RuntimeGetLogsInput, "session_ref">): Promise<RuntimeLogsResult> {
@@ -375,6 +539,12 @@ export class RuntimeSessionService {
           summary.recovered += 1;
         }
       }
+
+      for (const entry of store.listRuntimeSessions({ limit: 500 })) {
+        if (entry.session.staging_status === "committing") {
+          store.touchRuntimeSession(entry.session.session_id, { staging_status: "failed" });
+        }
+      }
     }
 
     return summary;
@@ -403,7 +573,128 @@ export class RuntimeSessionService {
     }
     return adapter;
   }
+
+  private resolveConfiguredHostWorkspaceRoot(workspaceId: string): string {
+    const workspace = this.database.getWorkspace(workspaceId);
+    const hostWorkspaceRoot = resolveHostWorkspaceRoot(workspace, { baseDir: this.hostWorkspaceBaseDir });
+    if (hostWorkspaceRoot === null) {
+      throw new RuntimeError("workspace_root_missing", `workspace ${workspaceId} does not have a configured host workspace root`, {
+        details: { workspace_id: workspaceId },
+      });
+    }
+    return hostWorkspaceRoot;
+  }
+
+  private ensureNoActiveWriter(activeWriter: StoredRuntimeSession | null, hostWorkspaceRoot: string): void {
+    if (activeWriter !== null) {
+      throw new RuntimeError("stale_host_write_conflict", `workspace ${hostWorkspaceRoot} already has an active read-write staged session`, {
+        details: { workspace_session_id: activeWriter.session.session_id, host_workspace_root: hostWorkspaceRoot },
+      });
+    }
+  }
+
+  private collectTrackedFilePaths(manifest: Awaited<ReturnType<typeof readBaseManifest>>): string[] {
+    return manifest.entries.filter((entry) => entry.kind === "file").map((entry) => entry.path);
+  }
+
+  private async prepareWorkspaceStage(input: {
+    workspaceId: string;
+    sessionId: string;
+    adapter: RuntimeAdapter;
+    sessionRef: string;
+    hostWorkspaceRoot: string;
+    config: RuntimeSessionCreateInput;
+  }): Promise<"archive" | "file_api"> {
+    const workspaceStage = input.config.workspace_stage;
+    if (workspaceStage === undefined) {
+      return "file_api";
+    }
+    const manifest = await scanWorkspaceSelection(input.hostWorkspaceRoot, workspaceStage.paths);
+    await writeBaseManifest(input.sessionId, manifest, this.stagingBaseDir);
+    const archiveAdapter = asArchiveWorkspaceStageAdapter(input.adapter);
+    const transport = selectWorkspaceStageTransport(workspaceStage.transport, workspaceStage.paths, manifest, {
+      archive: archiveAdapter?.getWorkspaceStageTransportCapabilities?.().archive ?? archiveAdapter !== null,
+      file_api: true,
+    });
+    if (transport === "archive") {
+      if (archiveAdapter === null) {
+        throw new RuntimeError("unsupported_staging_transport", `transport ${transport} is not available for adapter ${input.adapter.manifest.adapter_id}`, {
+          details: { adapter_id: input.adapter.manifest.adapter_id, transport },
+        });
+      }
+      const stageDir = await ensureWorkspaceStageDir(input.sessionId, this.stagingBaseDir);
+      const archivePath = path.join(stageDir, "workspace-import.tar.gz");
+      await createWorkspaceArchive(input.hostWorkspaceRoot, manifest, archivePath);
+      await archiveAdapter.importWorkspaceArchive({
+        workspace_id: input.workspaceId,
+        session_ref: input.sessionRef,
+        archive_bytes: await fs.readFile(archivePath),
+      });
+      return transport;
+    }
+    for (const entry of manifest.entries) {
+      if (entry.kind !== "file") {
+        continue;
+      }
+      const content = await fs.readFile(resolveWithinRoot(input.hostWorkspaceRoot, entry.path), "utf8");
+      await input.adapter.copyIn({
+        workspace_id: input.workspaceId,
+        session_ref: input.sessionRef,
+        destination_path: `/${entry.path}`,
+        content_text: content,
+        overwrite: true,
+      });
+    }
+    return transport;
+  }
+
+  private async exportWorkspaceStageSnapshot(input: {
+    workspaceId: string;
+    sessionId: string;
+    stored: StoredRuntimeSession;
+    baseManifest: Awaited<ReturnType<typeof readBaseManifest>>;
+    exportRoot: string;
+  }): Promise<Awaited<ReturnType<typeof scanWorkspaceSelection>>> {
+    const adapter = this.requireAdapter(input.stored.session.adapter_id);
+    const sessionRef = requireSessionRef(input.stored);
+    const transport = input.stored.session.workspace_stage_transport ?? input.stored.config?.workspace_stage?.transport ?? "file_api";
+    if (transport === "archive") {
+      const archiveAdapter = asArchiveWorkspaceStageAdapter(adapter);
+      if (archiveAdapter === null) {
+        throw new RuntimeError("unsupported_staging_transport", `transport ${transport} is not available for adapter ${input.stored.session.adapter_id}`, {
+          details: { adapter_id: input.stored.session.adapter_id, transport },
+        });
+      }
+      const archivePath = path.join(await ensureWorkspaceStageDir(input.sessionId, this.stagingBaseDir), "workspace-export.tar.gz");
+      const exportResult = await archiveAdapter.exportWorkspaceArchive({
+        workspace_id: input.workspaceId,
+        session_ref: sessionRef,
+        paths: input.baseManifest.selected_paths,
+      });
+      await fs.writeFile(archivePath, exportResult.archive_bytes);
+      await extractWorkspaceArchive(archivePath, input.exportRoot, { max_bytes: 64 * 1024 * 1024, max_files: 10_000 });
+      return await scanWorkspaceSelection(input.exportRoot, input.baseManifest.selected_paths);
+    }
+    const trackedFiles = this.collectTrackedFilePaths(input.baseManifest);
+    return await reconstructExportFromFileApi(input.exportRoot, trackedFiles, async (relativePath) => {
+      try {
+        const transfer = await this.copyOut(input.workspaceId, input.sessionId, { source_path: `/${relativePath}`, encoding: "text" });
+        return transfer.content_text ?? null;
+      } catch (error: unknown) {
+        if (error instanceof RuntimeError && error.code === "copy_failed") {
+          return null;
+        }
+        throw error;
+      }
+    });
+  }
 }
+
+const asArchiveWorkspaceStageAdapter = (adapter: RuntimeAdapter): ArchiveWorkspaceStageAdapter | null =>
+  "importWorkspaceArchive" in adapter && typeof adapter.importWorkspaceArchive === "function" &&
+  "exportWorkspaceArchive" in adapter && typeof adapter.exportWorkspaceArchive === "function"
+    ? (adapter as RuntimeAdapter & ArchiveWorkspaceStageAdapter)
+    : null;
 
 const normalizeConfig = (input: RuntimeSessionCreateInput): RuntimeSessionCreateInput => input;
 

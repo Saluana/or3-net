@@ -403,6 +403,53 @@ describe("control plane database", () => {
     expect(store.getJob("job_1").job.node_id).toBe("node_1");
   });
 
+  test("persists runtime session host-staging metadata", () => {
+    database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
+    const store = database.workspace("ws_alpha");
+
+    store.saveRuntimeSession({
+      session_id: "sess_stage",
+      adapter_id: "fake",
+      adapter_session_ref: "fake:1",
+      status: "ready",
+      capabilities: ["exec", "copy-in", "copy-out"],
+      config: {
+        workspace_stage: {
+          source_kind: "host",
+          paths: ["notes.txt"],
+          mode: "read_write",
+          transport: "auto",
+        },
+        workspace_mode: "read_write",
+        network_policy: { internet_access: false, ingress: "none" },
+        resource_hints: { metadata: {} },
+        persistence_mode: "ephemeral",
+        env_refs: [],
+        secret_refs: [],
+        timeout_rules: {},
+        artifact_rules: { capture_paths: [], push_on_completion: false, metadata: {} },
+      },
+      host_workspace_root: "/tmp/ws-alpha",
+      workspace_stage_mode: "read_write",
+      staging_status: "ready",
+      last_commit: {
+        session_id: "sess_stage",
+        status: "committed",
+        written_paths: ["notes.txt"],
+        deleted_paths: [],
+        conflict_paths: [],
+      },
+      isolation_class: "container",
+      trust_tier: "development",
+    });
+
+    const stored = store.getRuntimeSession("sess_stage");
+    expect(stored.session.host_workspace_root).toBe("/tmp/ws-alpha");
+    expect(stored.session.workspace_stage_mode).toBe("read_write");
+    expect(stored.session.staging_status).toBe("ready");
+    expect(stored.session.last_commit?.written_paths).toEqual(["notes.txt"]);
+  });
+
   test("keeps same ids isolated across workspaces", () => {
     database.saveWorkspace({ workspace_id: "ws_alpha", name: "Alpha", created_at: "2024-01-01T00:00:00.000Z" });
     database.saveWorkspace({ workspace_id: "ws_beta", name: "Beta", created_at: "2024-01-01T00:00:00.000Z" });
@@ -967,7 +1014,7 @@ describe("control plane database", () => {
         .all()
         .map((row) => row.version);
 
-      expect(appliedVersions.at(-1)).toBe(7);
+      expect(appliedVersions.at(-1)).toBe(9);
       expect(
         migrated.sqlite
           .query<{ name: string }, []>(

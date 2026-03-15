@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import type { SessionProofValidator } from "../src/auth/service.ts";
 import { issueWorkspaceToken } from "../src/auth/tokens.ts";
@@ -61,9 +64,11 @@ const TEST_SECRET = "phase7-secret";
 
 describe("phase 7 runtime integration", () => {
   let database = createControlPlaneDatabase();
+  let stagingDirs: string[] = [];
 
   beforeEach(() => {
     database = createControlPlaneDatabase();
+    stagingDirs = [];
     database.saveWorkspace({
       workspace_id: "ws_test",
       name: "Test Workspace",
@@ -73,7 +78,16 @@ describe("phase 7 runtime integration", () => {
 
   afterEach(() => {
     database.close();
+    for (const stagingDir of stagingDirs) {
+      rmSync(stagingDir, { recursive: true, force: true });
+    }
   });
+
+  const createRuntimeSessionService = (registry: RuntimeRegistry): RuntimeSessionService => {
+    const stagingDir = mkdtempSync(path.join(tmpdir(), "or3-net-phase7-stage-"));
+    stagingDirs.push(stagingDir);
+    return new RuntimeSessionService(registry, new RuntimeSelectionService(registry), database, { stagingBaseDir: stagingDir });
+  };
 
   test("createServerApp auto-registers runtime adapters when dependencies are available", async () => {
     const authService = createAuthService(database);
@@ -112,7 +126,7 @@ describe("phase 7 runtime integration", () => {
   test("sandbox adapter supports full create exec destroy lifecycle through session service", async () => {
     const registry = new RuntimeRegistry();
     registry.register(new SandboxRuntimeAdapter({ sandboxClient: new FakeSandboxClient() }));
-    const service = new RuntimeSessionService(registry, new RuntimeSelectionService(registry), database);
+    const service = createRuntimeSessionService(registry);
 
     const session = await service.createSession("ws_test", createSessionConfig(["log-stream"]));
     const handle = await service.exec("ws_test", session.session_id, createExecRequest("echo", ["hello"]));
@@ -135,7 +149,7 @@ describe("phase 7 runtime integration", () => {
         remoteNodeExecutor: new FakeRemoteExecutor(),
       }),
     );
-    const service = new RuntimeSessionService(registry, new RuntimeSelectionService(registry), database);
+    const service = createRuntimeSessionService(registry);
 
     const session = await service.createSession("ws_test", createSessionConfig(["exec"]));
     const handle = await service.exec("ws_test", session.session_id, createExecRequest("echo", ["remote"]));
@@ -156,7 +170,7 @@ describe("phase 7 runtime integration", () => {
 
     const registry = new RuntimeRegistry();
     registry.register(new LocalContainerRuntimeAdapter({ runner }));
-    const service = new RuntimeSessionService(registry, new RuntimeSelectionService(registry), database);
+    const service = createRuntimeSessionService(registry);
 
     const session = await service.createSession("ws_test", createSessionConfig(["copy-in"]));
     const handle = await service.exec("ws_test", session.session_id, createExecRequest("echo", ["local"]));
@@ -172,7 +186,7 @@ describe("phase 7 runtime integration", () => {
     const sandboxClient = new FakeSandboxClient();
     const registry = new RuntimeRegistry();
     registry.register(new SandboxRuntimeAdapter({ sandboxClient }));
-    const service = new RuntimeSessionService(registry, new RuntimeSelectionService(registry), database);
+    const service = createRuntimeSessionService(registry);
 
     database.workspace("ws_test").saveRuntimeSession({
       session_id: "sess_reconcile",
@@ -357,6 +371,21 @@ class FakeSandboxClient implements SandboxClient {
     void path;
     void requestContext;
     return Promise.resolve();
+  }
+
+  public importWorkspaceArchive(sandboxId: string, archive: Uint8Array, requestContext?: SandboxRequestContext): Promise<void> {
+    void requestContext;
+    const files = this.files.get(sandboxId) ?? new Map<string, string>();
+    files.set("/__archive__", String(archive.byteLength));
+    this.files.set(sandboxId, files);
+    return Promise.resolve();
+  }
+
+  public exportWorkspaceArchive(sandboxId: string, request?: { paths?: string[] }, requestContext?: SandboxRequestContext): Promise<Uint8Array> {
+    void sandboxId;
+    void request;
+    void requestContext;
+    return Promise.resolve(new Uint8Array([1, 2, 3]));
   }
 
   public createTunnel(sandboxId: string, request: CreateTunnelRequest, requestContext?: SandboxRequestContext): Promise<SandboxTunnel> {

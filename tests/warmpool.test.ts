@@ -118,6 +118,18 @@ class PoolSandboxClient implements SandboxClient {
     return Promise.resolve();
   }
 
+  public importWorkspaceArchive(sandboxId: string, archive: Uint8Array): Promise<void> {
+    void sandboxId;
+    void archive;
+    return Promise.resolve();
+  }
+
+  public exportWorkspaceArchive(sandboxId: string, request?: { paths?: string[] }): Promise<Uint8Array> {
+    void sandboxId;
+    void request;
+    return Promise.resolve(new Uint8Array());
+  }
+
   public createTunnel(sandboxId: string, request: CreateTunnelRequest): Promise<SandboxTunnel> {
     return Promise.resolve({
       id: `tun_${sandboxId}_${String(request.target_port)}`,

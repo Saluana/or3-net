@@ -20,11 +20,20 @@ import {
   runtimeErrorEnvelopeSchema,
   runtimeSessionCreateInputSchema,
   runtimeSessionDescriptorSchema,
+  runtimeWorkspaceStagingStatusSchema,
+  workspaceCommitResultSchema,
 } from "../contracts/runtime/index.ts";
 import { jsonObjectSchema, parseOptionalWithSchema, parseWithSchema, serializeWithSchema } from "../contracts/shared.ts";
 import { fromIsoDateTime, toIsoDateTime } from "../lib/time.ts";
 import type { NodeApprovalStatus, NodeHealthStatus } from "../contracts/index.ts";
-import type { RuntimeCapability, RuntimeErrorEnvelope, RuntimeSessionState, RuntimeTrustTier } from "../contracts/runtime/index.ts";
+import type {
+  RuntimeCapability,
+  RuntimeErrorEnvelope,
+  RuntimeSessionState,
+  RuntimeTrustTier,
+  RuntimeWorkspaceStagingStatus,
+  WorkspaceCommitResult,
+} from "../contracts/runtime/index.ts";
 import type {
   AgentRow,
   ApiKeyRow,
@@ -145,6 +154,10 @@ export interface SaveRuntimeSessionInput {
   readonly status: RuntimeSessionState;
   readonly capabilities: Iterable<RuntimeCapability>;
   readonly config?: z.input<typeof runtimeSessionCreateInputSchema>;
+  readonly host_workspace_root?: string;
+  readonly workspace_stage_mode?: "read_only" | "read_write";
+  readonly staging_status?: RuntimeWorkspaceStagingStatus;
+  readonly last_commit?: WorkspaceCommitResult;
   readonly isolation_class: string;
   readonly trust_tier: RuntimeTrustTier;
   readonly error?: RuntimeErrorEnvelope;
@@ -161,6 +174,11 @@ export interface TouchRuntimeSessionInput {
   readonly status?: RuntimeSessionState;
   readonly capabilities?: Iterable<RuntimeCapability>;
   readonly config?: z.input<typeof runtimeSessionCreateInputSchema> | null;
+  readonly host_workspace_root?: string | null;
+  readonly workspace_stage_mode?: "read_only" | "read_write" | null;
+  readonly workspace_stage_transport?: "auto" | "archive" | "file_api" | null;
+  readonly staging_status?: RuntimeWorkspaceStagingStatus;
+  readonly last_commit?: WorkspaceCommitResult | null;
   readonly isolation_class?: string;
   readonly trust_tier?: RuntimeTrustTier;
   readonly error?: RuntimeErrorEnvelope | null;
@@ -296,6 +314,8 @@ const parseRuntimeSessionRow = (row: RuntimeSessionRow): StoredRuntimeSession =>
   const capabilities = parseWithSchema(runtimeCapabilitySetSchema, row.capabilities_json);
   const config = parseOptionalWithSchema(runtimeSessionCreateInputSchema, row.config_json);
   const error = parseOptionalWithSchema(runtimeErrorEnvelopeSchema, row.error_json);
+  const lastCommit = parseOptionalWithSchema(workspaceCommitResultSchema, row.last_commit_json);
+  const stagingStatus = row.staging_status === null ? "none" : runtimeWorkspaceStagingStatusSchema.parse(row.staging_status);
 
   return {
     adapter_session_ref: row.adapter_session_ref,
@@ -313,6 +333,12 @@ const parseRuntimeSessionRow = (row: RuntimeSessionRow): StoredRuntimeSession =>
       created_at: toIsoDateTime(row.created_at),
       updated_at: toIsoDateTime(row.updated_at),
       destroyed_at: row.destroyed_at === null ? undefined : toIsoDateTime(row.destroyed_at),
+      workspace_stage: config?.workspace_stage,
+      host_workspace_root: row.host_workspace_root ?? undefined,
+      workspace_stage_mode: row.workspace_stage_mode ?? undefined,
+      workspace_stage_transport: row.workspace_stage_transport ?? config?.workspace_stage?.transport,
+      staging_status: stagingStatus,
+      last_commit: lastCommit ?? undefined,
       error: error ?? undefined,
     }),
   };
@@ -825,12 +851,14 @@ export class WorkspaceStore {
     const capabilities = runtimeCapabilitySetSchema.parse([...input.capabilities]);
     const config = input.config === undefined ? null : runtimeSessionCreateInputSchema.parse(input.config);
     const error = input.error === undefined ? null : runtimeErrorEnvelopeSchema.parse(input.error);
+    const stagingStatus = runtimeWorkspaceStagingStatusSchema.parse(input.staging_status ?? (config?.workspace_stage === undefined ? "none" : "preparing"));
+    const lastCommit = input.last_commit === undefined ? null : workspaceCommitResultSchema.parse(input.last_commit);
     const createdAt = input.created_at ?? new Date().toISOString();
     const updatedAt = input.updated_at ?? createdAt;
 
     this.db
       .prepare(
-        "INSERT INTO runtime_sessions (workspace_id, id, adapter_id, adapter_session_ref, node_id, preset_id, status, capabilities_json, config_json, isolation_class, trust_tier, error_json, created_at, updated_at, destroyed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET adapter_id = excluded.adapter_id, adapter_session_ref = excluded.adapter_session_ref, node_id = excluded.node_id, preset_id = excluded.preset_id, status = excluded.status, capabilities_json = excluded.capabilities_json, config_json = excluded.config_json, isolation_class = excluded.isolation_class, trust_tier = excluded.trust_tier, error_json = excluded.error_json, updated_at = excluded.updated_at, destroyed_at = excluded.destroyed_at",
+        "INSERT INTO runtime_sessions (workspace_id, id, adapter_id, adapter_session_ref, node_id, preset_id, status, capabilities_json, config_json, host_workspace_root, workspace_stage_mode, workspace_stage_transport, staging_status, last_commit_json, isolation_class, trust_tier, error_json, created_at, updated_at, destroyed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET adapter_id = excluded.adapter_id, adapter_session_ref = excluded.adapter_session_ref, node_id = excluded.node_id, preset_id = excluded.preset_id, status = excluded.status, capabilities_json = excluded.capabilities_json, config_json = excluded.config_json, host_workspace_root = excluded.host_workspace_root, workspace_stage_mode = excluded.workspace_stage_mode, workspace_stage_transport = excluded.workspace_stage_transport, staging_status = excluded.staging_status, last_commit_json = excluded.last_commit_json, isolation_class = excluded.isolation_class, trust_tier = excluded.trust_tier, error_json = excluded.error_json, updated_at = excluded.updated_at, destroyed_at = excluded.destroyed_at",
       )
       .run(
         this.workspaceId,
@@ -842,6 +870,11 @@ export class WorkspaceStore {
         input.status,
         serializeWithSchema(runtimeCapabilitySetSchema, capabilities),
         config === null ? null : serializeWithSchema(runtimeSessionCreateInputSchema, config),
+        input.host_workspace_root ?? null,
+        input.workspace_stage_mode ?? null,
+        config?.workspace_stage?.transport ?? null,
+        stagingStatus,
+        lastCommit === null ? null : serializeWithSchema(workspaceCommitResultSchema, lastCommit),
         input.isolation_class,
         input.trust_tier,
         error === null ? null : serializeWithSchema(runtimeErrorEnvelopeSchema, error),
@@ -891,6 +924,30 @@ export class WorkspaceStore {
       .map(parseRuntimeSessionRow);
   }
 
+  public findActiveRuntimeStageWriter(hostWorkspaceRoot: string, excludeSessionId?: string): StoredRuntimeSession | null {
+    const clauses = [
+      "workspace_id = ?",
+      "host_workspace_root = ?",
+      "workspace_stage_mode = 'read_write'",
+      "staging_status IN ('preparing', 'ready', 'committing')",
+      "status IN ('creating', 'ready', 'stopping', 'stopped')",
+    ];
+    const params: string[] = [this.workspaceId, hostWorkspaceRoot];
+
+    if (excludeSessionId !== undefined) {
+      clauses.push("id != ?");
+      params.push(excludeSessionId);
+    }
+
+    const row = this.db
+      .query<RuntimeSessionRow, string[]>(
+        `SELECT * FROM runtime_sessions WHERE ${clauses.join(" AND ")} ORDER BY updated_at DESC LIMIT 1`,
+      )
+      .get(...params);
+
+    return row === null ? null : parseRuntimeSessionRow(row);
+  }
+
   public touchRuntimeSession(sessionId: string, input: TouchRuntimeSessionInput): StoredRuntimeSession {
     const existing = this.getRuntimeSession(sessionId);
     const updatedAt = input.updated_at ?? new Date().toISOString();
@@ -910,10 +967,20 @@ export class WorkspaceStore {
         : input.error === null
           ? null
           : runtimeErrorEnvelopeSchema.parse(input.error);
+    const stagingStatus =
+      input.staging_status === undefined
+        ? existing.session.staging_status
+        : runtimeWorkspaceStagingStatusSchema.parse(input.staging_status);
+    const lastCommit =
+      input.last_commit === undefined
+        ? existing.session.last_commit ?? null
+        : input.last_commit === null
+          ? null
+          : workspaceCommitResultSchema.parse(input.last_commit);
 
     this.db
       .prepare(
-        "UPDATE runtime_sessions SET adapter_id = ?, adapter_session_ref = ?, node_id = ?, preset_id = ?, status = ?, capabilities_json = ?, config_json = ?, isolation_class = ?, trust_tier = ?, error_json = ?, updated_at = ?, destroyed_at = ? WHERE workspace_id = ? AND id = ?",
+        "UPDATE runtime_sessions SET adapter_id = ?, adapter_session_ref = ?, node_id = ?, preset_id = ?, status = ?, capabilities_json = ?, config_json = ?, host_workspace_root = ?, workspace_stage_mode = ?, workspace_stage_transport = ?, staging_status = ?, last_commit_json = ?, isolation_class = ?, trust_tier = ?, error_json = ?, updated_at = ?, destroyed_at = ? WHERE workspace_id = ? AND id = ?",
       )
       .run(
         input.adapter_id ?? existing.session.adapter_id,
@@ -923,6 +990,11 @@ export class WorkspaceStore {
         input.status ?? existing.session.status,
         serializeWithSchema(runtimeCapabilitySetSchema, capabilities),
         config === null ? null : serializeWithSchema(runtimeSessionCreateInputSchema, config),
+        input.host_workspace_root === undefined ? (existing.session.host_workspace_root ?? null) : input.host_workspace_root,
+        input.workspace_stage_mode === undefined ? (existing.session.workspace_stage_mode ?? null) : input.workspace_stage_mode,
+        input.workspace_stage_transport === undefined ? (existing.session.workspace_stage_transport ?? null) : input.workspace_stage_transport,
+        stagingStatus,
+        lastCommit === null ? null : serializeWithSchema(workspaceCommitResultSchema, lastCommit),
         input.isolation_class ?? existing.session.isolation_class,
         input.trust_tier ?? existing.session.trust_tier,
         error === null ? null : serializeWithSchema(runtimeErrorEnvelopeSchema, error),

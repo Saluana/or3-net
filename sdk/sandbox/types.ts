@@ -43,6 +43,10 @@ export interface SandboxWriteFileRequest {
   readonly content: string;
 }
 
+export interface SandboxWorkspaceExportRequest {
+  readonly paths?: string[];
+}
+
 export interface SandboxTunnel {
   readonly id: string;
   readonly sandbox_id: string;
@@ -124,6 +128,8 @@ export interface SandboxClient {
   writeFile(sandboxId: string, request: SandboxWriteFileRequest, requestContext?: SandboxRequestContext): Promise<void>;
   deleteFile(sandboxId: string, path: string, requestContext?: SandboxRequestContext): Promise<void>;
   mkdir(sandboxId: string, path: string, requestContext?: SandboxRequestContext): Promise<void>;
+  importWorkspaceArchive(sandboxId: string, archive: Uint8Array, requestContext?: SandboxRequestContext): Promise<void>;
+  exportWorkspaceArchive(sandboxId: string, request?: SandboxWorkspaceExportRequest, requestContext?: SandboxRequestContext): Promise<Uint8Array>;
   createTunnel(sandboxId: string, request: CreateTunnelRequest, requestContext?: SandboxRequestContext): Promise<SandboxTunnel>;
   listTunnels(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxTunnel[]>;
   revokeTunnel(tunnelId: string, requestContext?: SandboxRequestContext): Promise<void>;
