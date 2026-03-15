@@ -104,6 +104,8 @@ Desktop renders two catalogs:
 
 Both desktop and browser clients consume these catalogs from shared host contracts rather than hard-coded app-specific conditionals.
 
+For runtime providers specifically, the host contract source of truth is `planning/runtime-contract/`: desktop consumes `RuntimeDescriptor` for provider rows and `RuntimeNodeDescriptor` for per-node drill-down and action gating.
+
 ```mermaid
 flowchart TD
     Tauri[Tauri Shell] --> Supervisor[Bundled Bun Supervisor]

@@ -360,22 +360,22 @@ This task list owns the reusable runtime substrate only.
 
 ### 32. Server startup wiring (`src/server.ts` or entrypoint) [Req 1, 10, 11, 12]
 
-- [ ] Instantiate `RuntimeRegistry`.
-- [ ] Register `SandboxRuntimeAdapter` if `SandboxClient` is configured.
-- [ ] Register `RemoteNodeRuntimeAdapter` if `NodeRegistryService` and `LeaseScheduler` are available.
-- [ ] Register `LocalContainerRuntimeAdapter` (always register, health-gate at selection time).
-- [ ] Instantiate `RuntimeSelectionService(registry)`.
-- [ ] Instantiate `RuntimeSessionService(registry, selection, database)`.
-- [ ] Call `RuntimeSessionService.reconcileOnStartup()`.
-- [ ] Pass services to `Or3NetApp`.
+- [x] Instantiate `RuntimeRegistry`.
+- [x] Register `SandboxRuntimeAdapter` if `SandboxClient` is configured.
+- [x] Register `RemoteNodeRuntimeAdapter` if `NodeRegistryService` and `LeaseScheduler` are available.
+- [x] Register `LocalContainerRuntimeAdapter` (always register, health-gate at selection time).
+- [x] Instantiate `RuntimeSelectionService(registry)`.
+- [x] Instantiate `RuntimeSessionService(registry, selection, database)`.
+- [x] Call `RuntimeSessionService.reconcileOnStartup()`.
+- [x] Pass services to `Or3NetApp`.
 
 ### 33. Integration tests [Req 10, 11, 12, 13]
 
-- [ ] Test full create → exec → destroy lifecycle with sandbox adapter mock.
-- [ ] Test full create → exec → destroy lifecycle with remote-node adapter mock.
-- [ ] Test full create → exec → destroy lifecycle with local-container adapter mock.
-- [ ] Test restart reconciliation marks sessions correctly after simulated restart.
-- [ ] Test scheduler selection picks correct adapter for given criteria.
+- [x] Test full create → exec → destroy lifecycle with sandbox adapter mock.
+- [x] Test full create → exec → destroy lifecycle with remote-node adapter mock.
+- [x] Test full create → exec → destroy lifecycle with local-container adapter mock.
+- [x] Test restart reconciliation marks sessions correctly after simulated restart.
+- [x] Test scheduler selection picks correct adapter for given criteria.
 
 ---
 
@@ -383,24 +383,24 @@ This task list owns the reusable runtime substrate only.
 
 ### 34. Cross-link desktop planning [Req 4, 9]
 
-- [ ] Update `planning/desktop/tasks.md` task 3 (Host API and registry groundwork) to reference `planning/runtime-contract/` for runtime-provider and service-app contract shapes.
-- [ ] Update `planning/desktop/design.md` provider rendering flow to reference the runtime contract's `RuntimeDescriptor` and `RuntimeNodeDescriptor` types.
-- [ ] Update `planning/desktop/requirements.md` Req 5 notes to reference the runtime contract as the implementation plan for the runtime-provider registry.
+- [x] Update `planning/desktop/tasks.md` task 3 (Host API and registry groundwork) to reference `planning/runtime-contract/` for runtime-provider and service-app contract shapes.
+- [x] Update `planning/desktop/design.md` provider rendering flow to reference the runtime contract's `RuntimeDescriptor` and `RuntimeNodeDescriptor` types.
+- [x] Update `planning/desktop/requirements.md` Req 5 notes to reference the runtime contract as the implementation plan for the runtime-provider registry.
 
 ### 35. Cross-link main planning
 
-- [ ] Update `planning/main/design.md` to note that the runtime adapter contract wraps the existing node protocol layer.
-- [ ] Update `planning/main/tasks.md` if applicable to note runtime contract as a parallel track.
+- [x] Update `planning/main/design.md` to note that the runtime adapter contract wraps the existing node protocol layer.
+- [x] Update `planning/main/tasks.md` if applicable to note runtime contract as a parallel track.
 
 ### 36. Cross-link platform-standardization
 
-- [ ] Update `planning/platform-standardization/tasks.md` to note that runtime error codes extend the platform error code registry.
+- [x] Update `planning/platform-standardization/tasks.md` to note that runtime error codes extend the platform error code registry.
 
 ### 37. README and doc updates
 
-- [ ] Update `README.md` to mention the runtime adapter contract in the architecture overview.
-- [ ] Add `src/contracts/runtime/README.md` documenting the runtime contract and adapter plugin model.
-- [ ] Add `src/runtime/README.md` documenting the runtime services and adapter registration.
+- [x] Update `README.md` to mention the runtime adapter contract in the architecture overview.
+- [x] Add `src/contracts/runtime/README.md` documenting the runtime contract and adapter plugin model.
+- [x] Add `src/runtime/README.md` documenting the runtime services and adapter registration.
 
 ---
 

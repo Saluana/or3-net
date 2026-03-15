@@ -38,6 +38,8 @@
 
 ## 6. Execution backends
 
+> **Cross-ref:** `planning/runtime-contract/` is the parallel track that wraps the node protocol and transport layers in a typed runtime adapter/session substrate. Main-plan execution tasks continue to own the underlying node, sandbox, and intern plumbing.
+
 - [x] [Req 2.1, 2.2, 2.3] Implement the `or3-intern` wrapper path for local execution and SSE relay.
 - [x] [Req 3.1] Implement the sandbox-backed node adapter using the `or3-sandbox` SDK for lifecycle, exec, file staging, and cleanup.
 - [x] [Req 3.1, 3.2] Build task-package assembly and execution-event normalization for local and remote backends.

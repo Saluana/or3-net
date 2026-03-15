@@ -767,7 +767,7 @@ export class WorkspaceStore {
   }
 
   public appendJobEvent(input: AppendJobEventInput): StoredJobEvent {
-    const row = appendRetainedEvent<JobEventRow>({
+    const row = appendRetainedEvent({
       db: this.db,
       workspaceId: this.workspaceId,
       keyValue: input.job_id,
@@ -793,7 +793,7 @@ export class WorkspaceStore {
       parseErrorLabel: "Job event",
     });
 
-    return parseJobEventRow(row);
+    return parseJobEventRow(row as JobEventRow);
   }
 
   public listJobEvents(input: ListJobEventsInput = {}): StoredJobEvent[] {
@@ -942,7 +942,7 @@ export class WorkspaceStore {
   }
 
   public appendRuntimeSessionEvent(input: AppendRuntimeSessionEventInput): StoredRuntimeSessionEvent {
-    const row = appendRetainedEvent<RuntimeSessionEventRow>({
+    const row = appendRetainedEvent({
       db: this.db,
       workspaceId: this.workspaceId,
       keyValue: input.session_id,
@@ -967,7 +967,7 @@ export class WorkspaceStore {
       selectByIdSql: "SELECT * FROM runtime_session_events WHERE workspace_id = ? AND id = ? LIMIT 1",
       parseErrorLabel: "Runtime session event",
     });
-    return parseRuntimeSessionEventRow(row);
+    return parseRuntimeSessionEventRow(row as RuntimeSessionEventRow);
   }
 
   public listRuntimeSessionEvents(sessionId: string, limit = 100): StoredRuntimeSessionEvent[] {
@@ -1437,7 +1437,7 @@ interface AppendRetainedEventOptions {
   readonly parseErrorLabel: string;
 }
 
-const appendRetainedEvent = <TRow>(options: AppendRetainedEventOptions): TRow => {
+const appendRetainedEvent = (options: AppendRetainedEventOptions): unknown => {
   const createdAt = options.createdAt ?? new Date().toISOString();
   const eventId = createEventId();
   const payloadJson = sanitizePayloadJson(options.payload);
@@ -1457,7 +1457,7 @@ const appendRetainedEvent = <TRow>(options: AppendRetainedEventOptions): TRow =>
     }
 
     return options.db
-      .query<TRow, [string, string]>(options.selectByIdSql)
+      .query<unknown, [string, string]>(options.selectByIdSql)
       .get(options.workspaceId, eventId);
   })();
 

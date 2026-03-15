@@ -1,8 +1,7 @@
 import { createId } from "../lib/ids.ts";
-import { nodeResponseSchema, type JobStreamEvent, type NodeEvent, type NodeRequest, type NodeResponse, type TaskPackage } from "../contracts/index.ts";
+import { nodeResponseSchema, type JobResult, type JobStreamEvent, type NodeEvent, type NodeRequest, type NodeResponse, type TaskPackage } from "../contracts/index.ts";
 
 import {
-  nodeEventsToResult,
   normalizeNodeEvent,
   parseNodeResponseResult,
   type NodeExecutionContext,
@@ -95,7 +94,7 @@ export class OutboundWssNodeTransport implements NodeRpcTransport {
 const trackExecutionStream = (
   stream: AsyncIterable<NodeEvent>,
   fallback: ReturnType<typeof parseNodeResponseResult>,
-): { stream: AsyncIterable<JobStreamEvent>; result: Promise<ReturnType<typeof nodeEventsToResult>> } => {
+): { stream: AsyncIterable<JobStreamEvent>; result: Promise<JobResult> } => {
   const queue = createStreamQueue();
 
   const result = (async () => {
@@ -122,15 +121,12 @@ const trackExecutionStream = (
       if (terminalError !== null) {
         throw terminalError;
       }
-      if (terminalResult !== undefined) {
-        queue.push({ type: "done" });
-        return terminalResult;
-      }
-
-      throw nodeEventsToResult([], undefined);
-    } catch (error) {
-      queue.push({ type: "error", error });
-      throw error;
+      queue.push({ type: "done" });
+      return terminalResult;
+    } catch (error: unknown) {
+      const thrown = error instanceof Error ? error : new Error("outbound-wss transport failed");
+      queue.push({ type: "error", error: thrown });
+      throw thrown;
     }
   })();
 

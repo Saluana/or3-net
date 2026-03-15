@@ -130,6 +130,8 @@ Tasks are organized by project in execution order. `or3-net` goes first as the b
 
 ### 14. Backend error normalization (or3-net)
 
+> **Cross-ref:** Runtime-specific envelopes in `planning/runtime-contract/` extend the platform registry from `src/contracts/platform/error-codes.ts`; runtime errors should map into that shared registry instead of creating an untracked side channel.
+
 - [x] [Req 5] Implement `normalizeInternError()` to translate `or3-intern` Go errors and `RemoteExecutionError` into `ErrorEnvelope`.
 - [x] [Req 5] Implement `normalizeSandboxError()` to translate `or3-sandbox` `{ error, code, status }` responses into `ErrorEnvelope`.
 - [x] [Req 5] Wire both normalizers into the execution and adapter paths so backend errors never leak raw output to clients.

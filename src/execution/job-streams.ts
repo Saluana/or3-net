@@ -151,9 +151,7 @@ class JobHistoryBuffer {
       if (entry === undefined) {
         continue;
       }
-      if (entry.encoded === null) {
-        entry.encoded = encoder.encode(formatSseEvent(entry.event));
-      }
+      entry.encoded ??= encoder.encode(formatSseEvent(entry.event));
       chunks.push(entry.encoded);
     }
     return chunks;

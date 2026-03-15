@@ -243,6 +243,7 @@ describe("node transport abstraction", () => {
         result: { output_text: "fallback", artifacts: [], meta: {} },
       }),
       async function* () {
+        await Promise.resolve();
         yield { event: "progress", data: { percent: 10, message: "warming" } };
         yield { event: "progress", data: { percent: 20, message: "ready" } };
         yield { event: "complete", data: { output_text: "done", artifacts: [], meta: {} } };

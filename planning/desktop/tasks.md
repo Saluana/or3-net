@@ -14,7 +14,7 @@
 
 ## 3. Host API and registry groundwork
 
-> **Cross-ref:** Runtime-provider contracts, adapter registry, runtime session APIs, and catalog routes are defined in `planning/runtime-contract/`. Desktop consumes those contracts rather than defining its own.
+> **Cross-ref:** Runtime-provider contracts, adapter registry, runtime session APIs, and catalog routes are defined in `planning/runtime-contract/`. Desktop consumes `RuntimeAdapterManifest`, `RuntimeDescriptor`, and `RuntimeNodeDescriptor` from that plan rather than defining parallel runtime-provider shapes, and layers service-app metadata on top of the same host catalog model.
 
 - [ ] [R4, R5] Extend `src/contracts/*.ts` planning scope with runtime-provider, service-app, and capability metadata shapes. Runtime-provider shapes are now in `planning/runtime-contract/` (`RuntimeDescriptor`, `RuntimeNodeDescriptor`, `RuntimeAdapterManifest`).
 - [ ] [R4, R5] Extend `src/api/app.ts` planning scope with operator routes and provider catalog routes required by desktop. Runtime catalog and runtime session routes are defined in `planning/runtime-contract/tasks.md` Phase 6.

@@ -515,7 +515,7 @@ export class LocalJobService {
     }
 
     const now = new Date().toISOString();
-    let nextJob: Job | null = null;
+    let nextJob: Job;
 
     switch (event.event) {
       case "job.accepted":
@@ -563,10 +563,6 @@ export class LocalJobService {
         return true;
       default:
         return false;
-    }
-
-    if (nextJob === null) {
-      return false;
     }
 
     this.persistLiveJobState(liveJob, nextJob);

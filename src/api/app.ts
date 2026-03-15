@@ -734,7 +734,7 @@ export class Or3NetApp {
     });
   }
 
-  private requireLaunchableNode(workspaceId: string, nodeId: string) {
+  private requireLaunchableNode(workspaceId: string, nodeId: string): ReturnType<NodeRegistryService["getNode"]> {
     try {
       const node = requireNodeRegistry(this.services.nodeRegistryService).getNode(workspaceId, nodeId);
       ensureLaunchableNode(node);

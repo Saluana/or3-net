@@ -1,6 +1,6 @@
 # or3-net
 
-`or3-net` is the Bun/TypeScript control plane for OR3 network execution: auth exchange, workspace-scoped jobs, node enrollment, previews, service launch, CLI workflows, and a minimal built-in operator console.
+`or3-net` is the Bun/TypeScript control plane for OR3 network execution: auth exchange, workspace-scoped jobs, node enrollment, previews, service launch, CLI workflows, a typed runtime adapter/session contract, and a minimal built-in operator console.
 
 ## Install
 

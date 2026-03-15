@@ -1,6 +1,6 @@
 # OR3 Network v1 — Technical Design
 
-> **Cross-ref:** A typed runtime adapter contract wrapping the node protocol layer is planned in `planning/runtime-contract/`. It adds `RuntimeAdapter`, `RuntimeRegistry`, runtime session management, and public runtime catalog/session APIs above the existing node RPC and transport infrastructure described below.
+> **Cross-ref:** A typed runtime adapter contract wrapping the node protocol and transport-resolution layers is planned in `planning/runtime-contract/`. It adds `RuntimeAdapter`, `RuntimeRegistry`, runtime session management, and public runtime catalog/session APIs above the existing node RPC and transport infrastructure described below.
 
 ## Overview
 

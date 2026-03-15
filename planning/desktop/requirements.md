@@ -71,6 +71,8 @@ Scope assumptions:
 
 > **Cross-ref:** The runtime-provider registry, adapter contract, capability system, and runtime catalog/session APIs are planned in `planning/runtime-contract/`. This desktop requirement is satisfied by consuming those contracts.
 
+The implementation source of truth for runtime-provider registry work is `planning/runtime-contract/`; desktop should only add consumer behavior and service-app presentation on top of that substrate.
+
 **Requirement:** As a platform developer, I need a provider model that supports multiple runtimes and launchable services without hard-coding OR3 around a single backend or app.
 
 **Acceptance criteria:**
