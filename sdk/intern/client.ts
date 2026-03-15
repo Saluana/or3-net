@@ -1,3 +1,14 @@
+/**
+ * @module sdk/intern/client
+ *
+ * Purpose:
+ * HTTP implementation of the Intern SDK. Wraps the internal turn, subagent, and
+ * job-stream endpoints behind a small typed client.
+ *
+ * Constraints:
+ * - Auth uses short-lived service bearer tokens signed from a shared secret
+ * - Stream parsing assumes SSE-style `event:` and `data:` framing
+ */
 import type {
   InternAbortResponse,
   InternClient,
@@ -11,17 +22,35 @@ import type {
 import { InternRequestError } from "./types.ts";
 import { encodeBase64Url, hmacSha256Hex } from "../../src/lib/crypto.ts";
 
+/** Purpose: Construction options for the HTTP Intern client. */
 interface InternClientOptions {
   readonly baseUrl: string;
   readonly secret: string;
   readonly fetch?: typeof fetch;
 }
 
+/** Purpose: Claims embedded in a short-lived Intern service bearer token. */
 interface ServiceTokenClaims {
   readonly iat: number;
   readonly nonce: string;
 }
 
+/**
+ * Purpose:
+ * Talks to the Intern HTTP API using signed service bearer tokens.
+ *
+ * Behavior:
+ * Sends JSON requests for turn and subagent creation, exposes streaming methods
+ * for SSE job output, and normalizes failed responses into `InternRequestError`.
+ *
+ * @example
+ * ```ts
+ * const client = new HttpInternClient({
+ *   baseUrl: 'http://127.0.0.1:3000',
+ *   secret: process.env.INTERN_SHARED_SECRET!,
+ * });
+ * ```
+ */
 export class HttpInternClient implements InternClient {
   private readonly fetchImpl: typeof fetch;
 
@@ -29,6 +58,7 @@ export class HttpInternClient implements InternClient {
     this.fetchImpl = options.fetch ?? fetch;
   }
 
+  /** Purpose: Submits a turn request and waits for the JSON response. */
   public async submitTurn(request: InternTurnRequest): Promise<InternTurnResponse> {
     const response = await this.fetchImpl(new URL("/internal/v1/turns", this.options.baseUrl), {
       method: "POST",
@@ -38,6 +68,7 @@ export class HttpInternClient implements InternClient {
     return parseJsonResponse<InternTurnResponse>(response);
   }
 
+  /** Purpose: Submits a turn request and yields streamed job events. */
   public async *submitTurnStream(request: InternTurnRequest): AsyncIterable<InternJobEvent> {
     const response = await this.fetchImpl(new URL("/internal/v1/turns", this.options.baseUrl), {
       method: "POST",
@@ -47,6 +78,7 @@ export class HttpInternClient implements InternClient {
     yield* parseEventStream(response);
   }
 
+  /** Purpose: Spawns a subagent and waits for the JSON response. */
   public async spawnSubagent(request: InternSubagentRequest): Promise<InternSubagentResponse> {
     const response = await this.fetchImpl(new URL("/internal/v1/subagents", this.options.baseUrl), {
       method: "POST",
@@ -56,6 +88,7 @@ export class HttpInternClient implements InternClient {
     return parseJsonResponse<InternSubagentResponse>(response);
   }
 
+  /** Purpose: Opens an SSE stream for an existing Intern job. */
   public async *streamJob(jobId: string): AsyncIterable<InternJobEvent> {
     const response = await this.fetchImpl(new URL(`/internal/v1/jobs/${jobId}/stream`, this.options.baseUrl), {
       method: "GET",
@@ -64,6 +97,7 @@ export class HttpInternClient implements InternClient {
     yield* parseEventStream(response);
   }
 
+  /** Purpose: Requests cancellation of an Intern job. */
   public async abortJob(jobId: string): Promise<InternAbortResponse> {
     const response = await this.fetchImpl(new URL(`/internal/v1/jobs/${jobId}/abort`, this.options.baseUrl), {
       method: "POST",

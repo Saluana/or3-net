@@ -1,11 +1,24 @@
+/**
+ * @module sdk/sandbox/types
+ *
+ * Purpose:
+ * Shared request, response, streaming, and error contracts for the sandbox SDK.
+ *
+ * Responsibilities:
+ * - Define typed shapes for sandbox lifecycle, filesystem, exec, and tunnel APIs
+ * - Provide runtime validation schemas for common payloads
+ * - Describe the transport-neutral `SandboxClient` interface
+ */
 import { z } from "zod";
 import { isoDateTimeSchema, jsonObjectSchema, nonEmptyStringSchema } from "../../src/contracts/shared.ts";
 
+/** Purpose: Request-scoped metadata propagated as sandbox HTTP headers. */
 export interface SandboxRequestContext {
   readonly requestId?: string;
   readonly workspaceId?: string;
 }
 
+/** Purpose: High-level sandbox status object returned by lifecycle APIs. */
 export interface SandboxInfo {
   readonly id: string;
   readonly status: string;
@@ -14,6 +27,7 @@ export interface SandboxInfo {
   readonly network_mode?: string;
 }
 
+/** Purpose: File read result returned by sandbox file APIs. */
 export interface SandboxFileContent {
   readonly path: string;
   readonly content?: string;
@@ -21,16 +35,19 @@ export interface SandboxFileContent {
   readonly encoding?: string;
 }
 
+/** Purpose: Command execution request for a sandbox process. */
 export interface SandboxExecRequest {
   readonly command: string[];
   readonly cwd?: string;
 }
 
+/** Purpose: Incremental event emitted by sandbox execution streams. */
 export interface SandboxExecEvent {
   readonly event: string;
   readonly data: Record<string, unknown>;
 }
 
+/** Purpose: Final execution result returned by non-streaming sandbox exec. */
 export interface SandboxExecResult {
   readonly exit_code: number;
   readonly stdout?: string;
@@ -38,15 +55,18 @@ export interface SandboxExecResult {
   readonly status?: string;
 }
 
+/** Purpose: File write request for sandbox filesystem APIs. */
 export interface SandboxWriteFileRequest {
   readonly path: string;
   readonly content: string;
 }
 
+/** Purpose: Optional path selection for workspace archive export. */
 export interface SandboxWorkspaceExportRequest {
   readonly paths?: string[];
 }
 
+/** Purpose: Descriptor for an active sandbox tunnel. */
 export interface SandboxTunnel {
   readonly id: string;
   readonly sandbox_id: string;
@@ -57,6 +77,7 @@ export interface SandboxTunnel {
   readonly visibility?: string;
 }
 
+/** Purpose: Request payload for creating a sandbox instance. */
 export interface CreateSandboxRequest {
   readonly workspace_id?: string;
   readonly base_image_ref?: string;
@@ -65,6 +86,7 @@ export interface CreateSandboxRequest {
   readonly network_mode?: string;
 }
 
+/** Purpose: Request payload for creating a sandbox tunnel. */
 export interface CreateTunnelRequest {
   readonly target_port: number;
   readonly protocol?: string;
@@ -72,23 +94,30 @@ export interface CreateTunnelRequest {
   readonly visibility?: string;
 }
 
+/** Purpose: Request payload for minting a signed tunnel URL. */
 export interface CreateTunnelSignedUrlRequest {
   readonly path?: string;
   readonly ttl_seconds?: number;
 }
 
+/** Purpose: Signed URL result returned for a sandbox tunnel. */
 export interface SandboxTunnelSignedUrl {
   readonly url: string;
   readonly expires_at: string;
   readonly capability_id?: string;
 }
 
+/** Purpose: Error payload shape returned by sandbox HTTP endpoints. */
 export interface SandboxErrorResponse {
   readonly error: string;
   readonly code?: string;
   readonly status?: number;
 }
 
+/**
+ * Purpose:
+ * Rich error thrown by the sandbox SDK when an HTTP request fails.
+ */
 export class SandboxRequestError extends Error {
   public override readonly name = "SandboxRequestError";
 
@@ -102,17 +131,26 @@ export class SandboxRequestError extends Error {
   }
 }
 
+/** Purpose: Runtime health payload returned by the sandbox service. */
 export interface RuntimeHealth {
   readonly status: string;
   readonly [key: string]: unknown;
 }
 
+/** Purpose: Opaque runtime info payload returned by the sandbox service. */
 export type RuntimeInfo = Readonly<Record<string, unknown>>;
 
+/** Purpose: Opaque runtime capacity payload returned by the sandbox service. */
 export type RuntimeCapacity = Readonly<Record<string, unknown>>;
 
+/** Purpose: Opaque quota payload returned by the sandbox service. */
 export type SandboxQuota = Readonly<Record<string, unknown>>;
 
+/**
+ * Purpose:
+ * Transport-neutral client interface for sandbox lifecycle, filesystem,
+ * execution, tunnel, and runtime APIs.
+ */
 export interface SandboxClient {
   create(request: CreateSandboxRequest, requestContext?: SandboxRequestContext): Promise<SandboxInfo>;
   list(requestContext?: SandboxRequestContext): Promise<SandboxInfo[]>;
@@ -141,6 +179,7 @@ export interface SandboxClient {
   getMetrics(requestContext?: SandboxRequestContext): Promise<string>;
 }
 
+/** Purpose: Wire schema for sandbox creation requests. */
 export const createSandboxRequestSchema = z.object({
   workspace_id: nonEmptyStringSchema.optional(),
   base_image_ref: nonEmptyStringSchema.optional(),
@@ -149,6 +188,7 @@ export const createSandboxRequestSchema = z.object({
   network_mode: nonEmptyStringSchema.optional(),
 });
 
+/** Purpose: Wire schema for sandbox lifecycle responses. */
 export const sandboxInfoSchema = z.object({
   id: nonEmptyStringSchema,
   status: nonEmptyStringSchema,
@@ -157,16 +197,19 @@ export const sandboxInfoSchema = z.object({
   network_mode: nonEmptyStringSchema.optional(),
 });
 
+/** Purpose: Wire schema for sandbox exec requests. */
 export const sandboxExecRequestSchema = z.object({
   command: z.array(nonEmptyStringSchema).min(1),
   cwd: nonEmptyStringSchema.optional(),
 });
 
+/** Purpose: Wire schema for sandbox exec stream events. */
 export const sandboxExecEventSchema = z.object({
   event: nonEmptyStringSchema,
   data: jsonObjectSchema,
 });
 
+/** Purpose: Wire schema for sandbox exec results. */
 export const sandboxExecResultSchema = z.object({
   exit_code: z.number().int(),
   stdout: z.string().optional(),
@@ -174,6 +217,7 @@ export const sandboxExecResultSchema = z.object({
   status: nonEmptyStringSchema.optional(),
 });
 
+/** Purpose: Wire schema for sandbox tunnel descriptors. */
 export const sandboxTunnelSchema = z.object({
   id: nonEmptyStringSchema,
   sandbox_id: nonEmptyStringSchema,
@@ -184,12 +228,14 @@ export const sandboxTunnelSchema = z.object({
   visibility: nonEmptyStringSchema.optional(),
 });
 
+/** Purpose: Wire schema for signed tunnel URL responses. */
 export const sandboxTunnelSignedUrlSchema = z.object({
   url: nonEmptyStringSchema,
   expires_at: isoDateTimeSchema,
 	capability_id: nonEmptyStringSchema.optional(),
 });
 
+/** Purpose: Wire schema for sandbox error responses. */
 export const sandboxErrorResponseSchema = z.object({
   error: nonEmptyStringSchema,
   code: nonEmptyStringSchema,
