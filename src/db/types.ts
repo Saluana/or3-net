@@ -1,3 +1,24 @@
+/**
+ * @module src/db/types
+ *
+ * Purpose:
+ * Shared public types and small invariants for the OR3 Net control-plane
+ * database layer.
+ *
+ * Responsibilities:
+ * - Describe input shapes accepted by persistence methods
+ * - Describe startup reconciliation output used by higher layers
+ * - Hold low-level invariants reused across modules after the DB split
+ *
+ * Non-responsibilities:
+ * - Does not execute SQL
+ * - Does not parse stored rows; see `codecs.ts`
+ * - Does not own schema definitions; those live in `contracts/**` and `schema.ts`
+ *
+ * @remarks
+ * These types are part of the database API surface and are intentionally kept
+ * colocated so internal module boundaries do not leak into callers.
+ */
 import type { z } from "zod";
 
 import type {
@@ -190,11 +211,49 @@ export interface SaveIdempotencyRecordInput {
   readonly expires_at: string;
 }
 
+/**
+ * Purpose:
+ * Enforces workspace scoping for values that already carry a `workspace_id`.
+ *
+ * Behavior:
+ * Throws when a payload's declared workspace differs from the surrounding store
+ * or control-plane context.
+ *
+ * Constraints:
+ * - Intended for cheap invariant checks, not authorization
+ * - Error messages stay generic to avoid leaking unrelated identifiers
+ *
+ * Non-Goals:
+ * - Does not normalize ids
+ * - Does not resolve or validate workspace existence
+ */
 export const assertWorkspaceMatch = (label: string, expectedWorkspaceId: string, actualWorkspaceId: string): void => {
   if (expectedWorkspaceId !== actualWorkspaceId) {
     throw new Error(`${label} workspace mismatch`);
   }
 };
 
+/**
+ * Purpose:
+ * Canonical set of non-terminal job states that should be repaired after a host
+ * restart.
+ *
+ * Behavior:
+ * Used by startup reconciliation to find jobs that were in-flight when the host
+ * stopped unexpectedly.
+ *
+ * Constraints:
+ * - Must stay aligned with `jobStatusSchema`
+ * - Excludes terminal states by design
+ */
 export const recoverableStartupJobStatuses = ["pending", "scheduled", "running"] as const;
+
+/**
+ * Purpose:
+ * Shared lease state literal used when selecting currently-held leases.
+ *
+ * Behavior:
+ * Centralizes the active-state string so reconciliation and lease helpers do not
+ * drift.
+ */
 export const activeLeaseState = "active";

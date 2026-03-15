@@ -1,3 +1,22 @@
+/**
+ * @module src/db/codecs
+ *
+ * Purpose:
+ * Row-to-object conversion helpers for the OR3 Net control-plane database.
+ *
+ * Responsibilities:
+ * - Parse SQLite row payloads into validated stored objects
+ * - Reuse contract schemas so stored JSON stays aligned with the public API
+ * - Centralize conversion between epoch timestamps and ISO strings
+ *
+ * Non-responsibilities:
+ * - Does not execute writes or reads itself
+ * - Does not own database lifecycle or migration logic
+ *
+ * @remarks
+ * Internal API. These helpers are exported so database modules can share them,
+ * but callers should prefer `WorkspaceStore` and `ControlPlaneDatabase`.
+ */
 import {
   agentSchema,
   jobErrorSchema,
@@ -54,8 +73,21 @@ import type {
 
 const stringArraySchema = agentSchema.shape.node_requirements.shape.capabilities;
 
+/**
+ * Purpose:
+ * Canonical terminal job-state set used by lease and reconciliation helpers.
+ *
+ * Behavior:
+ * Exposes a single membership test for code paths that must avoid mutating jobs
+ * which have already completed, failed, or been aborted.
+ */
 export const terminalJobStatuses = new Set<JobRow["status"]>(["completed", "failed", "aborted"]);
 
+/**
+ * Purpose:
+ * Converts a raw workspace row into the stored workspace view returned by the
+ * database layer.
+ */
 export const parseWorkspaceRow = (row: WorkspaceRow): StoredWorkspace => {
   const config = row.config_json === null ? undefined : parseWithSchema(jsonObjectSchema, row.config_json);
   return {
@@ -67,6 +99,7 @@ export const parseWorkspaceRow = (row: WorkspaceRow): StoredWorkspace => {
   };
 };
 
+/** Purpose: Converts a raw API key row into the stored API key view. */
 export const parseApiKeyRow = (row: ApiKeyRow): StoredApiKey => ({
   api_key_id: row.id,
   workspace_id: row.workspace_id,
@@ -78,6 +111,7 @@ export const parseApiKeyRow = (row: ApiKeyRow): StoredApiKey => ({
   revoked_at: row.revoked_at === null ? null : toIsoDateTime(row.revoked_at),
 });
 
+/** Purpose: Converts a raw node row into the stored node view. */
 export const parseNodeRow = (row: NodeRow): StoredNode => ({
   workspace_id: row.workspace_id,
   manifest: nodeManifestSchema.parse(JSON.parse(row.manifest_json) as unknown),
@@ -91,6 +125,7 @@ export const parseNodeRow = (row: NodeRow): StoredNode => ({
   created_at: toIsoDateTime(row.created_at),
 });
 
+/** Purpose: Converts a raw job row into the stored job view with parsed diagnostics. */
 export const parseJobRow = (row: JobRow): StoredJobWithDiagnostics => {
   const result = parseOptionalWithSchema(jobResultSchema, row.result_json);
   const error = parseOptionalWithSchema(jobErrorSchema, row.error_json);
@@ -114,6 +149,7 @@ export const parseJobRow = (row: JobRow): StoredJobWithDiagnostics => {
   };
 };
 
+/** Purpose: Converts a raw network-session row into the stored binding view. */
 export const parseNetworkSessionRow = (row: NetworkSessionRow): StoredNetworkSession => ({
   network_session_id: row.id,
   workspace_id: row.workspace_id,
@@ -129,6 +165,7 @@ export const parseNetworkSessionRow = (row: NetworkSessionRow): StoredNetworkSes
   closed_at: row.closed_at === null ? null : toIsoDateTime(row.closed_at),
 });
 
+/** Purpose: Converts a raw job-event row into the stored retained-event view. */
 export const parseJobEventRow = (row: JobEventRow): StoredJobEvent => ({
   event_id: row.id,
   workspace_id: row.workspace_id,
@@ -140,6 +177,7 @@ export const parseJobEventRow = (row: JobEventRow): StoredJobEvent => ({
   created_at: toIsoDateTime(row.created_at),
 });
 
+/** Purpose: Converts a raw runtime-session row into the validated stored runtime-session view. */
 export const parseRuntimeSessionRow = (row: RuntimeSessionRow): StoredRuntimeSession => {
   const capabilities = parseWithSchema(runtimeCapabilitySetSchema, row.capabilities_json);
   const config = parseOptionalWithSchema(runtimeSessionCreateInputSchema, row.config_json);
@@ -174,6 +212,7 @@ export const parseRuntimeSessionRow = (row: RuntimeSessionRow): StoredRuntimeSes
   };
 };
 
+/** Purpose: Converts a raw runtime-session-event row into the stored event view. */
 export const parseRuntimeSessionEventRow = (row: RuntimeSessionEventRow): StoredRuntimeSessionEvent => ({
   event_id: row.id,
   workspace_id: row.workspace_id,
@@ -184,6 +223,7 @@ export const parseRuntimeSessionEventRow = (row: RuntimeSessionEventRow): Stored
   created_at: toIsoDateTime(row.created_at),
 });
 
+/** Purpose: Converts a raw runtime-artifact row into the stored artifact view. */
 export const parseRuntimeArtifactRow = (row: RuntimeArtifactRow): StoredRuntimeArtifact => ({
   workspace_id: row.workspace_id,
   artifact: runtimeArtifactDescriptorSchema.parse({
@@ -198,6 +238,7 @@ export const parseRuntimeArtifactRow = (row: RuntimeArtifactRow): StoredRuntimeA
   created_at: toIsoDateTime(row.created_at),
 });
 
+/** Purpose: Converts a raw lease row into the stored lease view. */
 export const parseLeaseRow = (row: LeaseRow): StoredLease => ({
   workspace_id: row.workspace_id,
   job_id: row.job_id,
@@ -214,6 +255,7 @@ export const parseLeaseRow = (row: LeaseRow): StoredLease => ({
   released_at: row.released_at === null ? null : toIsoDateTime(row.released_at),
 });
 
+/** Purpose: Converts a raw agent row into the stored agent view. */
 export const parseAgentRow = (row: AgentRow): StoredAgent => ({
   agent_id: row.id,
   workspace_id: row.workspace_id,
@@ -225,6 +267,7 @@ export const parseAgentRow = (row: AgentRow): StoredAgent => ({
   updated_at: toIsoDateTime(row.updated_at),
 });
 
+/** Purpose: Converts a raw preview row into the stored preview view. */
 export const parsePreviewRow = (row: PreviewRow): StoredPreview => ({
   preview: previewDescriptorSchema.parse(JSON.parse(row.descriptor_json) as unknown),
   revoked_at: row.revoked_at === null ? null : toIsoDateTime(row.revoked_at),
@@ -232,6 +275,7 @@ export const parsePreviewRow = (row: PreviewRow): StoredPreview => ({
   updated_at: toIsoDateTime(row.updated_at),
 });
 
+/** Purpose: Converts a raw node-credential row into the stored credential view. */
 export const parseNodeCredentialRow = (row: NodeCredentialRow): StoredNodeCredential => ({
   credential_id: row.id,
   node_id: row.node_id,
@@ -243,6 +287,7 @@ export const parseNodeCredentialRow = (row: NodeCredentialRow): StoredNodeCreden
   rotated_at: row.rotated_at === null ? null : toIsoDateTime(row.rotated_at),
 });
 
+/** Purpose: Converts a raw idempotency-record row into the stored replay view. */
 export const parseIdempotencyRecordRow = (row: IdempotencyRecordRow): StoredIdempotencyRecord => ({
   scope: row.scope,
   owner_key: row.owner_key,

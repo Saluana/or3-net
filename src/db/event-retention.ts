@@ -1,9 +1,40 @@
+/**
+ * @module src/db/event-retention
+ *
+ * Purpose:
+ * Shared append-and-trim helpers for bounded retained event tables.
+ *
+ * Responsibilities:
+ * - Allocate monotonic per-entity event sequence numbers
+ * - Enforce bounded retention by trimming older rows after insert
+ * - Sanitize event payloads so diagnostic writes stay JSON-safe and size-bounded
+ *
+ * Non-responsibilities:
+ * - Does not define event schemas
+ * - Does not choose table-specific SQL; callers supply those details
+ *
+ * @remarks
+ * Internal API. Exported for reuse by multiple database modules after the DB
+ * client split.
+ */
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 
 import { fromIsoDateTime } from "../lib/time.ts";
 
 const createEventId = (): string => `evt_${crypto.randomUUID().replace(/-/g, "")}`;
 
+/**
+ * Purpose:
+ * Configuration bundle for appending into a bounded retained-event table.
+ *
+ * Behavior:
+ * Callers provide the SQL fragments and row-specific parameter mapping while the
+ * helper manages sequencing, payload sanitization, and trimming.
+ *
+ * Constraints:
+ * - `selectLatestSequenceSql` and `trimSql` must operate on the same logical key
+ * - `retention` is count-based, not time-based
+ */
 export interface AppendRetainedEventOptions {
   readonly db: Database;
   readonly workspaceId: string;
@@ -25,6 +56,22 @@ export interface AppendRetainedEventOptions {
   readonly parseErrorLabel: string;
 }
 
+/**
+ * Purpose:
+ * Appends an event row, trims older retained rows, and returns the stored row.
+ *
+ * Behavior:
+ * Runs inside a single SQLite transaction so sequence allocation and trimming
+ * remain atomic for a workspace/key pair.
+ *
+ * Constraints:
+ * - Caller-provided SQL must scope all operations to the same workspace/key
+ * - Payloads are sanitized before storage, so the stored JSON is diagnostic and
+ *   bounded rather than a byte-for-byte mirror of the original object
+ *
+ * Non-Goals:
+ * - Does not parse the returned row into a domain-specific shape
+ */
 export const appendRetainedEvent = (options: AppendRetainedEventOptions): unknown => {
   const createdAt = options.createdAt ?? new Date().toISOString();
   const eventId = createEventId();

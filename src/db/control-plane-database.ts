@@ -1,3 +1,20 @@
+/**
+ * @module src/db/control-plane-database
+ *
+ * Purpose:
+ * Top-level OR3 Net control-plane database entry point for connection setup,
+ * migrations, cross-workspace records, and startup reconciliation.
+ *
+ * Responsibilities:
+ * - Own the Bun SQLite connection and initialization sequence
+ * - Apply ordered schema migrations
+ * - Expose global records such as workspaces, API keys, and idempotency entries
+ * - Manufacture workspace-scoped stores on demand
+ *
+ * Non-responsibilities:
+ * - Does not expose raw SQL to callers
+ * - Does not parse row payloads directly; that is delegated to `codecs.ts`
+ */
 import { Database } from "bun:sqlite";
 
 import { jobErrorSchema, workspaceSchema } from "../contracts/index.ts";
@@ -26,6 +43,11 @@ import {
  * Purpose:
  * Top-level control-plane database entry point responsible for connection
  * lifecycle, schema initialization, and cross-workspace queries.
+ *
+ * Constraints:
+ * - Uses a single SQLite connection per instance
+ * - Enables WAL mode and foreign-key enforcement immediately
+ * - Startup reconciliation is explicit; construction does not mutate persisted state
  */
 export class ControlPlaneDatabase {
   public readonly sqlite: Database;
@@ -33,6 +55,11 @@ export class ControlPlaneDatabase {
   private readonly jobEventRetentionPerJob: number;
   private readonly runtimeSessionEventRetentionPerSession: number;
 
+  /**
+   * Purpose:
+   * Creates a control-plane database handle with the configured retention and
+   * stale-state thresholds.
+   */
   public constructor(options: DatabaseOptions = {}) {
     this.sqlite = new Database(options.path ?? ":memory:");
     this.staleNodeThresholdMs = options.staleNodeThresholdMs ?? 60_000;
@@ -305,6 +332,10 @@ export class ControlPlaneDatabase {
  * Purpose:
  * Convenience factory that creates, initializes, and returns a control-plane
  * database instance.
+ *
+ * Behavior:
+ * Applies pending migrations before returning so callers receive a ready-to-use
+ * database handle.
  */
 export const createControlPlaneDatabase = (options?: DatabaseOptions): ControlPlaneDatabase => {
   const database = new ControlPlaneDatabase(options);

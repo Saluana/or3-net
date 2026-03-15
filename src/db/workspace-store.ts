@@ -1,3 +1,23 @@
+/**
+ * @module src/db/workspace-store
+ *
+ * Purpose:
+ * Workspace-scoped persistence facade for the OR3 Net control-plane database.
+ *
+ * Responsibilities:
+ * - Enforce workspace isolation for stored entities and retained events
+ * - Validate payloads against contracts before they reach SQLite
+ * - Expose cohesive CRUD surfaces for jobs, nodes, leases, previews, and runtime sessions
+ *
+ * Non-responsibilities:
+ * - Does not own connection lifecycle or migrations
+ * - Does not expose cross-workspace queries; those stay on `ControlPlaneDatabase`
+ *
+ * Architecture:
+ * - Constructed by `ControlPlaneDatabase.workspace(workspaceId)`
+ * - Uses shared row codecs and retained-event helpers for consistency
+ * - Relies on contract schemas to keep stored JSON aligned with API surfaces
+ */
 import type { Database } from "bun:sqlite";
 
 import {
@@ -81,8 +101,25 @@ import {
  * Behavior:
  * Validates incoming payloads, enforces workspace scoping, and applies bounded
  * retention for append-only event tables.
+ *
+ * Constraints:
+ * - All returned records are scoped to `workspaceId`
+ * - JSON columns are validated on write and parsed on read through contract schemas
+ * - Event retention is count-based and enforced after each append
+ *
+ * Non-Goals:
+ * - Does not perform authorization checks
+ * - Does not coordinate cross-workspace reconciliation or global records
  */
 export class WorkspaceStore {
+  /**
+   * Purpose:
+   * Creates a workspace-bound persistence facade over a shared SQLite handle.
+   *
+   * Behavior:
+   * The handle is shared with the parent control-plane database, but every
+   * method in this class scopes reads and writes to `workspaceId`.
+   */
   public constructor(
     private readonly db: Database,
     public readonly workspaceId: string,
