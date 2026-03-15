@@ -14,6 +14,18 @@ bun install
 bun run typecheck && bun run lint && bun test
 ```
 
+## Documentation
+
+Detailed project documentation now lives under [docs/README.md](docs/README.md).
+
+Recommended starting points:
+
+- [docs/getting-started.md](docs/getting-started.md)
+- [docs/concepts/mental-model.md](docs/concepts/mental-model.md)
+- [docs/api/http-api.md](docs/api/http-api.md)
+- [docs/sdk/intern-sdk.md](docs/sdk/intern-sdk.md)
+- [docs/sdk/sandbox-sdk.md](docs/sdk/sandbox-sdk.md)
+
 ## CLI
 
 ```bash
