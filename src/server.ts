@@ -29,12 +29,9 @@ import {
   RuntimeRegistry,
   RuntimeSelectionService,
   RuntimeSessionService,
-  SandboxRuntimeAdapter,
 } from "./runtime/index.ts";
 import type { LeaseScheduler } from "./scheduler/index.ts";
-import type { WarmPoolManager } from "./scheduler/warmpool.ts";
 import type { InMemoryWorkspaceFileService } from "./workspace/files.ts";
-import type { SandboxClient } from "../sdk/sandbox/index.ts";
 
 /**
  * Purpose:
@@ -61,9 +58,7 @@ export interface ServerOptions {
   readonly agentService?: AgentService;
   readonly previewService?: PreviewService;
   readonly workspaceFileService?: InMemoryWorkspaceFileService;
-  readonly sandboxClient?: SandboxClient;
   readonly sandboxNodeAdapter?: SandboxNodeAdapter;
-  readonly warmPoolManager?: WarmPoolManager;
 }
 
 /**
@@ -132,15 +127,6 @@ const resolveRuntimeRegistry = (options: ServerOptions): RuntimeRegistry | undef
 
   const registry = new RuntimeRegistry();
   registry.register(new LocalContainerRuntimeAdapter());
-
-  if (options.sandboxClient !== undefined) {
-    registry.register(
-      new SandboxRuntimeAdapter({
-        sandboxClient: options.sandboxClient,
-        ...(options.warmPoolManager === undefined ? {} : { warmPoolManager: options.warmPoolManager }),
-      }),
-    );
-  }
 
   if (
     options.database !== undefined &&

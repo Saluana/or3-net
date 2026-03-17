@@ -92,7 +92,6 @@ describe("phase 7 runtime integration", () => {
   test("createServerApp auto-registers runtime adapters when dependencies are available", async () => {
     const authService = createAuthService(database);
     seedApprovedRemoteNode(database);
-    const sandboxClient = new FakeSandboxClient();
     const nodeRegistryService = new NodeRegistryService({ database });
     const leaseScheduler = new LeaseScheduler({ database });
     const remoteNodeExecutor = new FakeRemoteExecutor();
@@ -100,7 +99,6 @@ describe("phase 7 runtime integration", () => {
       database,
       authService,
       localJobService: createLocalJobService(database),
-      sandboxClient,
       nodeRegistryService,
       leaseScheduler,
       remoteNodeExecutor: remoteNodeExecutor as never,
@@ -118,7 +116,7 @@ describe("phase 7 runtime integration", () => {
     expect(response.status).toBe(200);
     expect(payload.items.map((item) => item.adapter_id).sort()).toEqual([
       "local-container",
-      "or3-sandbox",
+      "sandbox",
       "remote-node-agent",
     ]);
   });
@@ -133,7 +131,7 @@ describe("phase 7 runtime integration", () => {
     const result = await handle.result;
     const destroyed = await service.destroySession("ws_test", session.session_id);
 
-    expect(session.adapter_id).toBe("or3-sandbox");
+    expect(session.adapter_id).toBe("sandbox");
     expect(result.stdout).toBe("echo hello");
     expect(destroyed.status).toBe("destroyed");
   });
@@ -190,7 +188,7 @@ describe("phase 7 runtime integration", () => {
 
     database.workspace("ws_test").saveRuntimeSession({
       session_id: "sess_reconcile",
-      adapter_id: "or3-sandbox",
+      adapter_id: "sandbox",
       adapter_session_ref: "sbx_missing",
       status: "ready",
       capabilities: ["exec"],

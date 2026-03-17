@@ -17,11 +17,12 @@ When available, server startup now:
 
 - creates a `RuntimeRegistry`
 - always registers `LocalContainerRuntimeAdapter`
-- registers `SandboxRuntimeAdapter` when a `SandboxClient` is configured
 - registers `RemoteNodeRuntimeAdapter` when DB, node registry, lease scheduler, and remote executor dependencies are available
 - creates `RuntimeSelectionService` and `RuntimeSessionService`
 - kicks off `RuntimeSessionService.reconcileOnStartup()`
 - passes the resulting services into `Or3NetApp`
+
+Sandbox execution providers can still be registered manually through `runtimeRegistry` when a deployment wants to offer them, but they are no longer part of the default startup wiring.
 
 Manual `runtimeRegistry` and `runtimeSessionService` overrides are still allowed for tests or custom bootstraps.
 

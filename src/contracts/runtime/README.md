@@ -29,7 +29,7 @@ This package does not replace the existing node protocol or sandbox SDK.
 
 Instead, it wraps the current execution infrastructure behind a uniform contract:
 
-- `SandboxRuntimeAdapter` wraps the sandbox SDK and warm-pool behavior
+- `SandboxRuntimeAdapter` wraps sandbox-style execution providers and warm-pool behavior when a deployment chooses to register one
 - `RemoteNodeRuntimeAdapter` wraps node registry, lease scheduling, and remote execution
 - `LocalContainerRuntimeAdapter` wraps local Docker-based development execution
 

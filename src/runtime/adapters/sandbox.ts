@@ -2,7 +2,7 @@
  * @module src/runtime/adapters/sandbox
  *
  * Purpose:
- * Runtime adapter backed by the OR3 sandbox service.
+ * Runtime adapter backed by a sandbox execution provider.
  */
 import { Buffer } from "node:buffer";
 
@@ -33,8 +33,8 @@ export interface SandboxRuntimeAdapterOptions {
 }
 
 const manifest: RuntimeAdapterManifest = {
-  adapter_id: "or3-sandbox",
-  display_name: "OR3 Sandbox",
+  adapter_id: "sandbox",
+  display_name: "Sandbox",
   version: "1.0.0",
   adapter_kind: "sandbox",
   isolation_class: "sandbox",
