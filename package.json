@@ -6,6 +6,13 @@
   "scripts": {
     "cli": "bun run cli/index.ts",
     "lint": "bunx eslint . --max-warnings 0",
+    "opensandbox:init": "bash ./scripts/opensandbox/opensandbox-init.sh",
+    "opensandbox:init:refresh": "bash ./scripts/opensandbox/opensandbox-init.sh --refresh",
+    "opensandbox:manual": "bash ./scripts/opensandbox/opensandbox-manual-cli-session.sh",
+    "opensandbox:server": "bash ./scripts/opensandbox/opensandbox-server.sh",
+    "opensandbox:stream": "bun ./scripts/opensandbox/opensandbox-stream.ts",
+    "opensandbox:smoke": "bun ./scripts/opensandbox/opensandbox-manual-test.ts",
+    "opensandbox:smoke:cli": "bash ./scripts/opensandbox/opensandbox-cli-smoke.sh",
     "test:contracts": "bun test tests/contracts/*.test.ts tests/sdk.clients.test.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"

@@ -351,13 +351,14 @@ describe("SDK clients", () => {
   });
 
   test("resolveOpenSandboxClientConfig normalizes env aliases and optional fields", () => {
-    expect(resolveOpenSandboxClientConfig()).toBeNull();
+    expect(resolveOpenSandboxClientConfig({})).toBeNull();
 
     expect(resolveOpenSandboxClientConfig({
       OR3_NET_OPENSANDBOX_API_KEY: "api-key",
       OR3_NET_OPENSANDBOX_BASE_URL: "sandbox.test",
       OR3_NET_OPENSANDBOX_PROTOCOL: "https",
       OR3_NET_OPENSANDBOX_REQUEST_TIMEOUT_SECONDS: "12",
+      OR3_NET_OPENSANDBOX_READY_TIMEOUT_SECONDS: "45",
       OR3_NET_OPENSANDBOX_DEFAULT_TIMEOUT_SECONDS: "90",
       OR3_NET_OPENSANDBOX_DEFAULT_IMAGE: "ubuntu",
       OR3_NET_OPENSANDBOX_USE_SERVER_PROXY: "true",
@@ -366,6 +367,7 @@ describe("SDK clients", () => {
       domain: "sandbox.test",
       protocol: "https",
       requestTimeoutSeconds: 12,
+      defaultReadyTimeoutSeconds: 45,
       defaultTimeoutSeconds: 90,
       defaultImage: "ubuntu",
       useServerProxy: true,

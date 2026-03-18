@@ -42,7 +42,10 @@ export class OpenSandboxNodeAdapter implements NodeExecutionAdapter {
       image: this.defaultImage,
       timeout_seconds: this.defaultTimeoutSeconds,
       metadata: buildMetadata(taskPackage, workspaceId, "job"),
-      skip_health_check: true,
+      skip_health_check: false,
+      ...(this.client.config.defaultReadyTimeoutSeconds === undefined
+        ? {}
+        : { ready_timeout_seconds: this.client.config.defaultReadyTimeoutSeconds }),
       entrypoint: ["tail", "-f", "/dev/null"],
     });
 
@@ -156,7 +159,10 @@ export class OpenSandboxNodeAdapter implements NodeExecutionAdapter {
       image: this.defaultImage,
       timeout_seconds: this.defaultTimeoutSeconds,
       metadata: buildNodeMetadata(workspaceId, node),
-      skip_health_check: true,
+      skip_health_check: false,
+      ...(this.client.config.defaultReadyTimeoutSeconds === undefined
+        ? {}
+        : { ready_timeout_seconds: this.client.config.defaultReadyTimeoutSeconds }),
       entrypoint: ["tail", "-f", "/dev/null"],
     });
     this.nodeInstances.set(cacheKey, connection.instance_id);

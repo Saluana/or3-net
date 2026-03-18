@@ -37,5 +37,5 @@
       "@cli/*": ["cli/*"]
     }
   },
-  "include": ["src", "sdk", "cli", "tests", "examples", "index.ts", "eslint.config.mjs"]
+  "include": ["src", "sdk", "cli", "tests", "examples", "scripts", "index.ts", "eslint.config.mjs"]
 }

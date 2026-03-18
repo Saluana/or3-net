@@ -35,8 +35,10 @@ export class SdkOpenSandboxClient implements OpenSandboxClient {
         ...(input.env === undefined ? {} : { env: input.env }),
         ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
         ...(input.resource === undefined ? {} : { resource: input.resource }),
-        skipHealthCheck: input.skip_health_check ?? true,
-        ...(input.ready_timeout_seconds === undefined ? {} : { readyTimeoutSeconds: input.ready_timeout_seconds }),
+        skipHealthCheck: input.skip_health_check ?? false,
+        ...((input.ready_timeout_seconds ?? this.config.defaultReadyTimeoutSeconds) === undefined
+          ? {}
+          : { readyTimeoutSeconds: input.ready_timeout_seconds ?? this.config.defaultReadyTimeoutSeconds }),
         ...(input.health_check_polling_interval === undefined
           ? {}
           : { healthCheckPollingInterval: input.health_check_polling_interval }),
@@ -270,14 +272,18 @@ export const resolveOpenSandboxClientConfig = (
   }
 
   const timeoutValue = env["OR3_NET_OPENSANDBOX_DEFAULT_TIMEOUT_SECONDS"]?.trim();
+  const readyTimeoutValue = env["OR3_NET_OPENSANDBOX_READY_TIMEOUT_SECONDS"]?.trim();
   const requestTimeoutValue = env["OR3_NET_OPENSANDBOX_REQUEST_TIMEOUT_SECONDS"]?.trim();
   const parsedTimeout = timeoutValue === undefined || timeoutValue === "" ? undefined : Number(timeoutValue);
+  const parsedReadyTimeout = readyTimeoutValue === undefined || readyTimeoutValue === "" ? undefined : Number(readyTimeoutValue);
   const parsedRequestTimeout =
     requestTimeoutValue === undefined || requestTimeoutValue === "" ? undefined : Number(requestTimeoutValue);
   const requestTimeoutSeconds =
     typeof parsedRequestTimeout === "number" && Number.isFinite(parsedRequestTimeout) ? parsedRequestTimeout : undefined;
   const defaultTimeoutSeconds =
     typeof parsedTimeout === "number" && Number.isFinite(parsedTimeout) ? parsedTimeout : undefined;
+  const defaultReadyTimeoutSeconds =
+    typeof parsedReadyTimeout === "number" && Number.isFinite(parsedReadyTimeout) ? parsedReadyTimeout : undefined;
 
   return {
     domain,
@@ -287,6 +293,7 @@ export const resolveOpenSandboxClientConfig = (
       : { protocol: env["OR3_NET_OPENSANDBOX_PROTOCOL"] === "https" ? "https" : "http" }),
     ...(requestTimeoutSeconds === undefined ? {} : { requestTimeoutSeconds }),
     ...(defaultTimeoutSeconds === undefined ? {} : { defaultTimeoutSeconds }),
+    ...(defaultReadyTimeoutSeconds === undefined ? {} : { defaultReadyTimeoutSeconds }),
     ...(env["OR3_NET_OPENSANDBOX_DEFAULT_IMAGE"] === undefined
       ? {}
       : { defaultImage: env["OR3_NET_OPENSANDBOX_DEFAULT_IMAGE"] }),

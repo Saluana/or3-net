@@ -86,7 +86,10 @@ export class OpenSandboxRuntimeAdapter implements RuntimeAdapter {
           or3_role: "runtime",
           or3_session_id: input.session_id,
         },
-        skip_health_check: true,
+        skip_health_check: false,
+        ...(this.options.client.config.defaultReadyTimeoutSeconds === undefined
+          ? {}
+          : { ready_timeout_seconds: this.options.client.config.defaultReadyTimeoutSeconds }),
         entrypoint: ["tail", "-f", "/dev/null"],
       });
       await connection.close();

@@ -15,6 +15,7 @@ export interface OpenSandboxClientConfig {
   readonly useServerProxy?: boolean;
   readonly defaultImage?: string;
   readonly defaultTimeoutSeconds?: number | null;
+  readonly defaultReadyTimeoutSeconds?: number;
 }
 
 export interface OpenSandboxCreateRequest {
