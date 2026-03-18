@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 
 type OpenSandboxEnv = Record<string, string>;
 
-const rootDir = resolve(import.meta.dir, "..");
+const rootDir = resolve(import.meta.dir, "..", "..");
 const envPath = resolve(rootDir, ".local/opensandbox/env.sh");
 
 const logStep = (message: string): void => {

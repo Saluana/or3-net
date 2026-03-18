@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STATE_DIR="${ROOT_DIR}/.local/opensandbox"
 VENV_DIR="${STATE_DIR}/.venv"
 CLI_HOME="${STATE_DIR}/home"

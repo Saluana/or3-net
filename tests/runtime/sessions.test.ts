@@ -58,6 +58,8 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
     capabilities: RuntimeCapabilitySet.fromValues(["exec", "copy-in", "copy-out", "stop"]),
   };
   public stopResult: { stopped: boolean; status: RuntimeSessionState } = { stopped: true, status: "stopped" };
+  public execResult = { exit_code: 0, stdout: "ok", stderr: "", artifacts: [], meta: {} };
+  public logsResult: RuntimeLogsResult = { chunks: [{ stream: "stdout", message: "hello" }] };
   public readonly sessionFiles = new Map<string, Map<string, string>>();
   public readonly importedArchives = new Map<string, Uint8Array>();
   public readonly exportedArchives = new Map<string, Uint8Array>();
@@ -104,7 +106,7 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
     void input;
     return Promise.resolve({
       execution_id: "exec_1",
-      result: Promise.resolve({ exit_code: 0, stdout: "ok", stderr: "", artifacts: [], meta: {} }),
+      result: Promise.resolve(this.execResult),
       abort: () => Promise.resolve({ acknowledged: true }),
     });
   }
@@ -149,7 +151,7 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
 
   public getLogs(input: { workspace_id: string } & RuntimeGetLogsInput): Promise<RuntimeLogsResult> {
     void input;
-    return Promise.resolve({ chunks: [{ stream: "stdout", message: "hello" }] });
+    return Promise.resolve(this.logsResult);
   }
 
   public stop(): Promise<{ stopped: boolean; status: RuntimeSessionState }> {
@@ -292,6 +294,29 @@ describe("runtime session service", () => {
       service.exec("ws_test", "sess_2", { command: "echo", args: [], env: {}, background: false }),
     );
     expect(error.code).toBe("unsupported_capability");
+  });
+
+  test("getLogs falls back to persisted exec output when adapter returns no logs", async () => {
+    adapter.logsResult = { chunks: [] };
+    adapter.execResult = { exit_code: 0, stdout: "stdout line", stderr: "stderr line", artifacts: [], meta: {} };
+
+    const session = await service.createSession("ws_test", {
+      workspace_mode: "none",
+      network_policy: { internet_access: false, ingress: "none" },
+      resource_hints: { metadata: {} },
+      persistence_mode: "ephemeral",
+      env_refs: [],
+      secret_refs: [],
+      timeout_rules: {},
+      artifact_rules: { capture_paths: [], push_on_completion: false, metadata: {} },
+    });
+
+    await service.exec("ws_test", session.session_id, { command: "echo", args: [], env: {}, background: false }).then((handle) => handle.result);
+    const logs = await service.getLogs("ws_test", session.session_id, { limit: 10 });
+
+    expect(logs.chunks).toHaveLength(2);
+    expect(logs.chunks[0]).toMatchObject({ stream: "stdout", message: "stdout line" });
+    expect(logs.chunks[1]).toMatchObject({ stream: "stderr", message: "stderr line" });
   });
 
   test("unsupported capability returns unsupported_capability error", async () => {

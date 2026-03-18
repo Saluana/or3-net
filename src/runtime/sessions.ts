@@ -121,6 +121,7 @@ export class RuntimeSessionService {
     const config = normalizeConfig(input);
     const requiredCapabilities = [...(config.required_capabilities ?? [])];
     const selected = await this.selection.select(workspaceId, {
+      ...(config.adapter_id === undefined ? {} : { adapter_id: config.adapter_id }),
       required_capabilities: requiredCapabilities,
       ...(config.preset_id === undefined ? {} : { preset_id: config.preset_id }),
     });
@@ -272,6 +273,7 @@ export class RuntimeSessionService {
           for (const artifact of result.artifacts) {
             store.saveRuntimeArtifact({ artifact });
           }
+          appendExecutionLogEvents(store, sessionId, handle.execution_id, result);
           store.appendRuntimeSessionEvent({
             session_id: sessionId,
             event_type: "exec.completed",
@@ -461,11 +463,17 @@ export class RuntimeSessionService {
   public async getLogs(workspaceId: string, sessionId: string, input: Omit<RuntimeGetLogsInput, "session_ref">): Promise<RuntimeLogsResult> {
     const stored = this.requireSession(workspaceId, sessionId);
     const adapter = this.requireAdapter(stored.session.adapter_id);
-    return await adapter.getLogs({
+    const logs = await adapter.getLogs({
       workspace_id: workspaceId,
       session_ref: requireSessionRef(stored),
       ...input,
     });
+
+		if (logs.chunks.length > 0 || logs.next_cursor !== undefined) {
+			return logs;
+		}
+
+		return synthesizeLogsFromEvents(this.database.workspace(workspaceId), sessionId, input);
   }
 
   public async copyIn(workspaceId: string, sessionId: string, input: Omit<RuntimeCopyInInput, "session_ref">): Promise<RuntimeFileTransferResult> {
@@ -786,6 +794,79 @@ const hasAllCapabilities = (
   declaredCapabilities: { includes(capability: RuntimeCapability): boolean },
   requiredCapabilities: readonly RuntimeCapability[],
 ): boolean => requiredCapabilities.every((capability) => declaredCapabilities.includes(capability));
+
+const appendExecutionLogEvents = (
+  store: ReturnType<ControlPlaneDatabase["workspace"]>,
+  sessionId: string,
+  executionId: string,
+  result: Awaited<RuntimeExecutionHandle["result"]>,
+): void => {
+  if (result.stdout !== "") {
+    store.appendRuntimeSessionEvent({
+      session_id: sessionId,
+      event_type: "log.stdout",
+      payload: {
+        execution_id: executionId,
+        stream: "stdout",
+        message: result.stdout,
+      },
+    });
+  }
+
+  if (result.stderr !== "") {
+    store.appendRuntimeSessionEvent({
+      session_id: sessionId,
+      event_type: "log.stderr",
+      payload: {
+        execution_id: executionId,
+        stream: "stderr",
+        message: result.stderr,
+      },
+    });
+  }
+};
+
+const synthesizeLogsFromEvents = (
+  store: ReturnType<ControlPlaneDatabase["workspace"]>,
+  sessionId: string,
+  input: Omit<RuntimeGetLogsInput, "session_ref">,
+): RuntimeLogsResult => {
+  const cursorValue = input.cursor === undefined ? undefined : Number(input.cursor);
+  const limit = input.limit ?? 100;
+  const filteredEvents = store
+    .listRuntimeSessionEvents(sessionId, Math.max(limit * 4, limit))
+    .filter((event) => event.event_type === "log.stdout" || event.event_type === "log.stderr")
+    .filter((event) => (cursorValue === undefined || Number.isNaN(cursorValue) ? true : event.sequence > cursorValue));
+
+  const chunks = filteredEvents.slice(0, limit).flatMap((event) => {
+    const payload = parseRuntimeSessionEventPayload(event.payload_json);
+    const message = typeof payload["message"] === "string" ? payload["message"] : undefined;
+    const stream = payload["stream"] === "stderr" ? "stderr" : payload["stream"] === "system" ? "system" : "stdout";
+    if (message === undefined || message === "") {
+      return [];
+    }
+    return [{
+      stream,
+      message,
+      cursor: String(event.sequence),
+      created_at: event.created_at,
+    }] satisfies RuntimeLogsResult["chunks"];
+  });
+
+  const nextCursor = chunks.at(-1)?.cursor;
+  return nextCursor === undefined ? { chunks } : { chunks, next_cursor: nextCursor };
+};
+
+const parseRuntimeSessionEventPayload = (payloadJson: string): Record<string, unknown> => {
+  try {
+    const parsed = JSON.parse(payloadJson) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+};
 
 const markFailed = (
   store: ReturnType<ControlPlaneDatabase["workspace"]>,

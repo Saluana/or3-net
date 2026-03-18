@@ -263,6 +263,19 @@ describe("runtime registry and selection", () => {
     expect(selection.node?.locality).toBe("remote");
   });
 
+  test("selection honors an explicit adapter id", async () => {
+    const registry = new RuntimeRegistry();
+    registry.register(createAdapter({ adapter_id: "local-dev", locality: "local", capabilities: ["exec"] }));
+    registry.register(createAdapter({ adapter_id: "opensandbox", locality: "remote", capabilities: ["exec"] }));
+
+    const selection = await new RuntimeSelectionService(registry).select("ws_1", {
+      adapter_id: "opensandbox",
+      required_capabilities: ["exec"],
+    });
+
+    expect(selection.adapter.manifest.adapter_id).toBe("opensandbox");
+  });
+
   test("selection throws policy_denied when no adapter matches", async () => {
     const registry = new RuntimeRegistry();
     registry.register(createAdapter({ adapter_id: "exec-only", capabilities: ["exec"] }));

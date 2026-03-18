@@ -119,6 +119,7 @@ export const workspaceCommitResultSchema = z.object({
  */
 export const runtimeSessionCreateInputSchema = z.object({
   preset_id: nonEmptyStringSchema.optional(),
+  adapter_id: nonEmptyStringSchema.optional(),
   required_capabilities: runtimeCapabilitySetSchema.optional(),
   workspace_ref: runtimeWorkspaceRefSchema.optional(),
   workspace_stage: runtimeWorkspaceStageSpecSchema.optional(),
