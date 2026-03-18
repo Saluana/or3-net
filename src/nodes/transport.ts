@@ -5,13 +5,14 @@
  * Shared node transport contracts and error-normalization helpers used by the
  * remote execution path.
  */
-import type { JobError, JobResult, JobStreamEvent, NodeEvent, NodeResponse, TaskPackage } from "../contracts/index.ts";
+import type { JobError, JobResult, JobStreamEvent, NodeEvent, NodeRequest, NodeResponse, TaskPackage } from "../contracts/index.ts";
 
 /** Purpose: Transport interface implemented by remote node RPC connectors. */
 export interface NodeRpcTransport {
   readonly kind: "https" | "outbound-wss";
   startExecution(taskPackage: TaskPackage, context: NodeExecutionContext): Promise<NodeExecutionHandle>;
   heartbeat?(context: NodeExecutionContext): Promise<void>;
+  sendRequest?(request: NodeRequest, context: NodeExecutionContext): Promise<NodeResponse>;
 }
 
 /** Purpose: Time-bounded credential material used for node transport auth. */

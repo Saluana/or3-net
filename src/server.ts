@@ -21,7 +21,7 @@ import { handleAppRequest, Or3NetApp } from "./api/app.ts";
 import type { ControlPlaneDatabase } from "./db/index.ts";
 import type { LocalJobService } from "./execution/local-jobs.ts";
 import type { NodeExecutionAdapter } from "./nodes/execution-adapter.ts";
-import type { NodeRegistryService, RemoteNodeExecutor } from "./nodes/index.ts";
+import type { NodeRegistryService, OutboundWssNodeTransport, RemoteNodeExecutor } from "./nodes/index.ts";
 import type { PreviewService } from "./previews/service.ts";
 import {
   CloudflareSandboxRuntimeAdapter,
@@ -65,6 +65,7 @@ export interface ServerOptions {
   readonly previewService?: PreviewService;
   readonly workspaceFileService?: InMemoryWorkspaceFileService;
   readonly nodeExecutionAdapter?: NodeExecutionAdapter;
+  readonly outboundWssTransport?: OutboundWssNodeTransport;
 }
 
 /**
@@ -110,8 +111,74 @@ export const startServer = (
   const app = createServerApp(options);
   return Bun.serve({
     port: options.port ?? 3001,
-    fetch: (request) => handleAppRequest(app, request),
+    fetch: async (request, server) => {
+      const maybeUpgrade = await tryHandleNodeTransportUpgrade(options.outboundWssTransport, request, server);
+      if (maybeUpgrade !== null) {
+        return maybeUpgrade;
+      }
+      return handleAppRequest(app, request);
+    },
+    websocket: {
+      open: (socket) => {
+        const data = socket.data as { workspaceId?: string; nodeId?: string } | undefined;
+        if (data?.workspaceId !== undefined && data.nodeId !== undefined) {
+          options.outboundWssTransport?.attachLiveConnection({
+            workspaceId: data.workspaceId,
+            nodeId: data.nodeId,
+            socket,
+          });
+        }
+      },
+      message: (socket, message) => {
+        const data = socket.data as { workspaceId?: string; nodeId?: string } | undefined;
+        if (data?.workspaceId === undefined || data.nodeId === undefined) {
+          return;
+        }
+        options.outboundWssTransport?.handleLiveMessage(
+          data.workspaceId,
+          data.nodeId,
+          typeof message === "string" ? message : Buffer.from(message).toString("utf8"),
+        );
+      },
+      close: (socket) => {
+        const data = socket.data as { workspaceId?: string; nodeId?: string } | undefined;
+        if (data?.workspaceId !== undefined && data.nodeId !== undefined) {
+          options.outboundWssTransport?.detachLiveConnection(data.workspaceId, data.nodeId);
+        }
+      },
+    },
   });
+};
+
+const tryHandleNodeTransportUpgrade = async (
+  transport: OutboundWssNodeTransport | undefined,
+  request: Request,
+  server: Parameters<NonNullable<Parameters<typeof Bun.serve>[0]["fetch"]>>[1],
+): Promise<Response | null> => {
+  if (transport === undefined) {
+    return null;
+  }
+
+  const url = new URL(request.url);
+  if (request.method !== "GET" || url.pathname !== "/v1/nodes/connect") {
+    return null;
+  }
+
+  const token = url.searchParams.get("token")?.trim() ?? "";
+  if (token === "") {
+    return new Response("missing token", { status: 401 });
+  }
+
+  const authenticated = await transport.authenticateConnectionToken(token);
+  if (authenticated === null) {
+    return new Response("invalid node credential", { status: 401 });
+  }
+
+  if (server.upgrade(request, { data: authenticated })) {
+    return new Response(null, { status: 101 });
+  }
+
+  return new Response("websocket upgrade failed", { status: 500 });
 };
 
 const resolveServerOptions = (options: ServerOptions): ServerOptions => {

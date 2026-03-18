@@ -19,7 +19,7 @@
 
 - [x] [Req 1, 2, 13] Implement `or3-node launch` as the main entrypoint that loads config, creates identity if needed, handles bootstrap if missing, and then starts the agent loop.
 - [x] [Req 1] Add flag-based non-interactive launch support such as `--url` and `--token` for automation.
-- [ ] [Req 1, 13] Add an interactive prompt flow for first-run bootstrap when required inputs are missing.
+- [x] [Req 1, 13] Add an interactive prompt flow for first-run bootstrap when required inputs are missing.
 - [x] [Req 1, 12, 13] Persist generated config and identity state on first successful launch so restarts do not require repeating setup.
 - [x] [Req 1, 13] Add a simple `or3-node doctor` command to validate config, connectivity, identity, and approval status.
 
@@ -30,76 +30,76 @@
 - [x] [Req 2] Implement agent-side keypair generation, manifest signing, and bootstrap redemption.
 - [x] [Req 13] Keep bootstrap as a small extension to existing node enrollment rather than a separate onboarding subsystem in `or3-net`.
 - [x] [Req 1, 2, 13] Keep `init` and `enroll` as optional advanced commands only if they are still useful for debugging; do not require them for the normal `launch` flow.
-- [ ] [Req 2, 3] Add tests for bootstrap token expiry, invalid tokens, node id reuse, and pubkey mismatch.
+- [x] [Req 2, 3] Add tests for bootstrap token expiry, invalid tokens, node id reuse, and pubkey mismatch.
 
 ## 5. Approval and runtime credential lifecycle
 
 - [x] [Req 3] Extend `NodeRegistryService` in `src/nodes/registry.ts` so agent-friendly approval and credential handoff are documented and test-covered.
-- [ ] [Req 3, 12] Implement agent-side secure storage for the node runtime credential and expiry metadata.
-- [ ] [Req 3] Implement credential refresh / re-fetch flow before expiry, or document explicit re-approval behavior if refresh is deferred.
-- [ ] [Req 3, 12] Add regression tests covering credential rotation, revocation, and restart behavior.
+- [x] [Req 3, 12] Implement agent-side secure storage for the node runtime credential and expiry metadata.
+- [x] [Req 3] Implement credential refresh / re-fetch flow before expiry, or document explicit re-approval behavior if refresh is deferred.
+- [x] [Req 3, 12] Add regression tests covering credential rotation, revocation, and restart behavior.
 
 ## 6. Real outbound connection transport
 
-- [ ] [Req 4] Replace the current in-process-only role of `src/nodes/transport-wss.ts` with real connected-agent session management.
-- [ ] [Req 4, 13] Add a server-side connection hub that authenticates the node credential and binds a live socket to `(workspaceId, nodeId)`.
-- [ ] [Req 13] Keep the hub narrow and reuse the current node transport registry/executor model instead of introducing a parallel remote-control service tree.
-- [ ] [Req 4] Implement agent-side outbound WSS connection, reconnect backoff, heartbeat loop, and last-seen updates.
-- [ ] [Req 4] Keep `src/nodes/transport-https.ts` as a dev/fallback transport and document the tradeoffs.
-- [ ] [Req 4, 13] Add integration tests for connect, disconnect, reconnect, auth failure, and stale-health behavior.
+- [x] [Req 4] Replace the current in-process-only role of `src/nodes/transport-wss.ts` with real connected-agent session management.
+- [x] [Req 4, 13] Add a server-side connection hub that authenticates the node credential and binds a live socket to `(workspaceId, nodeId)`.
+- [x] [Req 13] Keep the hub narrow and reuse the current node transport registry/executor model instead of introducing a parallel remote-control service tree.
+- [x] [Req 4] Implement agent-side outbound WSS connection, reconnect backoff, heartbeat loop, and last-seen updates.
+- [x] [Req 4] Keep `src/nodes/transport-https.ts` as a dev/fallback transport and document the tradeoffs.
+- [x] [Req 4, 13] Add integration tests for connect, disconnect, reconnect, auth failure, and stale-health behavior.
 
 ## 7. Agent host-control core
 
 - [x] [Req 6, 11] Create the internal host-control boundary inside the agent for exec, abort, optional file access, optional PTY, and optional tunnel operations.
 - [x] [Req 6, 11] Implement host exec with argv-first execution, cwd/env controls, timeout enforcement, stdout/stderr caps, stdin caps, and structured terminal states.
 - [x] [Req 11] Add config-driven allowlists for environment passthrough and filesystem roots.
-- [ ] [Req 12, 13] Persist enough local execution metadata for restart-safe debugging and recent-failure reporting.
-- [ ] [Req 6, 11, 13] Add unit tests for timeout, missing binary, invalid cwd, oversized output, abort, and secrets-safe error handling.
+- [x] [Req 12, 13] Persist enough local execution metadata for restart-safe debugging and recent-failure reporting.
+- [x] [Req 6, 11, 13] Add unit tests for timeout, missing binary, invalid cwd, oversized output, abort, and secrets-safe error handling.
 
 ## 8. Wire leased execution into existing OR3 Net nodes flow
 
-- [ ] [Req 6] Implement real `execute`, `heartbeat`, and `abort` handling over the connected WSS transport using the current `src/contracts/protocol.ts` contract as the starting point.
-- [ ] [Req 6] Update `src/nodes/executor.ts` to resolve connected agents and dispatch real remote work instead of only in-memory handler shims.
-- [ ] [Req 6] Validate that `RemoteNodeExecutor` and job streaming continue to produce normalized OR3 job events.
-- [ ] [Req 13] Avoid new job-dispatch subsystems; keep remote leased execution flowing through the current executor path.
-- [ ] [Req 6, 13] Add integration tests for lease issue → remote execute → stream → complete, plus abort and disconnected-node failures.
+- [x] [Req 6] Implement real `execute`, `heartbeat`, and `abort` handling over the connected WSS transport using the current `src/contracts/protocol.ts` contract as the starting point.
+- [x] [Req 6] Update `src/nodes/executor.ts` to resolve connected agents and dispatch real remote work instead of only in-memory handler shims.
+- [x] [Req 6] Validate that `RemoteNodeExecutor` and job streaming continue to produce normalized OR3 job events.
+- [x] [Req 13] Avoid new job-dispatch subsystems; keep remote leased execution flowing through the current executor path.
+- [x] [Req 6, 13] Add integration tests for lease issue → remote execute → stream → complete, plus abort and disconnected-node failures.
 
 ## 9. Grow remote-node runtime sessions beyond exec-only
 
-- [ ] [Req 7] Decide and document the minimum internal RPC extension needed for remote runtime-session support.
-- [ ] [Req 7] Extend `src/contracts/protocol.ts` with session-oriented node RPC methods for `create_session`, `get_session`, `destroy_session`, `exec`, and `get_logs`.
-- [ ] [Req 7] Implement matching agent-side handlers backed by the host-control service.
-- [ ] [Req 7] Extend `src/runtime/adapters/remote-node.ts` to support session creation, execution, destroy, and logs through the agent.
-- [ ] [Req 13] Reuse the public runtime-session routes already in `src/api/app.ts`; do not add a second public machine-session API unless a proven gap remains.
-- [ ] [Req 7] Add runtime-session integration tests covering capability mismatches, session lifecycle, and log retrieval.
+- [x] [Req 7] Decide and document the minimum internal RPC extension needed for remote runtime-session support.
+- [x] [Req 7] Extend `src/contracts/protocol.ts` with session-oriented node RPC methods for `create_session`, `get_session`, `destroy_session`, `exec`, and `get_logs`.
+- [x] [Req 7] Implement matching agent-side handlers backed by the host-control service.
+- [x] [Req 7] Extend `src/runtime/adapters/remote-node.ts` to support session creation, execution, destroy, and logs through the agent.
+- [x] [Req 13] Reuse the public runtime-session routes already in `src/api/app.ts`; do not add a second public machine-session API unless a proven gap remains.
+- [x] [Req 7] Add runtime-session integration tests covering capability mismatches, session lifecycle, and log retrieval.
 
 ## 10. Add file access support
 
-- [ ] [Req 8] Define file-operation RPC shapes for read, write, copy-in, and copy-out in the internal node protocol.
-- [ ] [Req 8, 11] Implement allowed-root validation, size caps, and traversal prevention in the agent host-control layer.
-- [ ] [Req 8] Extend `src/runtime/adapters/remote-node.ts` to surface file capabilities when the node manifest advertises them.
-- [ ] [Req 8, 13] Add unit and integration tests for valid reads/writes, oversized transfers, invalid paths, and disabled capability behavior.
+- [x] [Req 8] Define file-operation RPC shapes for read, write, copy-in, and copy-out in the internal node protocol.
+- [x] [Req 8, 11] Implement allowed-root validation, size caps, and traversal prevention in the agent host-control layer.
+- [x] [Req 8] Extend `src/runtime/adapters/remote-node.ts` to surface file capabilities when the node manifest advertises them.
+- [x] [Req 8, 13] Add unit and integration tests for valid reads/writes, oversized transfers, invalid paths, and disabled capability behavior.
 
 ## 11. Add PTY support
 
-- [ ] [Req 9] Define PTY RPC and event framing over WSS for open, input, resize, close, output, and exit.
-- [ ] [Req 9] Implement agent-side PTY lifecycle management with platform checks and session limits.
-- [ ] [Req 9] Add OR3 Net server wiring for PTY-capable remote runtime sessions or a scoped machine-control route if runtime-session parity is staged.
-- [ ] [Req 9, 13] Add tests for PTY open, resize, exit, disconnect cleanup, and unsupported-platform failures.
+- [x] [Req 9] Define PTY RPC and event framing over WSS for open, input, resize, close, output, and exit.
+- [x] [Req 9] Implement agent-side PTY lifecycle management with platform checks and session limits.
+- [x] [Req 9] Add OR3 Net server wiring for PTY-capable remote runtime sessions or a scoped machine-control route if runtime-session parity is staged.
+- [x] [Req 9, 13] Add tests for PTY open, resize, exit, disconnect cleanup, and unsupported-platform failures.
 
 ## 12. Add service exposure and preview integration
 
-- [ ] [Req 10] Define how the agent advertises launchable local services or tunnel targets without exposing arbitrary raw ports by default.
-- [ ] [Req 10] Extend the node execution / remote runtime path to request a controlled service launch from the agent.
-- [ ] [Req 10] Keep preview-token minting in `or3-net` and integrate the agent flow with existing preview launch and revoke behavior in `src/api/app.ts` and preview services.
-- [ ] [Req 10, 13] Add integration tests for launch, revoke, expiry, and recent-failure reporting.
+- [x] [Req 10] Define how the agent advertises launchable local services or tunnel targets without exposing arbitrary raw ports by default.
+- [x] [Req 10] Extend the node execution / remote runtime path to request a controlled service launch from the agent.
+- [x] [Req 10] Keep preview-token minting in `or3-net` and integrate the agent flow with existing preview launch and revoke behavior in `src/api/app.ts` and preview services.
+- [x] [Req 10, 13] Add integration tests for launch, revoke, expiry, and recent-failure reporting.
 
 ## 13. Health, info, and observability
 
-- [ ] [Req 5, 13] Add agent-local `info` and `health` reporting including version, platform, arch, capability summary, connection state, and recent error.
-- [ ] [Req 13] Surface node connection health cleanly in OR3 Net list and detail routes.
-- [ ] [Req 13] Add structured logs on both sides for bootstrap, approval, connect, disconnect, exec start/finish, PTY lifecycle, and service launch.
-- [ ] [Req 1, 13] Write manual smoke docs and scripts from `bun install -g or3-node` to first remote command.
+- [x] [Req 5, 13] Add agent-local `info` and `health` reporting including version, platform, arch, capability summary, connection state, and recent error.
+- [x] [Req 13] Surface node connection health cleanly in OR3 Net list and detail routes.
+- [x] [Req 13] Add structured logs on both sides for bootstrap, approval, connect, disconnect, exec start/finish, PTY lifecycle, and service launch.
+- [x] [Req 1, 13] Write manual smoke docs and scripts from `bun install -g or3-node` to first remote command.
 
 ## 14. Cross-platform and packaging work
 

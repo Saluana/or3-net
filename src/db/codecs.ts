@@ -1,4 +1,3 @@
-import type { NodeBootstrapTokenRow, StoredNodeBootstrapToken } from "./schema.ts";
 /**
  * @module src/db/codecs
  *
@@ -55,6 +54,7 @@ import type {
   RuntimeArtifactRow,
   RuntimeSessionEventRow,
   RuntimeSessionRow,
+  NodeBootstrapTokenRow,
   StoredAgent,
   StoredApiKey,
   StoredIdempotencyRecord,
@@ -63,6 +63,7 @@ import type {
   StoredLease,
   StoredNetworkSession,
   StoredNode,
+  StoredNodeBootstrapToken,
   StoredNodeCredential,
   StoredPreview,
   StoredRuntimeArtifact,

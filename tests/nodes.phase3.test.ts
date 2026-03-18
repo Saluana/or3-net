@@ -311,6 +311,61 @@ describe("phase 3 node control plane", () => {
     expect(await redeemResponse.text()).toContain("invalid or expired node bootstrap token");
   });
 
+  test("rejects expired bootstrap tokens", async () => {
+    const token = await exchangeAdminToken(app);
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_expired_bootstrap",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote" as const,
+      capabilities: ["exec"],
+      isolation_class: "host-trusted",
+      supports_transports: ["outbound-wss", "https"],
+      resource_limits: {
+        max_concurrent_jobs: 1,
+        cpu_cores: 2,
+        memory_mb: 2048,
+        disk_mb: 4096,
+      },
+      lease_policy: {
+        max_ttl_seconds: 300,
+        supports_warm_pool: false,
+        reset_methods: ["process_kill"],
+      },
+      version: "1.0.0",
+    };
+    const manifest = {
+      ...unsignedManifest,
+      signature: signNodeManifest(unsignedManifest, keyPair.secretKey),
+    };
+
+    const issueResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_nodes/nodes/bootstrap-tokens", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ expires_at: "2000-01-01T00:00:00.000Z" }),
+      }),
+    );
+    expect(issueResponse.status).toBe(201);
+    const bootstrap = (await issueResponse.json()) as { token: string };
+
+    const redeemResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/nodes/bootstrap/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: bootstrap.token, manifest }),
+      }),
+    );
+
+    expect(redeemResponse.status).toBe(400);
+    expect(await redeemResponse.text()).toContain("invalid or expired node bootstrap token");
+  });
+
   test("rejects bootstrap redemption when the same node id uses a different public key", async () => {
     const token = await exchangeAdminToken(app);
     const keyPair = nacl.sign.keyPair();

@@ -6,10 +6,10 @@
  * control plane can start or monitor remote execution.
  */
 import type { ControlPlaneDatabase } from "../db/index.ts";
-import type { JobResult, StoredNode, TaskPackage } from "../index.ts";
+import type { JobResult, NodeRequest, NodeResponse, StoredNode, TaskPackage } from "../index.ts";
 
 import type { NodeTransportRegistry } from "./transport-registry.ts";
-import { RemoteExecutionError, type NodeExecutionHandle, type NodeTransportCredential } from "./transport.ts";
+import { RemoteExecutionError, type NodeExecutionHandle, type NodeRpcTransport, type NodeTransportCredential } from "./transport.ts";
 
 /**
  * Purpose:
@@ -90,6 +90,39 @@ export class RemoteNodeExecutor {
       nodeId: node.manifest.node_id,
       credential: this.resolveCredential(node, credential),
     });
+  }
+
+  /** Purpose: Sends an arbitrary node RPC request when the resolved transport supports it. */
+  public async sendRequest(
+    node: StoredNode,
+    request: NodeRequest,
+    credential?: { token: string; expires_at: string },
+  ): Promise<NodeResponse> {
+    const transport = this.resolveTransport(node);
+    if (transport.sendRequest === undefined) {
+      throw new RemoteExecutionError(
+        "remote_execution_failed",
+        `transport ${transport.kind} does not support arbitrary RPC for node ${node.manifest.node_id}`,
+        { details: { node_id: node.manifest.node_id } },
+      );
+    }
+    return transport.sendRequest(request, {
+      workspaceId: node.workspace_id,
+      nodeId: node.manifest.node_id,
+      credential: this.resolveCredential(node, credential),
+    });
+  }
+
+  private resolveTransport(node: StoredNode): NodeRpcTransport {
+    try {
+      return this.transportRegistry.resolve(node);
+    } catch (error) {
+      throw new RemoteExecutionError(
+        "remote_execution_start_failed",
+        error instanceof Error ? error.message : `no runtime transport is available for node ${node.manifest.node_id}`,
+        { details: { node_id: node.manifest.node_id } },
+      );
+    }
   }
 
   private resolveCredential(node: StoredNode, credential?: { token: string; expires_at: string }): NodeTransportCredential {

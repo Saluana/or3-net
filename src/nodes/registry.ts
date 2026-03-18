@@ -18,7 +18,7 @@ import { verifyNodeManifestSignature } from "./signatures.ts";
 /** Purpose: Enrollment payload for a node manifest. */
 export const enrollNodeRequestSchema = nodeManifestSchema;
 export const issueNodeBootstrapTokenRequestSchema = schema.object({
-  expires_at: schema.string().datetime().optional(),
+  expires_at: schema.iso.datetime().optional(),
 });
 export const redeemNodeBootstrapTokenRequestSchema = schema.object({
   token: schema.string().trim().min(1),

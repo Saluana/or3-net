@@ -17,6 +17,7 @@ import type {
   RuntimeAdapterManifest,
   RuntimeAdapterHealth,
   RuntimeAdapterSessionHandle,
+  RuntimeCapability,
   RuntimeCopyInInput,
   RuntimeCopyOutInput,
   RuntimeExecutionEvent,
@@ -47,6 +48,7 @@ export interface RemoteNodeRuntimeAdapterDependencies {
     startExecution(node: StoredNode, taskPackage: TaskPackage): Promise<NodeExecutionHandle>;
     heartbeat(node: StoredNode): Promise<void>;
     canExecute?(node: StoredNode): boolean;
+    sendRequest?(node: StoredNode, request: { id: string; method: string; params?: Record<string, unknown> }): Promise<{ id: string; result?: Record<string, unknown>; error?: { code: string; message: string; retriable: boolean; details: Record<string, unknown> } }>;
   };
 }
 
@@ -70,9 +72,23 @@ const manifest: RuntimeAdapterManifest = {
  */
 export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
   public readonly manifest = manifest;
-  private readonly implementedCapabilities = this.manifest.capabilities;
 
   public constructor(private readonly dependencies: RemoteNodeRuntimeAdapterDependencies) {}
+
+  /** Purpose: Derives the full capability set for a given node based on its manifest. */
+  private nodeCapabilities(node: StoredNode): RuntimeCapabilitySet {
+    const caps: RuntimeCapability[] = ["exec"];
+    if (node.manifest.capabilities.includes("file-read")) {
+      caps.push("copy-out", "file-browse");
+    }
+    if (node.manifest.capabilities.includes("file-write")) {
+      caps.push("copy-in");
+    }
+    if (node.manifest.capabilities.includes("file-read") && node.manifest.capabilities.includes("file-write")) {
+      caps.push("file-rw");
+    }
+    return RuntimeCapabilitySet.fromValues(caps);
+  }
 
   public async health(input: { workspace_id?: string } = {}): Promise<RuntimeAdapterHealth> {
     const node = this.listApprovedRemoteNodes(input.workspace_id).find((candidate) => this.canExecute(candidate));
@@ -92,7 +108,7 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
       node_id: node.manifest.node_id,
       runtime_id: this.manifest.adapter_id,
       health: { status: mapNodeHealth(node.health_status), checked_at: node.last_seen_at ?? new Date().toISOString() },
-      capabilities: this.implementedCapabilities,
+      capabilities: this.nodeCapabilities(node),
       resource_limits: {
         max_concurrent_execs: node.manifest.resource_limits.max_concurrent_jobs,
         cpu_cores: node.manifest.resource_limits.cpu_cores,
@@ -122,13 +138,21 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
         job_id: jobId,
         task_package: taskPackage,
       });
-      this.requireRemoteNode(input.workspace_id, lease.lease.node_id);
+      const node = this.requireRemoteNode(input.workspace_id, lease.lease.node_id);
+
+      // Send create_session to the remote agent if possible
+      void this.trySendRequest(node, {
+        id: createId("rpc"),
+        method: "create_session",
+        params: { session_id: input.session_id, workspace_id: input.workspace_id },
+      });
+
       return Promise.resolve({
         ref: lease.lease.lease_id,
         adapter_id: this.manifest.adapter_id,
         node_id: lease.lease.node_id,
         status: lease.lease.state === "active" ? "ready" : "creating",
-        capabilities: this.implementedCapabilities,
+        capabilities: this.nodeCapabilities(node),
       });
     } catch (error: unknown) {
       return Promise.reject(mapRemoteError(error, "adapter_unavailable", { workspace_id: input.workspace_id }));
@@ -138,13 +162,13 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
   public getSession(input: { workspace_id: string; session_ref: string }): Promise<RuntimeAdapterSessionHandle | null> {
     try {
       const lease = this.dependencies.database.workspace(input.workspace_id).getLease(input.session_ref);
-      this.requireRemoteNode(input.workspace_id, lease.lease.node_id);
+      const node = this.requireRemoteNode(input.workspace_id, lease.lease.node_id);
       return Promise.resolve({
         ref: lease.lease.lease_id,
         adapter_id: this.manifest.adapter_id,
         node_id: lease.lease.node_id,
         status: lease.lease.state === "active" ? "ready" : "destroyed",
-        capabilities: this.implementedCapabilities,
+        capabilities: this.nodeCapabilities(node),
       });
     } catch (error: unknown) {
       if (error instanceof Error && error.message.toLowerCase().includes("not found")) {
@@ -156,6 +180,15 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
 
   public destroySession(input: { workspace_id: string; session_ref: string }): Promise<{ destroyed: boolean; message?: string }> {
     try {
+      const lease = this.dependencies.database.workspace(input.workspace_id).getLease(input.session_ref);
+      const node = this.findRemoteNode(input.workspace_id, lease.lease.node_id);
+      if (node !== undefined) {
+        void this.trySendRequest(node, {
+          id: createId("rpc"),
+          method: "destroy_session",
+          params: { session_id: input.session_ref },
+        });
+      }
       this.dependencies.leaseScheduler.releaseLease(input.workspace_id, input.session_ref, "released");
       return Promise.resolve({ destroyed: true });
     } catch (error: unknown) {
@@ -187,19 +220,98 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
     }
   }
 
-  public copyIn(input: { workspace_id: string } & RuntimeCopyInInput): Promise<RuntimeFileTransferResult> {
-    void input;
-    return Promise.reject(new RuntimeError("unsupported_capability", "remote runtime does not support copy-in"));
+  public async copyIn(input: { workspace_id: string } & RuntimeCopyInInput): Promise<RuntimeFileTransferResult> {
+    const node = this.findNodeForSession(input.workspace_id, input.session_ref);
+    if (!node?.manifest.capabilities.includes("file-write")) {
+      return Promise.reject(new RuntimeError("unsupported_capability", "remote runtime does not support copy-in for this node"));
+    }
+    try {
+      const response = await this.sendRequestToNode(node, {
+        id: createId("rpc"),
+        method: "file_write",
+        params: {
+          path: input.destination_path,
+          content_text: input.content_text,
+          content_base64: input.content_base64,
+          overwrite: input.overwrite,
+        },
+      });
+      if (response.error !== undefined) {
+        throw new RuntimeError("adapter_internal", response.error.message);
+      }
+      const meta = (response.result?.["meta"] ?? {}) as Record<string, unknown>;
+      return {
+        path: input.destination_path,
+        bytes_transferred: typeof meta["bytes_transferred"] === "number" ? meta["bytes_transferred"] : 0,
+      };
+    } catch (error: unknown) {
+      throw mapRemoteError(error, "adapter_internal", { session_ref: input.session_ref });
+    }
   }
 
-  public copyOut(input: { workspace_id: string } & RuntimeCopyOutInput): Promise<RuntimeFileTransferResult> {
-    void input;
-    return Promise.reject(new RuntimeError("unsupported_capability", "remote runtime does not support copy-out"));
+  public async copyOut(input: { workspace_id: string } & RuntimeCopyOutInput): Promise<RuntimeFileTransferResult> {
+    const node = this.findNodeForSession(input.workspace_id, input.session_ref);
+    if (!node?.manifest.capabilities.includes("file-read")) {
+      return Promise.reject(new RuntimeError("unsupported_capability", "remote runtime does not support copy-out for this node"));
+    }
+    try {
+      const response = await this.sendRequestToNode(node, {
+        id: createId("rpc"),
+        method: "file_read",
+        params: {
+          path: input.source_path,
+          encoding: input.encoding,
+        },
+      });
+      if (response.error !== undefined) {
+        throw new RuntimeError("adapter_internal", response.error.message);
+      }
+      const meta = (response.result?.["meta"] ?? {}) as Record<string, unknown>;
+      return {
+        path: input.source_path,
+        bytes_transferred: typeof meta["size_bytes"] === "number" ? meta["size_bytes"] : 0,
+        encoding: input.encoding,
+        content_text: typeof response.result?.["output_text"] === "string" ? response.result["output_text"] : undefined,
+        content_base64: typeof meta["content_base64"] === "string" ? meta["content_base64"] : undefined,
+      };
+    } catch (error: unknown) {
+      throw mapRemoteError(error, "adapter_internal", { session_ref: input.session_ref });
+    }
   }
 
-  public getLogs(input: { workspace_id: string } & RuntimeGetLogsInput): Promise<RuntimeLogsResult> {
-    void input;
-    return Promise.reject(new RuntimeError("log_unavailable", "remote runtime logs are unavailable"));
+  public async getLogs(input: { workspace_id: string } & RuntimeGetLogsInput): Promise<RuntimeLogsResult> {
+    const node = this.findNodeForSession(input.workspace_id, input.session_ref);
+    if (node === undefined) {
+      return { chunks: [] };
+    }
+    try {
+      const response = await this.sendRequestToNode(node, {
+        id: createId("rpc"),
+        method: "get_logs",
+        params: {
+          session_id: input.session_ref,
+          cursor: input.cursor,
+          limit: input.limit,
+        },
+      });
+      if (response.error !== undefined) {
+        return { chunks: [] };
+      }
+      const meta = (response.result?.["meta"] ?? {}) as Record<string, unknown>;
+      const chunks = Array.isArray(meta["chunks"]) ? meta["chunks"] as { stream: string; message: string; cursor?: string; created_at?: string }[] : [];
+      const nextCursor = typeof meta["next_cursor"] === "string" ? meta["next_cursor"] : undefined;
+      return {
+        chunks: chunks.map((c) => ({
+          stream: c.stream === "stderr" ? "stderr" as const : "stdout" as const,
+          message: c.message,
+          cursor: c.cursor,
+          created_at: c.created_at,
+        })),
+        next_cursor: nextCursor,
+      };
+    } catch {
+      return { chunks: [] };
+    }
   }
 
   private listApprovedRemoteNodes(workspaceId?: string): StoredNode[] {
@@ -223,6 +335,42 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
 
   private canExecute(node: StoredNode): boolean {
     return this.dependencies.remoteNodeExecutor.canExecute?.(node) ?? true;
+  }
+
+  /** Purpose: Find a node by ID without throwing (returns undefined if missing). */
+  private findRemoteNode(workspaceId: string, nodeId: string): StoredNode | undefined {
+    return this.listApprovedRemoteNodes(workspaceId).find((candidate) => candidate.manifest.node_id === nodeId);
+  }
+
+  /** Purpose: Look up the node associated with a session/lease ref. Returns undefined if not found. */
+  private findNodeForSession(workspaceId: string, sessionRef: string): StoredNode | undefined {
+    try {
+      const lease = this.dependencies.database.workspace(workspaceId).getLease(sessionRef);
+      return this.findRemoteNode(workspaceId, lease.lease.node_id);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Purpose: Fire-and-forget RPC to a remote node. Swallows errors silently. */
+  private async trySendRequest(node: StoredNode, request: { id: string; method: string; params?: Record<string, unknown> }): Promise<void> {
+    try {
+      await this.sendRequestToNode(node, request);
+    } catch {
+      // fire-and-forget: best-effort
+    }
+  }
+
+  /** Purpose: Send an RPC request to a remote node, throws if transport is unavailable or returns error. */
+  private async sendRequestToNode(
+    node: StoredNode,
+    request: { id: string; method: string; params?: Record<string, unknown> },
+  ): Promise<{ id: string; result?: Record<string, unknown>; error?: { code: string; message: string; retriable: boolean; details: Record<string, unknown> } }> {
+    const executor = this.dependencies.remoteNodeExecutor;
+    if (executor.sendRequest === undefined) {
+      throw new RuntimeError("adapter_internal", "transport does not support sendRequest");
+    }
+    return executor.sendRequest(node, request);
   }
 }
 
@@ -276,6 +424,8 @@ const buildExecTaskPackage = (
   subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
   metadata: {
     runtime_exec: true,
+    command: request.command,
+    args: request.args,
     cwd: request.cwd ?? "",
     env: request.env,
     stdin: request.stdin ?? "",

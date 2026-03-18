@@ -8,6 +8,7 @@ import {
   LocalJobService,
   NodeRegistryService,
   NodeTransportRegistry,
+  OutboundWssNodeTransport,
   OpenSandboxNodeAdapter,
   RemoteNodeExecutor,
   signNodeManifest,
@@ -907,6 +908,90 @@ describe("local job execution", () => {
 
     expect(executionCount).toBe(2);
     expect(database.workspace("ws_jobs").listLeases().every((lease) => lease.lease.state === "released")).toBeTrue();
+  });
+
+  test("routes remote jobs through a live outbound-wss connection and preserves streamed job events", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const manifest: UnsignedManifest = {
+      node_id: "node_remote_live",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote",
+      capabilities: ["exec"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["outbound-wss"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: false, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    const nodeRegistry = new NodeRegistryService({ database });
+    await nodeRegistry.enrollNode("ws_jobs", { ...manifest, signature: signNodeManifest(manifest, keyPair.secretKey) });
+    const approval = await nodeRegistry.approveNode("ws_jobs", "node_remote_live");
+
+    const transportRegistry = new NodeTransportRegistry();
+    const transport = new OutboundWssNodeTransport({ database });
+    transportRegistry.registerKindTransport("outbound-wss", transport);
+    transport.attachLiveConnection({
+      workspaceId: "ws_jobs",
+      nodeId: "node_remote_live",
+      socket: {
+        send(data: string): void {
+          const parsed = JSON.parse(data) as { type: string; payload: { id: string; method: string } };
+          if (parsed.type !== "request") {
+            return;
+          }
+          if (parsed.payload.method === "execute") {
+            transport.handleLiveMessage(
+              "ws_jobs",
+              "node_remote_live",
+              JSON.stringify({
+                type: "event",
+                request_id: parsed.payload.id,
+                payload: { event: "progress", data: { percent: 10, message: "live-progress" } },
+              }),
+            );
+          }
+          transport.handleLiveMessage(
+            "ws_jobs",
+            "node_remote_live",
+            JSON.stringify({
+              type: "response",
+              payload: {
+                id: parsed.payload.id,
+                result: { output_text: "live job ok", artifacts: [], meta: { token: approval.credential.token } },
+              },
+            }),
+          );
+        },
+      },
+    });
+
+    const broker = new JobStreamBroker();
+    const service = new LocalJobService({
+      database,
+      internClient: new ScriptedInternClient(() => emptyAsyncIterable()),
+      streamBroker: broker,
+      leaseScheduler: new LeaseScheduler({ database }),
+      remoteNodeExecutor: new RemoteNodeExecutor(transportRegistry, database),
+    });
+
+    const created = service.submitJob("ws_jobs", {
+      session_key: "svc:remote-live",
+      message: "live remote",
+      execution_target: "remote",
+    });
+
+    await waitFor(() => {
+      const stored = service.getJob("ws_jobs", created.job_id).job;
+      expect(stored.status).toBe("completed");
+      expect(stored.result?.output_text).toBe("live job ok");
+    });
+
+    expect(broker.history(created.job_id).map((event) => event.event)).toEqual([
+      "job.accepted",
+      "job.started",
+      "text.delta",
+      "job.completed",
+    ]);
   });
 
   test("repairs startup state by failing orphaned jobs and releasing ghost leases", () => {

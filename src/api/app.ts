@@ -253,6 +253,9 @@ export class Or3NetApp {
       createRoute("/v1/workspaces/:workspaceId/nodes", {
         GET: (request, groups) => this.handleListNodes(request, requireGroup(groups, "workspaceId")),
       }),
+      createRoute("/v1/workspaces/:workspaceId/nodes/:nodeId", {
+        GET: (request, groups) => this.handleGetNode(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "nodeId")),
+      }),
       createRoute("/v1/workspaces/:workspaceId/nodes/enroll", {
         POST: (request, groups) => this.handleEnrollNode(request, requireGroup(groups, "workspaceId")),
       }),
@@ -616,6 +619,24 @@ export class Or3NetApp {
     const principal = await this.requirePrincipal(request, workspaceId, "nodes:read");
     const registry = requireNodeRegistry(this.services.nodeRegistryService);
     return jsonResponse(200, { items: registry.listNodes(principal.workspace_id) });
+  }
+
+  private async handleGetNode(request: Request, workspaceId: string, nodeId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "nodes:read");
+    const registry = requireNodeRegistry(this.services.nodeRegistryService);
+    const nodes = registry.listNodes(principal.workspace_id);
+    const node = nodes.find((n) => n.manifest.node_id === nodeId);
+    if (node === undefined) {
+      throw new HttpError(404, `node ${nodeId} not found`);
+    }
+    return jsonResponse(200, {
+      node,
+      connection: {
+        last_seen_at: node.last_seen_at,
+        health_status: node.health_status,
+        last_error: node.last_error,
+      },
+    });
   }
 
   private async handleEnrollNode(request: Request, workspaceId: string): Promise<Response> {

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
-import { HttpsNodeTransport, NodeTransportRegistry, OutboundWssNodeTransport, RemoteNodeExecutor } from "../src/index.ts";
+import { createControlPlaneDatabase, HttpsNodeTransport, NodeRegistryService, NodeTransportRegistry, OutboundWssNodeTransport, RemoteNodeExecutor, signNodeManifest } from "../src/index.ts";
 import { taskPackageSchema, type NodeRequest, type NodeEvent } from "../src/contracts/index.ts";
+import nacl from "tweetnacl";
 
 const baseNode = {
   workspace_id: "ws_transport",
@@ -388,6 +389,109 @@ describe("node transport abstraction", () => {
 
     expect((await alphaRun.result).output_text).toBe("alpha");
     expect((await betaRun.result).output_text).toBe("beta");
+  });
+
+  test("authenticates, connects, streams, disconnects, and stale-checks live outbound-wss sessions", async () => {
+    const database = createControlPlaneDatabase();
+    database.saveWorkspace({ workspace_id: "ws_transport", name: "Transport", created_at: "2024-01-01T00:00:00.000Z" });
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest = {
+      node_id: "node_live",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote" as const,
+      capabilities: ["exec"],
+      isolation_class: "host-trusted",
+      supports_transports: ["outbound-wss" as const],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 1, memory_mb: 512, disk_mb: 512 },
+      lease_policy: { max_ttl_seconds: 60, supports_warm_pool: false, reset_methods: ["process_kill" as const] },
+      version: "1.0.0",
+    };
+    const registryService = new NodeRegistryService({ database });
+    await registryService.enrollNode("ws_transport", { ...unsignedManifest, signature: signNodeManifest(unsignedManifest, keyPair.secretKey) });
+    const approval = await registryService.approveNode("ws_transport", "node_live");
+
+    let nowMs = Date.now();
+    const transport = new OutboundWssNodeTransport({ database, staleConnectionMs: 50, now: () => nowMs });
+    const authenticated = await transport.authenticateConnectionToken(approval.credential.token);
+    expect(authenticated).toEqual({ workspaceId: "ws_transport", nodeId: "node_live" });
+
+    const fakeSocket = {
+      send(data: string): void {
+        const parsed = JSON.parse(data) as { type: string; payload: NodeRequest };
+        if (parsed.type !== "request") {
+          return;
+        }
+        if (parsed.payload.method === "execute") {
+          transport.handleLiveMessage("ws_transport", "node_live", JSON.stringify({
+            type: "event",
+            request_id: parsed.payload.id,
+            payload: { event: "progress", data: { percent: 50, message: "halfway" } },
+          }));
+        }
+        transport.handleLiveMessage("ws_transport", "node_live", JSON.stringify({
+          type: "response",
+          payload: {
+            id: parsed.payload.id,
+            result: { output_text: parsed.payload.method === "execute" ? "live ok" : "ok", artifacts: [], meta: {} },
+          },
+        }));
+      },
+      close(): void {
+        return;
+      },
+    };
+    transport.attachLiveConnection({ workspaceId: "ws_transport", nodeId: "node_live", socket: fakeSocket });
+
+    const connectedBefore = transport.listConnectedNodes();
+    expect(connectedBefore).toHaveLength(1);
+    expect(connectedBefore[0]?.stale).toBeFalse();
+
+    const node = database.workspace("ws_transport").getNode("node_live");
+    const execution = await transport.startExecution(taskPackageSchema.parse({
+      workspace_id: "ws_transport",
+      job_id: "job_live",
+      kind: "turn",
+      instructions: "echo live",
+      artifacts: [],
+      tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+      timeout: { soft_ms: 1000 },
+      lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: ["exec"] },
+      subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+      metadata: {},
+    }), {
+      workspaceId: node.workspace_id,
+      nodeId: node.manifest.node_id,
+      credential: { token: approval.credential.token, expiresAt: approval.credential.expires_at },
+    });
+    expect(await collect(execution.stream ?? emptyAsync())).toEqual([{ event: "text.delta", data: { text: "halfway" } }]);
+    expect((await execution.result).output_text).toBe("live ok");
+
+    nowMs += 100;
+    try {
+      await transport.heartbeat({
+        workspaceId: node.workspace_id,
+        nodeId: node.manifest.node_id,
+        credential: { token: approval.credential.token, expiresAt: approval.credential.expires_at },
+      });
+      throw new Error("expected stale heartbeat to fail");
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/no outbound-wss connection|attached/);
+    }
+    expect(database.workspace("ws_transport").getNode("node_live").health_status).toBe("stale");
+
+    transport.attachLiveConnection({ workspaceId: "ws_transport", nodeId: "node_live", socket: fakeSocket });
+    transport.detachLiveConnection("ws_transport", "node_live", "manual disconnect");
+    expect(transport.listConnectedNodes()).toHaveLength(0);
+    database.close();
+  });
+
+  test("rejects invalid live connection credentials", async () => {
+    const database = createControlPlaneDatabase();
+    database.saveWorkspace({ workspace_id: "ws_transport", name: "Transport", created_at: "2024-01-01T00:00:00.000Z" });
+    const transport = new OutboundWssNodeTransport({ database });
+    expect(await transport.authenticateConnectionToken("invalid-token")).toBeNull();
+    database.close();
   });
 });
 
