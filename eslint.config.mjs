@@ -54,4 +54,18 @@ export default tseslint.config(
       'import/no-default-export': 'off',
     },
   },
+  {
+    files: ['examples/cloudflare-sandbox-bridge/index.ts'],
+    rules: {
+      '@typescript-eslint/consistent-type-definitions': 'off',
+      '@typescript-eslint/explicit-function-return-type': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/require-await': 'off',
+      'import/no-default-export': 'off',
+    },
+  },
 );

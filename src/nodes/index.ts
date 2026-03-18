@@ -10,6 +10,7 @@ export * from "./signatures.ts";
 export * from "./executor.ts";
 export * from "./execution-adapter.ts";
 export * from "./adapter-opensandbox.ts";
+export * from "./adapter-cloudflare-sandbox.ts";
 export * from "./transport.ts";
 export * from "./transport-https.ts";
 export * from "./transport-registry.ts";

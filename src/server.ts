@@ -24,6 +24,7 @@ import type { NodeExecutionAdapter } from "./nodes/execution-adapter.ts";
 import type { NodeRegistryService, RemoteNodeExecutor } from "./nodes/index.ts";
 import type { PreviewService } from "./previews/service.ts";
 import {
+  CloudflareSandboxRuntimeAdapter,
   LocalContainerRuntimeAdapter,
   OpenSandboxRuntimeAdapter,
   RemoteNodeRuntimeAdapter,
@@ -34,6 +35,9 @@ import {
 import type { LeaseScheduler } from "./scheduler/index.ts";
 import type { InMemoryWorkspaceFileService } from "./workspace/files.ts";
 import { resolveOpenSandboxClientConfig, SdkOpenSandboxClient } from "../sdk/opensandbox/client.ts";
+import { HttpCloudflareSandboxClient, resolveCloudflareSandboxClientConfig } from "../sdk/cloudflare-sandbox/client.ts";
+import { CloudflareSandboxNodeAdapter } from "./nodes/adapter-cloudflare-sandbox.ts";
+import { OpenSandboxNodeAdapter } from "./nodes/adapter-opensandbox.ts";
 
 /**
  * Purpose:
@@ -113,12 +117,14 @@ export const startServer = (
 const resolveServerOptions = (options: ServerOptions): ServerOptions => {
   const runtimeRegistry = resolveRuntimeRegistry(options);
   const runtimeSessionService = resolveRuntimeSessionService(options, runtimeRegistry);
+  const nodeExecutionAdapter = resolveNodeExecutionAdapter(options);
   startRuntimeReconciliation(runtimeSessionService);
 
   return {
     ...options,
     ...(runtimeRegistry === undefined ? {} : { runtimeRegistry }),
     ...(runtimeSessionService === undefined ? {} : { runtimeSessionService }),
+    ...(nodeExecutionAdapter === undefined ? {} : { nodeExecutionAdapter }),
   };
 };
 
@@ -151,7 +157,30 @@ const resolveRuntimeRegistry = (options: ServerOptions): RuntimeRegistry | undef
     registry.register(new OpenSandboxRuntimeAdapter({ client: new SdkOpenSandboxClient(openSandboxConfig) }));
   }
 
+  const cloudflareSandboxConfig = resolveCloudflareSandboxClientConfig();
+  if (cloudflareSandboxConfig !== null) {
+    registry.register(new CloudflareSandboxRuntimeAdapter({ client: new HttpCloudflareSandboxClient(cloudflareSandboxConfig) }));
+  }
+
   return registry;
+};
+
+const resolveNodeExecutionAdapter = (options: ServerOptions): NodeExecutionAdapter | undefined => {
+  if (options.nodeExecutionAdapter !== undefined) {
+    return options.nodeExecutionAdapter;
+  }
+
+  const cloudflareSandboxConfig = resolveCloudflareSandboxClientConfig();
+  if (cloudflareSandboxConfig !== null) {
+    return new CloudflareSandboxNodeAdapter(new HttpCloudflareSandboxClient(cloudflareSandboxConfig));
+  }
+
+  const openSandboxConfig = resolveOpenSandboxClientConfig();
+  if (openSandboxConfig !== null) {
+    return new OpenSandboxNodeAdapter(new SdkOpenSandboxClient(openSandboxConfig));
+  }
+
+  return undefined;
 };
 
 const resolveRuntimeSessionService = (

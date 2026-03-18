@@ -4,7 +4,7 @@ This folder explains OR3 Net from three angles:
 
 - **Concepts**: the mental model, architecture, and core entities
 - **HTTP API**: what the control plane exposes over `/v1/...`
-- **SDKs**: how to talk to Intern and OpenSandbox services from TypeScript
+- **SDKs**: how to talk to Intern, OpenSandbox, and Cloudflare Sandbox integrations from TypeScript
 
 If you are new to the project, start here:
 
@@ -15,6 +15,7 @@ If you are new to the project, start here:
 5. [HTTP API](api/http-api.md)
 6. [Intern SDK](sdk/intern-sdk.md)
 7. [OpenSandbox SDK](sdk/opensandbox-sdk.md)
+8. [Cloudflare Sandbox SDK](sdk/cloudflare-sandbox-sdk.md)
 
 ## What OR3 Net is
 
@@ -26,7 +27,7 @@ At a high level it is responsible for:
 - exchanging external session proof for OR3 bearer tokens
 - accepting jobs inside a workspace
 - persisting jobs, sessions, leases, nodes, previews, and runtime sessions
-- routing work to local, OpenSandbox, or remote-node runtimes
+- routing work to local, OpenSandbox, Cloudflare Sandbox, or remote-node runtimes
 - exposing a stable HTTP API and reusable TypeScript SDK contracts
 
 ## Documentation map
@@ -38,6 +39,7 @@ At a high level it is responsible for:
 - [HTTP API](api/http-api.md)
 - [Intern SDK](sdk/intern-sdk.md)
 - [OpenSandbox SDK](sdk/opensandbox-sdk.md)
+- [Cloudflare Sandbox SDK](sdk/cloudflare-sandbox-sdk.md)
 
 ## Design principles
 
@@ -58,3 +60,4 @@ The documentation in this folder is meant to match the current codebase, especia
 - [src/runtime/index.ts](../src/runtime/index.ts)
 - [sdk/intern](../sdk/intern)
 - [sdk/opensandbox](../sdk/opensandbox)
+- [sdk/cloudflare-sandbox](../sdk/cloudflare-sandbox)

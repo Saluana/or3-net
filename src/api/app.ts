@@ -49,7 +49,8 @@ import {
   runtimeSessionStateSchema,
 } from "../contracts/runtime/index.ts";
 import { InternRequestError } from "../../sdk/intern/types.ts";
-import { isProviderRequestErrorLike } from "../../sdk/opensandbox/types.ts";
+import { isProviderRequestErrorLike as isOpenSandboxProviderRequestErrorLike } from "../../sdk/opensandbox/types.ts";
+import { isProviderRequestErrorLike as isCloudflareSandboxProviderRequestErrorLike } from "../../sdk/cloudflare-sandbox/types.ts";
 
 const DEFAULT_PUBLIC_BASE_URL = "http://localhost";
 const DEFAULT_TRUSTED_REQUEST_ORIGIN_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "or3.test"]);
@@ -67,6 +68,13 @@ const MAX_LIST_QUERY_LIMIT = 100;
 const MAX_RUNTIME_LOG_LIMIT = 500;
 const MAX_SESSION_EVENT_LIMIT = 200;
 const NO_STORE_CACHE_CONTROL = "no-store";
+
+const isKnownProviderRequestError = (error: unknown): error is {
+  readonly message: string;
+  readonly status: number;
+  readonly code?: string | undefined;
+  readonly retryAfterMs?: number | undefined;
+} => isOpenSandboxProviderRequestErrorLike(error) || isCloudflareSandboxProviderRequestErrorLike(error);
 
 const createApiKeyRequestSchema = z.object({
   name: z.string().trim().min(1),
@@ -1024,7 +1032,7 @@ export const handleAppRequest = async (app: Or3NetApp, request: Request): Promis
     if (error instanceof RuntimeError) {
       return errorResponse(runtimeErrorToApiEnvelope(error, requestId));
     }
-    if (isProviderRequestErrorLike(error)) {
+    if (isKnownProviderRequestError(error)) {
       return errorResponse(normalizeProviderRequestError(error, requestId));
     }
     if (error instanceof InternRequestError) {

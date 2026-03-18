@@ -2,6 +2,8 @@
 
 This guide explains the OpenSandbox wrapper used by OR3 Net.
 
+If you are looking for the managed Cloudflare path instead, see [Cloudflare Sandbox SDK](cloudflare-sandbox-sdk.md).
+
 ## What lives here
 
 The wrapper lives under [sdk/opensandbox](../../sdk/opensandbox) and exposes the narrow provider surface that OR3 Net actually uses:

@@ -17,7 +17,8 @@ import type { ErrorEnvelope, PlatformSessionRef } from "./types.ts";
 import type { PlatformStreamEvent } from "./stream-events.ts";
 import { isRemoteExecutionError } from "../../nodes/transport.ts";
 import { InternRequestError } from "../../../sdk/intern/types.ts";
-import { isProviderRequestErrorLike } from "../../../sdk/opensandbox/types.ts";
+import { isProviderRequestErrorLike as isOpenSandboxProviderRequestErrorLike } from "../../../sdk/opensandbox/types.ts";
+import { isProviderRequestErrorLike as isCloudflareSandboxProviderRequestErrorLike } from "../../../sdk/cloudflare-sandbox/types.ts";
 
 /**
  * Purpose:
@@ -167,7 +168,7 @@ export const normalizeInternError = (error: unknown, request_id: string): ErrorE
  * shape.
  */
 export const normalizeProviderRequestError = (error: unknown, request_id: string): ErrorEnvelope => {
-  if (isProviderRequestErrorLike(error)) {
+  if (isKnownProviderRequestError(error)) {
     return createErrorEnvelope({
       error: error.message,
       status: error.status,
@@ -183,6 +184,13 @@ export const normalizeProviderRequestError = (error: unknown, request_id: string
     code: platformErrorCodes.serverInternal,
   });
 };
+
+const isKnownProviderRequestError = (error: unknown): error is {
+  readonly message: string;
+  readonly status: number;
+  readonly code?: string | undefined;
+  readonly retryAfterMs?: number | undefined;
+} => isOpenSandboxProviderRequestErrorLike(error) || isCloudflareSandboxProviderRequestErrorLike(error);
 
 const normalizeClientKind = (value: string): PlatformSessionRef["client_kind"] => {
   switch (value) {

@@ -41,7 +41,8 @@ import type { InternClient, InternJobEvent } from "../../sdk/intern/index.ts";
 import { JobStreamBroker } from "./job-streams.ts";
 import { SessionBindingService } from "../session/service.ts";
 import { normalizeInternError, normalizeProviderRequestError, toPlatformSessionRef } from "../contracts/platform/compat.ts";
-import { isProviderRequestErrorLike } from "../../sdk/opensandbox/types.ts";
+import { isProviderRequestErrorLike as isOpenSandboxProviderRequestErrorLike } from "../../sdk/opensandbox/types.ts";
+import { isProviderRequestErrorLike as isCloudflareSandboxProviderRequestErrorLike } from "../../sdk/cloudflare-sandbox/types.ts";
 
 /**
  * Purpose:
@@ -108,6 +109,13 @@ interface LiveJobState {
 }
 
 const terminalStatuses = new Set<Job["status"]>(["completed", "failed", "aborted"]);
+
+const isKnownProviderRequestError = (error: unknown): error is {
+  readonly message: string;
+  readonly status: number;
+  readonly code?: string | undefined;
+  readonly retryAfterMs?: number | undefined;
+} => isOpenSandboxProviderRequestErrorLike(error) || isCloudflareSandboxProviderRequestErrorLike(error);
 
 /**
  * Purpose:
@@ -783,7 +791,7 @@ const toRemoteExecutionJobError = (
   details: Record<string, unknown>,
 ): NonNullable<Job["error"]> => {
   const requestId = typeof details["request_id"] === "string" ? details["request_id"] : createId("req");
-  if (isProviderRequestErrorLike(error)) {
+  if (isKnownProviderRequestError(error)) {
     return toJobErrorFromEnvelope(normalizeProviderRequestError(error, requestId));
   }
   if (error instanceof Error && error.name === "InternRequestError") {
