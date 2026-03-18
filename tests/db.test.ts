@@ -1248,7 +1248,7 @@ describe("control plane database", () => {
         .all()
         .map((row) => row.version);
 
-      expect(appliedVersions.at(-1)).toBe(9);
+      expect(appliedVersions.at(-1)).toBe(schemaMigrations.at(-1)?.version);
       expect(
         migrated.sqlite
           .query<{ name: string }, []>(

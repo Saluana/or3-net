@@ -425,6 +425,23 @@ class FakeRemoteExecutor {
     void node;
     return true;
   }
+
+  public sendRequest(
+    node: StoredNode,
+    request: { id: string; method: string; params?: Record<string, unknown> },
+  ): Promise<{ id: string; result?: Record<string, unknown>; error?: { code: string; message: string; retriable: boolean; details: Record<string, unknown> } }> {
+    void node;
+    switch (request.method) {
+      case "create_session":
+        return Promise.resolve({ id: request.id, result: { status: "ready" } });
+      case "destroy_session":
+        return Promise.resolve({ id: request.id, result: { destroyed: true } });
+      case "get_logs":
+        return Promise.resolve({ id: request.id, result: { meta: { chunks: [] } } });
+      default:
+        return Promise.resolve({ id: request.id, result: {} });
+    }
+  }
 }
 
 class FakeRunner implements LocalContainerCommandRunner {

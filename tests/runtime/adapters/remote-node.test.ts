@@ -180,7 +180,7 @@ describe("remote node runtime adapter", () => {
         issueLease: () => ({ lease: { lease_id: "lease_new", node_id: "node_remote_1", state: "active" } }),
         releaseLease: () => undefined,
       },
-      remoteNodeExecutor: new FakeRemoteExecutor(),
+      remoteNodeExecutor: new FakeRemoteExecutorWithSendRequest(),
     });
     database.workspace("ws_test").saveNode({ manifest: makeRemoteNode().manifest, pubkey_fingerprint: "fp", status: "approved", health_status: "healthy" });
 
@@ -210,7 +210,7 @@ describe("remote node runtime adapter", () => {
         timeout: { soft_ms: 1000 },
         lease_profile: { profile_id: "runtime", ttl_seconds: 60, required_capabilities: ["exec"] },
         subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
-        metadata: {},
+        metadata: { session_id: "sess_1" },
       },
     });
     database.workspace("ws_test").saveLease({
@@ -419,7 +419,7 @@ describe("remote node runtime adapter", () => {
       remoteNodeExecutor: executor,
     });
 
-    setupLeaseForSession(database, "lease_logs", "node_remote_1");
+    setupLeaseForSession(database, "lease_logs", "node_remote_1", "sess_logs");
 
     const logs = await adapter.getLogs({
       workspace_id: "ws_test",
@@ -431,6 +431,7 @@ describe("remote node runtime adapter", () => {
     expect(logs.chunks[0]?.message).toBe("hello");
     expect(logs.chunks[1]?.stream).toBe("stderr");
     expect(logs.next_cursor).toBe("3");
+    expect(executor.lastSentRequest?.params?.["session_id"]).toBe("sess_logs");
   });
 
   test("getLogs returns empty when node not found for session", async () => {
@@ -475,7 +476,7 @@ describe("remote node runtime adapter", () => {
       remoteNodeExecutor: executor,
     });
 
-    setupLeaseForSession(database, "lease_destroy", "node_remote_1");
+    setupLeaseForSession(database, "lease_destroy", "node_remote_1", "sess_destroy");
 
     const result = await adapter.destroySession({ workspace_id: "ws_test", session_ref: "lease_destroy" });
     expect(result.destroyed).toBe(true);
@@ -483,6 +484,7 @@ describe("remote node runtime adapter", () => {
     // Give the fire-and-forget RPC time to be dispatched
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(executor.lastSentRequest?.method).toBe("destroy_session");
+    expect(executor.lastSentRequest?.params?.["session_id"]).toBe("sess_destroy");
   });
 });
 
@@ -506,7 +508,12 @@ class FakeRemoteExecutorWithSendRequest extends FakeRemoteExecutor {
 }
 
 /** Helper to persist the lease record needed by session-aware adapter methods. */
-const setupLeaseForSession = (database: ReturnType<typeof createControlPlaneDatabase>, leaseId: string, nodeId: string): void => {
+const setupLeaseForSession = (
+  database: ReturnType<typeof createControlPlaneDatabase>,
+  leaseId: string,
+  nodeId: string,
+  sessionId = leaseId,
+): void => {
   database.workspace("ws_test").saveJob({
     job: { job_id: `job_${leaseId}`, workspace_id: "ws_test", status: "pending", created_at: "2024-01-01T00:00:00.000Z" },
     task_package: {
@@ -519,7 +526,7 @@ const setupLeaseForSession = (database: ReturnType<typeof createControlPlaneData
       timeout: { soft_ms: 1000 },
       lease_profile: { profile_id: "runtime", ttl_seconds: 60, required_capabilities: ["exec"] },
       subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
-      metadata: {},
+      metadata: { session_id: sessionId },
     },
   });
   database.workspace("ws_test").saveLease({

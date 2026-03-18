@@ -140,19 +140,25 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
       });
       const node = this.requireRemoteNode(input.workspace_id, lease.lease.node_id);
 
-      // Send create_session to the remote agent if possible
-      void this.trySendRequest(node, {
+      return this.sendRequestToNode(node, {
         id: createId("rpc"),
         method: "create_session",
         params: { session_id: input.session_id, workspace_id: input.workspace_id },
-      });
+      }).then((response) => {
+        if (response.error !== undefined) {
+          throw new RuntimeError("adapter_internal", response.error.message, {
+            retriable: response.error.retriable,
+            details: { node_id: node.manifest.node_id, ...response.error.details },
+          });
+        }
 
-      return Promise.resolve({
-        ref: lease.lease.lease_id,
-        adapter_id: this.manifest.adapter_id,
-        node_id: lease.lease.node_id,
-        status: lease.lease.state === "active" ? "ready" : "creating",
-        capabilities: this.nodeCapabilities(node),
+        return {
+          ref: lease.lease.lease_id,
+          adapter_id: this.manifest.adapter_id,
+          node_id: lease.lease.node_id,
+          status: lease.lease.state === "active" ? "ready" : "creating",
+          capabilities: this.nodeCapabilities(node),
+        };
       });
     } catch (error: unknown) {
       return Promise.reject(mapRemoteError(error, "adapter_unavailable", { workspace_id: input.workspace_id }));
@@ -182,11 +188,12 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
     try {
       const lease = this.dependencies.database.workspace(input.workspace_id).getLease(input.session_ref);
       const node = this.findRemoteNode(input.workspace_id, lease.lease.node_id);
+      const agentSessionId = this.findAgentSessionId(input.workspace_id, input.session_ref) ?? input.session_ref;
       if (node !== undefined) {
         void this.trySendRequest(node, {
           id: createId("rpc"),
           method: "destroy_session",
-          params: { session_id: input.session_ref },
+          params: { session_id: agentSessionId },
         });
       }
       this.dependencies.leaseScheduler.releaseLease(input.workspace_id, input.session_ref, "released");
@@ -199,7 +206,13 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
   public async exec(input: { workspace_id: string; session_ref: string; request: RuntimeExecutionRequest }): Promise<RuntimeExecutionHandle> {
     const lease = this.dependencies.database.workspace(input.workspace_id).getLease(input.session_ref);
     const node = this.requireRemoteNode(input.workspace_id, lease.lease.node_id);
-    const taskPackage = buildExecTaskPackage(input.workspace_id, createId("rtjobexec"), node, input.request);
+    const taskPackage = buildExecTaskPackage(
+      input.workspace_id,
+      createId("rtjobexec"),
+      node,
+      input.request,
+      this.findAgentSessionId(input.workspace_id, input.session_ref),
+    );
     try {
       const handle = await this.dependencies.remoteNodeExecutor.startExecution(node, taskPackage);
       return {
@@ -284,12 +297,16 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
     if (node === undefined) {
       return { chunks: [] };
     }
+    const agentSessionId = this.findAgentSessionId(input.workspace_id, input.session_ref);
+    if (agentSessionId === undefined) {
+      return { chunks: [] };
+    }
     try {
       const response = await this.sendRequestToNode(node, {
         id: createId("rpc"),
         method: "get_logs",
         params: {
-          session_id: input.session_ref,
+          session_id: agentSessionId,
           cursor: input.cursor,
           limit: input.limit,
         },
@@ -352,6 +369,22 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
     }
   }
 
+  /** Purpose: Resolve the agent-facing session id from the lease-backed runtime session metadata. */
+  private findAgentSessionId(workspaceId: string, sessionRef: string): string | undefined {
+    try {
+      const store = this.dependencies.database.workspace(workspaceId);
+      const lease = store.getLease(sessionRef);
+      const job = store.getJob(lease.job_id);
+      const sessionId = job.task_package.metadata["session_id"];
+      if (typeof sessionId === "string" && sessionId.length > 0) {
+        return sessionId;
+      }
+      return sessionRef;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Purpose: Fire-and-forget RPC to a remote node. Swallows errors silently. */
   private async trySendRequest(node: StoredNode, request: { id: string; method: string; params?: Record<string, unknown> }): Promise<void> {
     try {
@@ -405,6 +438,7 @@ const buildExecTaskPackage = (
   jobId: string,
   node: StoredNode,
   request: RuntimeExecutionRequest,
+  sessionId?: string,
 ): TaskPackage => ({
   workspace_id: workspaceId,
   job_id: jobId,
@@ -424,6 +458,7 @@ const buildExecTaskPackage = (
   subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
   metadata: {
     runtime_exec: true,
+    ...(sessionId === undefined ? {} : { session_id: sessionId }),
     command: request.command,
     args: request.args,
     cwd: request.cwd ?? "",
