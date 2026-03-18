@@ -20,11 +20,12 @@ import type { AgentService } from "./agents/index.ts";
 import { handleAppRequest, Or3NetApp } from "./api/app.ts";
 import type { ControlPlaneDatabase } from "./db/index.ts";
 import type { LocalJobService } from "./execution/local-jobs.ts";
-import type { SandboxNodeAdapter } from "./nodes/adapter-sandbox.ts";
+import type { NodeExecutionAdapter } from "./nodes/execution-adapter.ts";
 import type { NodeRegistryService, RemoteNodeExecutor } from "./nodes/index.ts";
 import type { PreviewService } from "./previews/service.ts";
 import {
   LocalContainerRuntimeAdapter,
+  OpenSandboxRuntimeAdapter,
   RemoteNodeRuntimeAdapter,
   RuntimeRegistry,
   RuntimeSelectionService,
@@ -32,6 +33,7 @@ import {
 } from "./runtime/index.ts";
 import type { LeaseScheduler } from "./scheduler/index.ts";
 import type { InMemoryWorkspaceFileService } from "./workspace/files.ts";
+import { resolveOpenSandboxClientConfig, SdkOpenSandboxClient } from "../sdk/opensandbox/client.ts";
 
 /**
  * Purpose:
@@ -58,7 +60,7 @@ export interface ServerOptions {
   readonly agentService?: AgentService;
   readonly previewService?: PreviewService;
   readonly workspaceFileService?: InMemoryWorkspaceFileService;
-  readonly sandboxNodeAdapter?: SandboxNodeAdapter;
+  readonly nodeExecutionAdapter?: NodeExecutionAdapter;
 }
 
 /**
@@ -142,6 +144,11 @@ const resolveRuntimeRegistry = (options: ServerOptions): RuntimeRegistry | undef
         remoteNodeExecutor: options.remoteNodeExecutor,
       }),
     );
+  }
+
+  const openSandboxConfig = resolveOpenSandboxClientConfig();
+  if (openSandboxConfig !== null) {
+    registry.register(new OpenSandboxRuntimeAdapter({ client: new SdkOpenSandboxClient(openSandboxConfig) }));
   }
 
   return registry;

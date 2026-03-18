@@ -205,4 +205,4 @@ The key point is that OR3 Net treats these as control-plane concepts with expiry
 - [Mental Model](mental-model.md)
 - [Jobs and Sessions](jobs-and-sessions.md)
 - [HTTP API](../api/http-api.md)
-- [Sandbox SDK](../sdk/sandbox-sdk.md)
+- [OpenSandbox SDK](../sdk/opensandbox-sdk.md)

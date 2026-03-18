@@ -1,5 +1,7 @@
 # OR3 Network v1 Plan
 
+> Migration note: OpenSandbox is now the primary sandbox-style backend for `or3-net`. Historical references to `or3-sandbox` in this plan should be read as superseded unless a section explicitly discusses prior architecture.
+
 ## Summary
 
 - Build `or3-net` as a Bun/TypeScript control and communications layer with:

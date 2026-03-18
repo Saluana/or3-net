@@ -17,7 +17,7 @@ import type { ErrorEnvelope, PlatformSessionRef } from "./types.ts";
 import type { PlatformStreamEvent } from "./stream-events.ts";
 import { isRemoteExecutionError } from "../../nodes/transport.ts";
 import { InternRequestError } from "../../../sdk/intern/types.ts";
-import { SandboxRequestError } from "../../../sdk/sandbox/types.ts";
+import { isProviderRequestErrorLike } from "../../../sdk/opensandbox/types.ts";
 
 /**
  * Purpose:
@@ -166,18 +166,18 @@ export const normalizeInternError = (error: unknown, request_id: string): ErrorE
  * Converts sandbox SDK request failures into the public platform error-envelope
  * shape.
  */
-export const normalizeSandboxError = (error: unknown, request_id: string): ErrorEnvelope => {
-  if (error instanceof SandboxRequestError) {
+export const normalizeProviderRequestError = (error: unknown, request_id: string): ErrorEnvelope => {
+  if (isProviderRequestErrorLike(error)) {
     return createErrorEnvelope({
       error: error.message,
       status: error.status,
       request_id,
-      code: sandboxCodeToPlatformErrorCode(error.response?.code, error.status),
+      code: providerCodeToPlatformErrorCode(error.code, error.status),
       ...(error.retryAfterMs === undefined ? {} : { retry_after_ms: error.retryAfterMs }),
     });
   }
   return createErrorEnvelope({
-    error: error instanceof Error ? error.message : "Sandbox request failed",
+    error: error instanceof Error ? error.message : "Provider request failed",
     status: 500,
     request_id,
     code: platformErrorCodes.serverInternal,
@@ -197,23 +197,27 @@ const normalizeClientKind = (value: string): PlatformSessionRef["client_kind"] =
   }
 };
 
-const sandboxCodeToPlatformErrorCode = (code: string | undefined, status: number): PlatformErrorCode => {
+const providerCodeToPlatformErrorCode = (code: string | undefined, status: number): PlatformErrorCode => {
   switch (code) {
     case undefined:
       return defaultErrorCodeForStatus(status);
+    case "invalid_argument":
     case "unauthorized":
       return platformErrorCodes.authTokenInvalid;
     case "forbidden":
       return platformErrorCodes.authInsufficientScope;
     case "not_found":
       return platformErrorCodes.resourceNotFound;
+    case "already_exists":
     case "conflict":
       return platformErrorCodes.resourceConflict;
     case "invalid_request":
     case "payload_too_large":
       return platformErrorCodes.inputInvalidParameter;
+    case "resource_exhausted":
     case "rate_limited":
       return platformErrorCodes.rateLimitExceeded;
+    case "unavailable":
     case "bad_gateway":
       return platformErrorCodes.serverUnavailable;
     default:

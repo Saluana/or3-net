@@ -1,5 +1,7 @@
 # OR3 Net Plan — Phased Roadmap
 
+> Migration note: the current implementation path uses OpenSandbox instead of `or3-sandbox`, and warm-pool work has been removed from the first cut.
+
 ## Phase 0 — External prerequisites
 
 - `or3-intern`: add internal service API for turns, subagents, streams, and abort.

@@ -29,7 +29,7 @@ import type {
 } from "../db/index.ts";
 import { createId } from "../lib/ids.ts";
 import type { RemoteNodeExecutor } from "../nodes/executor.ts";
-import type { SandboxNodeAdapter } from "../nodes/adapter-sandbox.ts";
+import type { NodeExecutionAdapter, ProviderExecEvent } from "../nodes/execution-adapter.ts";
 import type { LeaseScheduler } from "../scheduler/scheduler.ts";
 import {
   isRemoteExecutionError,
@@ -38,10 +38,10 @@ import {
   type NodeExecutionHandle,
 } from "../nodes/transport.ts";
 import type { InternClient, InternJobEvent } from "../../sdk/intern/index.ts";
-import type { SandboxExecEvent } from "../../sdk/sandbox/index.ts";
 import { JobStreamBroker } from "./job-streams.ts";
 import { SessionBindingService } from "../session/service.ts";
-import { normalizeInternError, normalizeSandboxError, toPlatformSessionRef } from "../contracts/platform/compat.ts";
+import { normalizeInternError, normalizeProviderRequestError, toPlatformSessionRef } from "../contracts/platform/compat.ts";
+import { isProviderRequestErrorLike } from "../../sdk/opensandbox/types.ts";
 
 /**
  * Purpose:
@@ -88,7 +88,7 @@ export interface LocalJobServiceOptions {
   readonly internClient: InternClient;
   readonly streamBroker?: JobStreamBroker;
   readonly leaseScheduler?: LeaseScheduler;
-  readonly sandboxNodeAdapter?: SandboxNodeAdapter;
+  readonly nodeExecutionAdapter?: NodeExecutionAdapter;
   readonly remoteNodeExecutor?: RemoteNodeExecutor;
   readonly sessionBindingService?: SessionBindingService;
   readonly reconcileOnStartup?: boolean;
@@ -643,7 +643,7 @@ export class LocalJobService {
         (node) =>
           node.status === "approved" &&
           node.health_status !== "stale" &&
-          ((node.manifest.adapter_kind === "sandbox" && this.options.sandboxNodeAdapter !== undefined) ||
+          ((node.manifest.adapter_kind === "sandbox" && this.options.nodeExecutionAdapter !== undefined) ||
             (this.options.remoteNodeExecutor?.canExecute(node) ?? false)),
       );
   }
@@ -656,13 +656,13 @@ export class LocalJobService {
     onEvent?: (event: JobStreamEvent) => void,
   ): Promise<JobResult> {
     if (adapterKind === "sandbox") {
-      const adapter = this.options.sandboxNodeAdapter;
+      const adapter = this.options.nodeExecutionAdapter;
       if (adapter === undefined) {
-        throw new Error("sandbox node adapter is not configured");
+        throw new Error("node execution adapter is not configured");
       }
 
       const result = await adapter.executeTaskWithProgress(workspaceId, taskPackage, (event) => {
-        const normalized = normalizeSandboxExecEvent(event);
+        const normalized = normalizeProviderExecEvent(event);
         if (normalized !== null) {
           onEvent?.(normalized);
         }
@@ -672,7 +672,7 @@ export class LocalJobService {
         artifacts: [],
         meta: {
           exit_code: result.exit_code,
-          sandbox_id: result.sandbox.id,
+          instance_id: result.instance_id,
         },
       };
     }
@@ -783,8 +783,8 @@ const toRemoteExecutionJobError = (
   details: Record<string, unknown>,
 ): NonNullable<Job["error"]> => {
   const requestId = typeof details["request_id"] === "string" ? details["request_id"] : createId("req");
-  if (error instanceof Error && error.name === "SandboxRequestError") {
-    return toJobErrorFromEnvelope(normalizeSandboxError(error, requestId));
+  if (isProviderRequestErrorLike(error)) {
+    return toJobErrorFromEnvelope(normalizeProviderRequestError(error, requestId));
   }
   if (error instanceof Error && error.name === "InternRequestError") {
     return toJobErrorFromEnvelope(normalizeInternError(error, requestId));
@@ -858,7 +858,7 @@ const normalizeInternEvent = (jobId: string, event: InternJobEvent): JobStreamEv
   }
 };
 
-const normalizeSandboxExecEvent = (event: SandboxExecEvent): JobStreamEvent | null => {
+const normalizeProviderExecEvent = (event: ProviderExecEvent): JobStreamEvent | null => {
   switch (event.event) {
     case "stdout":
     case "stderr": {

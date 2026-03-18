@@ -23,12 +23,12 @@ import { agentSchema, previewDescriptorSchema, previewLaunchRequestSchema } from
 import { exchangeSessionRequestSchema } from "../contracts/platform/auth.ts";
 import { platformErrorCodes, type PlatformErrorCode } from "../contracts/platform/error-codes.ts";
 import type { AuditContext } from "../contracts/platform/types.ts";
-import { defaultErrorCodeForStatus, normalizeInternError, normalizeSandboxError } from "../contracts/platform/compat.ts";
+import { defaultErrorCodeForStatus, normalizeInternError, normalizeProviderRequestError } from "../contracts/platform/compat.ts";
 import type { WorkspacePrincipal } from "../auth/tokens.ts";
 import { consoleEntryPath, renderConsoleHtml } from "../console/index.ts";
 import type { LocalJobService } from "../execution/local-jobs.ts";
 import { createJobRequestSchema } from "../execution/local-jobs.ts";
-import type { SandboxNodeAdapter } from "../nodes/adapter-sandbox.ts";
+import type { NodeExecutionAdapter, ProviderRequestContext } from "../nodes/execution-adapter.ts";
 import type { NodeRegistryService } from "../nodes/index.ts";
 import { enrollNodeRequestSchema } from "../nodes/index.ts";
 import { PreviewStateError, type PreviewService } from "../previews/service.ts";
@@ -49,8 +49,7 @@ import {
   runtimeSessionStateSchema,
 } from "../contracts/runtime/index.ts";
 import { InternRequestError } from "../../sdk/intern/types.ts";
-import type { SandboxRequestContext } from "../../sdk/sandbox/types.ts";
-import { SandboxRequestError } from "../../sdk/sandbox/types.ts";
+import { isProviderRequestErrorLike } from "../../sdk/opensandbox/types.ts";
 
 const DEFAULT_PUBLIC_BASE_URL = "http://localhost";
 const DEFAULT_TRUSTED_REQUEST_ORIGIN_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "or3.test"]);
@@ -91,7 +90,7 @@ interface AppServices {
   readonly agentService?: AgentService;
   readonly previewService?: PreviewService;
   readonly workspaceFileService?: InMemoryWorkspaceFileService;
-  readonly sandboxNodeAdapter?: SandboxNodeAdapter;
+  readonly nodeExecutionAdapter?: NodeExecutionAdapter;
 }
 
 type RouteGroups = Record<string, string | undefined>;
@@ -621,18 +620,18 @@ export class Or3NetApp {
 
   private async handleListNodeServices(request: Request, workspaceId: string, nodeId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "services:read");
-    const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
+    const adapter = requireNodeExecutionAdapter(this.services.nodeExecutionAdapter);
     const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
     return jsonResponse(200, { items: adapter.listServices(node) });
   }
 
   private async handleLaunchNodeService(request: Request, workspaceId: string, nodeId: string, serviceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "services:write");
-    const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
+    const adapter = requireNodeExecutionAdapter(this.services.nodeExecutionAdapter);
     const previewService = requirePreviewService(this.services.previewService);
     const auditContext = createRequestAuditContext(request, principal);
     const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
-    const internalLaunch = await adapter.prepareServiceLaunch(principal.workspace_id, node, serviceId, toSandboxRequestContext(auditContext));
+    const internalLaunch = await adapter.prepareServiceLaunch(principal.workspace_id, node, serviceId, toProviderRequestContext(auditContext));
     const launch = previewService.mintLaunchCapability({
       origin: resolvePublicBaseUrl(this.services.publicBaseUrl, request.url),
       workspace_id: principal.workspace_id,
@@ -654,23 +653,23 @@ export class Or3NetApp {
     const auditContext = createRequestAuditContext(request, principal);
     const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
     const revokedLaunches = previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
-    const revokedTunnels = await requireSandboxAdapter(this.services.sandboxNodeAdapter).revokeServiceLaunch(
+    const revokedTunnels = await requireNodeExecutionAdapter(this.services.nodeExecutionAdapter).revokeServiceLaunch(
       principal.workspace_id,
       node,
       serviceId,
-      toSandboxRequestContext(auditContext),
+      toProviderRequestContext(auditContext),
     );
     return jsonResponse(200, { ok: true, revoked: revokedLaunches + revokedTunnels });
   }
 
   private async handleRestartNodeService(request: Request, workspaceId: string, nodeId: string, serviceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "services:write");
-    const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
+    const adapter = requireNodeExecutionAdapter(this.services.nodeExecutionAdapter);
     const previewService = requirePreviewService(this.services.previewService);
     const auditContext = createRequestAuditContext(request, principal);
     const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
     previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
-    const result = await adapter.restartService(principal.workspace_id, node, serviceId, toSandboxRequestContext(auditContext));
+    const result = await adapter.restartService(principal.workspace_id, node, serviceId, toProviderRequestContext(auditContext));
     return jsonResponse(200, result);
   }
 
@@ -918,9 +917,9 @@ const requireWorkspaceFileService = (service: InMemoryWorkspaceFileService | und
   return service;
 };
 
-const requireSandboxAdapter = (service: SandboxNodeAdapter | undefined): SandboxNodeAdapter => {
+const requireNodeExecutionAdapter = (service: NodeExecutionAdapter | undefined): NodeExecutionAdapter => {
   if (service === undefined) {
-    throw new HttpError(503, "sandbox node adapter is not configured", { code: platformErrorCodes.serverUnavailable });
+    throw new HttpError(503, "node execution adapter is not configured", { code: platformErrorCodes.serverUnavailable });
   }
   return service;
 };
@@ -1025,8 +1024,8 @@ export const handleAppRequest = async (app: Or3NetApp, request: Request): Promis
     if (error instanceof RuntimeError) {
       return errorResponse(runtimeErrorToApiEnvelope(error, requestId));
     }
-    if (error instanceof SandboxRequestError) {
-      return errorResponse(normalizeSandboxError(error, requestId));
+    if (isProviderRequestErrorLike(error)) {
+      return errorResponse(normalizeProviderRequestError(error, requestId));
     }
     if (error instanceof InternRequestError) {
       return errorResponse(normalizeInternError(error, requestId));
@@ -1162,7 +1161,7 @@ const createRequestAuditContext = (request: Request, principal: WorkspacePrincip
   subject: principal.subject,
 });
 
-const toSandboxRequestContext = (auditContext: AuditContext): SandboxRequestContext => ({
+const toProviderRequestContext = (auditContext: AuditContext): ProviderRequestContext => ({
   requestId: auditContext.request_id,
   workspaceId: auditContext.workspace_id,
 });
