@@ -23,13 +23,15 @@ import { fromIsoDateTime } from "../lib/time.ts";
 import type {
   ApiKeyRow,
   IdempotencyRecordRow,
+  NodeBootstrapTokenRow,
   StoredApiKey,
   StoredIdempotencyRecord,
+  StoredNodeBootstrapToken,
   StoredWorkspace,
   WorkspaceRow,
 } from "./schema.ts";
 import { schemaMigrations } from "./schema.ts";
-import { parseApiKeyRow, parseIdempotencyRecordRow, parseWorkspaceRow } from "./codecs.ts";
+import { parseApiKeyRow, parseIdempotencyRecordRow, parseNodeBootstrapTokenRow, parseWorkspaceRow } from "./codecs.ts";
 import { WorkspaceStore } from "./workspace-store.ts";
 import {
   activeLeaseState,
@@ -215,6 +217,17 @@ export class ControlPlaneDatabase {
       .query<ApiKeyRow, [string]>("SELECT * FROM api_keys WHERE workspace_id = ? ORDER BY created_at DESC")
       .all(workspaceId)
       .map(parseApiKeyRow);
+  }
+
+  /** Purpose: Looks up an active node bootstrap token by its stored hash. */
+  public findActiveNodeBootstrapTokenByHash(tokenHash: string, nowMs = Date.now()): StoredNodeBootstrapToken | null {
+    const row = this.sqlite
+      .query<NodeBootstrapTokenRow, [string, number]>(
+        "SELECT * FROM node_bootstrap_tokens WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ? LIMIT 1",
+      )
+      .get(tokenHash, nowMs);
+
+    return row === null ? null : parseNodeBootstrapTokenRow(row);
   }
 
   /** Purpose: Marks an API key as revoked. */

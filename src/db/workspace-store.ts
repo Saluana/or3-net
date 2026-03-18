@@ -45,6 +45,7 @@ import type {
   LeaseRow,
   NetworkSessionRow,
   NodeCredentialRow,
+  NodeBootstrapTokenRow,
   NodeRow,
   PreviewRow,
   RuntimeArtifactRow,
@@ -56,6 +57,7 @@ import type {
   StoredLease,
   StoredNetworkSession,
   StoredNode,
+  StoredNodeBootstrapToken,
   StoredNodeCredential,
   StoredPreview,
   StoredRuntimeArtifact,
@@ -69,6 +71,7 @@ import {
   parseLeaseRow,
   parseNetworkSessionRow,
   parseNodeCredentialRow,
+  parseNodeBootstrapTokenRow,
   parseNodeRow,
   parsePreviewRow,
   parseRuntimeArtifactRow,
@@ -317,6 +320,60 @@ export class WorkspaceStore {
       .get(this.workspaceId, nodeId, nowMs);
 
     return row === null ? null : parseNodeCredentialRow(row);
+  }
+
+  /** Purpose: Persists or updates a node bootstrap token. */
+  public saveNodeBootstrapToken(input: {
+    readonly bootstrap_token_id: string;
+    readonly token_hash: string;
+    readonly token_ciphertext?: string;
+    readonly node_id?: string;
+    readonly created_at?: string;
+    readonly expires_at: string;
+    readonly revoked_at?: string;
+  }): StoredNodeBootstrapToken {
+    const createdAt = input.created_at ?? new Date().toISOString();
+    this.db
+      .prepare(
+        "INSERT INTO node_bootstrap_tokens (workspace_id, id, token_hash, token_ciphertext, node_id, created_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, id) DO UPDATE SET token_hash = excluded.token_hash, token_ciphertext = excluded.token_ciphertext, node_id = excluded.node_id, created_at = excluded.created_at, expires_at = excluded.expires_at, revoked_at = excluded.revoked_at",
+      )
+      .run(
+        this.workspaceId,
+        input.bootstrap_token_id,
+        input.token_hash,
+        input.token_ciphertext ?? null,
+        input.node_id ?? null,
+        fromIsoDateTime(createdAt),
+        fromIsoDateTime(input.expires_at),
+        input.revoked_at === undefined ? null : fromIsoDateTime(input.revoked_at),
+      );
+
+    return this.getNodeBootstrapToken(input.bootstrap_token_id);
+  }
+
+  /** Purpose: Fetches a single node bootstrap token. */
+  public getNodeBootstrapToken(bootstrapTokenId: string): StoredNodeBootstrapToken {
+    const row = this.db
+      .query<NodeBootstrapTokenRow, [string, string]>(
+        "SELECT * FROM node_bootstrap_tokens WHERE workspace_id = ? AND id = ? LIMIT 1",
+      )
+      .get(this.workspaceId, bootstrapTokenId);
+
+    if (row === null) {
+      throw new Error(`Node bootstrap token ${bootstrapTokenId} was not found in workspace ${this.workspaceId}`);
+    }
+
+    return parseNodeBootstrapTokenRow(row);
+  }
+
+  /** Purpose: Lists bootstrap tokens for a workspace. */
+  public listNodeBootstrapTokens(): StoredNodeBootstrapToken[] {
+    return this.db
+      .query<NodeBootstrapTokenRow, [string]>(
+        "SELECT * FROM node_bootstrap_tokens WHERE workspace_id = ? ORDER BY created_at DESC",
+      )
+      .all(this.workspaceId)
+      .map(parseNodeBootstrapTokenRow);
   }
 
   /** Purpose: Persists or updates a job record and its task package. */

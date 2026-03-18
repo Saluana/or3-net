@@ -30,7 +30,7 @@ import type { LocalJobService } from "../execution/local-jobs.ts";
 import { createJobRequestSchema } from "../execution/local-jobs.ts";
 import type { NodeExecutionAdapter, ProviderRequestContext } from "../nodes/execution-adapter.ts";
 import type { NodeRegistryService } from "../nodes/index.ts";
-import { enrollNodeRequestSchema } from "../nodes/index.ts";
+import { enrollNodeRequestSchema, issueNodeBootstrapTokenRequestSchema, redeemNodeBootstrapTokenRequestSchema } from "../nodes/index.ts";
 import { PreviewStateError, type PreviewService } from "../previews/service.ts";
 import { errorResponse, resolveRequestId } from "./response-helpers.ts";
 import type { InMemoryWorkspaceFileService } from "../workspace/files.ts";
@@ -59,6 +59,7 @@ const MAX_CREATE_JOB_BODY_BYTES = 256 * 1024;
 const MAX_API_KEY_BODY_BYTES = 32 * 1024;
 const MAX_AGENT_BODY_BYTES = 256 * 1024;
 const MAX_NODE_ENROLL_BODY_BYTES = 256 * 1024;
+const MAX_NODE_BOOTSTRAP_BODY_BYTES = 64 * 1024;
 const MAX_RUNTIME_SESSION_CREATE_BODY_BYTES = 128 * 1024;
 const MAX_RUNTIME_EXEC_BODY_BYTES = 256 * 1024;
 const MAX_RUNTIME_COPY_BODY_BYTES = 4 * 1024 * 1024;
@@ -255,8 +256,14 @@ export class Or3NetApp {
       createRoute("/v1/workspaces/:workspaceId/nodes/enroll", {
         POST: (request, groups) => this.handleEnrollNode(request, requireGroup(groups, "workspaceId")),
       }),
+      createRoute("/v1/workspaces/:workspaceId/nodes/bootstrap-tokens", {
+        POST: (request, groups) => this.handleIssueNodeBootstrapToken(request, requireGroup(groups, "workspaceId")),
+      }),
       createRoute("/v1/workspaces/:workspaceId/nodes/:nodeId/approve", {
         POST: (request, groups) => this.handleApproveNode(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "nodeId")),
+      }),
+      createRoute("/v1/nodes/bootstrap/redeem", {
+        POST: (request) => this.handleRedeemNodeBootstrapToken(request),
       }),
       createRoute("/v1/workspaces/:workspaceId/nodes/:nodeId/services", {
         GET: (request, groups) => this.handleListNodeServices(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "nodeId")),
@@ -624,6 +631,29 @@ export class Or3NetApp {
     const registry = requireNodeRegistry(this.services.nodeRegistryService);
     const approval = await registry.approveNode(principal.workspace_id, nodeId);
     return jsonResponse(200, approval);
+  }
+
+  private async handleIssueNodeBootstrapToken(request: Request, workspaceId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "nodes:write");
+    const registry = requireNodeRegistry(this.services.nodeRegistryService);
+    const payload = issueNodeBootstrapTokenRequestSchema.parse(await readOptionalJson(request, MAX_NODE_BOOTSTRAP_BODY_BYTES));
+    const bootstrapToken = await registry.issueBootstrapToken(principal.workspace_id, payload);
+    return jsonResponse(201, bootstrapToken);
+  }
+
+  private async handleRedeemNodeBootstrapToken(request: Request): Promise<Response> {
+    const registry = requireNodeRegistry(this.services.nodeRegistryService);
+    const payload = redeemNodeBootstrapTokenRequestSchema.parse(await readJsonBody(request, MAX_NODE_BOOTSTRAP_BODY_BYTES));
+    let redemption;
+    try {
+      redemption = await registry.redeemBootstrapToken(payload);
+    } catch (error: unknown) {
+      if (error instanceof Error && isNodeBootstrapClientError(error)) {
+        throw new HttpError(400, error.message, { code: platformErrorCodes.inputInvalidParameter });
+      }
+      throw error;
+    }
+    return jsonResponse(200, redemption);
   }
 
   private async handleListNodeServices(request: Request, workspaceId: string, nodeId: string): Promise<Response> {
@@ -1080,6 +1110,11 @@ const withRequestId = (request: Request, requestId: string): Request => {
 const isNotFoundError = (error: Error): boolean => {
   const message = error.message.toLowerCase();
   return message.includes("was not found") || message.endsWith("not found");
+};
+
+const isNodeBootstrapClientError = (error: Error): boolean => {
+  const message = error.message.toLowerCase();
+  return message.includes("bootstrap token") || message.includes("different public key");
 };
 
 const previewStateErrorCode = (error: PreviewStateError): PlatformErrorCode => {

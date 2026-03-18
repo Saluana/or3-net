@@ -2,39 +2,39 @@
 
 ## 1. Foundation and scope lock
 
-- [ ] [Req 1, 2, 4, 13] Record the product boundary in docs and code comments: `or3-net` stays the control plane; `or3-node-agent` is the installable machine agent; do not turn `or3-net` into the host daemon.
-- [ ] [Req 1] Lock the operator UX target: primary install is `bun install -g or3-node` and primary startup is `or3-node launch`.
-- [ ] [Req 13] Lock the integration constraint: prefer the smallest viable `or3-net` changes by extending existing node, executor, transport, and runtime-session codepaths.
-- [ ] [Req 7, 11] Lock the v1 scope to direct machine control primitives and explicit capability gating; keep hostile-code isolation and multi-tenant guarantees out of scope.
-- [ ] [Req 7] Decide the v1 feature cut for remote machine control: job execution only first, or job execution plus remote runtime-session lifecycle in the first milestone.
+- [x] [Req 1, 2, 4, 13] Record the product boundary in docs and code comments: `or3-net` stays the control plane; `or3-node-agent` is the installable machine agent; do not turn `or3-net` into the host daemon.
+- [x] [Req 1] Lock the operator UX target: primary install is `bun install -g or3-node` and primary startup is `or3-node launch`.
+- [x] [Req 13] Lock the integration constraint: prefer the smallest viable `or3-net` changes by extending existing node, executor, transport, and runtime-session codepaths.
+- [x] [Req 7, 11] Lock the v1 scope to direct machine control primitives and explicit capability gating; keep hostile-code isolation and multi-tenant guarantees out of scope.
+- [x] [Req 7] Decide the v1 feature cut for remote machine control: job execution only first, or job execution plus remote runtime-session lifecycle in the first milestone.
 
 ## 2. Add node-agent planning and project scaffolding
 
-- [ ] [Req 1] Create the `or3-node` package with a Bun bin entry so `bun install -g or3-node` installs an `or3-node` executable.
-- [ ] [Req 1, 13] Create a future project location for the source (for example `or3-node-agent/`) and document why it stays separate from the `or3-net` server runtime even though the shipped CLI name is `or3-node`.
-- [ ] [Req 1, 13] Add a short architecture README for the agent project covering launch, bootstrap, connection, execution, and capability advertisement.
-- [ ] [Req 1, 11, 13] Define the agent config surface so the common path works without hand-editing config files: URL, bootstrap token source, allowed roots, shell defaults, limits, and capability toggles.
+- [x] [Req 1] Create the `or3-node` package with a Bun bin entry so `bun install -g or3-node` installs an `or3-node` executable.
+- [x] [Req 1, 13] Create a future project location for the source (for example `or3-node-agent/`) and document why it stays separate from the `or3-net` server runtime even though the shipped CLI name is `or3-node`.
+- [x] [Req 1, 13] Add a short architecture README for the agent project covering launch, bootstrap, connection, execution, and capability advertisement.
+- [x] [Req 1, 11, 13] Define the agent config surface so the common path works without hand-editing config files: URL, bootstrap token source, allowed roots, shell defaults, limits, and capability toggles.
 
 ## 3. Build the one-command launch flow first
 
-- [ ] [Req 1, 2, 13] Implement `or3-node launch` as the main entrypoint that loads config, creates identity if needed, handles bootstrap if missing, and then starts the agent loop.
-- [ ] [Req 1] Add flag-based non-interactive launch support such as `--url` and `--token` for automation.
+- [x] [Req 1, 2, 13] Implement `or3-node launch` as the main entrypoint that loads config, creates identity if needed, handles bootstrap if missing, and then starts the agent loop.
+- [x] [Req 1] Add flag-based non-interactive launch support such as `--url` and `--token` for automation.
 - [ ] [Req 1, 13] Add an interactive prompt flow for first-run bootstrap when required inputs are missing.
-- [ ] [Req 1, 12, 13] Persist generated config and identity state on first successful launch so restarts do not require repeating setup.
-- [ ] [Req 1, 13] Add a simple `or3-node doctor` command to validate config, connectivity, identity, and approval status.
+- [x] [Req 1, 12, 13] Persist generated config and identity state on first successful launch so restarts do not require repeating setup.
+- [x] [Req 1, 13] Add a simple `or3-node doctor` command to validate config, connectivity, identity, and approval status.
 
 ## 4. Bootstrap and enrollment flow
 
-- [ ] [Req 2] Add a short-lived node bootstrap token or claim model to `or3-net` persistence and service wiring.
-- [ ] [Req 2, 3] Implement control-plane issuance of bootstrap credentials in the node management surface, likely in `src/nodes/registry.ts` and `src/api/app.ts`.
-- [ ] [Req 2] Implement agent-side keypair generation, manifest signing, and bootstrap redemption.
-- [ ] [Req 13] Keep bootstrap as a small extension to existing node enrollment rather than a separate onboarding subsystem in `or3-net`.
-- [ ] [Req 1, 2, 13] Keep `init` and `enroll` as optional advanced commands only if they are still useful for debugging; do not require them for the normal `launch` flow.
+- [x] [Req 2] Add a short-lived node bootstrap token or claim model to `or3-net` persistence and service wiring.
+- [x] [Req 2, 3] Implement control-plane issuance of bootstrap credentials in the node management surface, likely in `src/nodes/registry.ts` and `src/api/app.ts`.
+- [x] [Req 2] Implement agent-side keypair generation, manifest signing, and bootstrap redemption.
+- [x] [Req 13] Keep bootstrap as a small extension to existing node enrollment rather than a separate onboarding subsystem in `or3-net`.
+- [x] [Req 1, 2, 13] Keep `init` and `enroll` as optional advanced commands only if they are still useful for debugging; do not require them for the normal `launch` flow.
 - [ ] [Req 2, 3] Add tests for bootstrap token expiry, invalid tokens, node id reuse, and pubkey mismatch.
 
 ## 5. Approval and runtime credential lifecycle
 
-- [ ] [Req 3] Extend `NodeRegistryService` in `src/nodes/registry.ts` so agent-friendly approval and credential handoff are documented and test-covered.
+- [x] [Req 3] Extend `NodeRegistryService` in `src/nodes/registry.ts` so agent-friendly approval and credential handoff are documented and test-covered.
 - [ ] [Req 3, 12] Implement agent-side secure storage for the node runtime credential and expiry metadata.
 - [ ] [Req 3] Implement credential refresh / re-fetch flow before expiry, or document explicit re-approval behavior if refresh is deferred.
 - [ ] [Req 3, 12] Add regression tests covering credential rotation, revocation, and restart behavior.
@@ -50,9 +50,9 @@
 
 ## 7. Agent host-control core
 
-- [ ] [Req 6, 11] Create the internal host-control boundary inside the agent for exec, abort, optional file access, optional PTY, and optional tunnel operations.
-- [ ] [Req 6, 11] Implement host exec with argv-first execution, cwd/env controls, timeout enforcement, stdout/stderr caps, stdin caps, and structured terminal states.
-- [ ] [Req 11] Add config-driven allowlists for environment passthrough and filesystem roots.
+- [x] [Req 6, 11] Create the internal host-control boundary inside the agent for exec, abort, optional file access, optional PTY, and optional tunnel operations.
+- [x] [Req 6, 11] Implement host exec with argv-first execution, cwd/env controls, timeout enforcement, stdout/stderr caps, stdin caps, and structured terminal states.
+- [x] [Req 11] Add config-driven allowlists for environment passthrough and filesystem roots.
 - [ ] [Req 12, 13] Persist enough local execution metadata for restart-safe debugging and recent-failure reporting.
 - [ ] [Req 6, 11, 13] Add unit tests for timeout, missing binary, invalid cwd, oversized output, abort, and secrets-safe error handling.
 
