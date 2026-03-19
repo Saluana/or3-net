@@ -1,19 +1,34 @@
+import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import { AuthService, createControlPlaneDatabase, type StoredApiKey } from "../src/index.ts";
+import { AuthService, createControlPlaneDatabase } from "../src/index.ts";
 import { validateWorkspaceToken, issueWorkspaceToken } from "../src/auth/tokens.ts";
 import { encodeBase64Url, hmacSha256Hex } from "../src/lib/crypto.ts";
 
 const secret = "phase2-secret";
 
+const expectRejectsWithMessage = async (
+  action: () => Promise<unknown>,
+  expectedMessage: string,
+): Promise<void> => {
+  try {
+    await action();
+    throw new Error(`expected action to reject with ${expectedMessage}`);
+  } catch (error: unknown) {
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(expectedMessage);
+  }
+};
+
 describe("auth principal canonical fields", () => {
   let authService: AuthService;
+  let database: ReturnType<typeof createControlPlaneDatabase>;
   const issuedAtDate = new Date("2099-01-01T00:00:00.000Z");
   const issuedAtSeconds = Math.floor(issuedAtDate.getTime() / 1000);
   const expiresAtSeconds = issuedAtSeconds + 60;
 
   beforeEach(() => {
-    const database = createControlPlaneDatabase();
+    database = createControlPlaneDatabase();
     database.saveWorkspace({
       workspace_id: "ws_test",
       name: "Test Workspace",
@@ -85,25 +100,27 @@ describe("auth principal canonical fields", () => {
     const revokedRecord = authService.revokeApiKey("ws_test", record.api_key_id);
     expect(revokedRecord.revoked_at).toBeString();
 
-    await expect(authService.authenticateBearerToken(`Bearer ${apiKey}`)).rejects.toThrow("invalid bearer token");
+    await expectRejectsWithMessage(
+      () => authService.authenticateBearerToken(`Bearer ${apiKey}`),
+      "invalid bearer token",
+    );
   });
 
   test("api key auth rejects malformed persisted timestamp fields", async () => {
-    const { api_key: apiKey } = await authService.createApiKey({
+    const { api_key: apiKey, record } = await authService.createApiKey({
       workspace_id: "ws_test",
       name: "bad-timestamp-key",
       scopes: ["jobs:read"],
     });
-    const authServiceWithMalformedApiKey = authService as AuthService & {
-      authenticateApiKey: (rawToken: string) => Promise<StoredApiKey>;
-    };
-    const authenticateApiKey = authServiceWithMalformedApiKey.authenticateApiKey.bind(authService);
-    authServiceWithMalformedApiKey.authenticateApiKey = async (rawToken: string) => ({
-      ...(await authenticateApiKey(rawToken)),
-      created_at: "not-a-timestamp",
-    });
+    const sqlite = (database as unknown as { readonly sqlite: Database }).sqlite;
+    sqlite
+      .prepare("UPDATE api_keys SET created_at = ? WHERE workspace_id = ? AND id = ?")
+      .run("not-a-timestamp", record.workspace_id, record.api_key_id);
 
-    await expect(authService.authenticateBearerToken(`Bearer ${apiKey}`)).rejects.toThrow("invalid bearer token");
+    await expectRejectsWithMessage(
+      () => authService.authenticateBearerToken(`Bearer ${apiKey}`),
+      "invalid bearer token",
+    );
   });
 
   test("token validation remains compatible with legacy sub-only claims", async () => {
@@ -145,7 +162,8 @@ describe("auth principal canonical fields", () => {
     const tamperedSuffix = signatureValue.endsWith("0") ? "1" : "0";
     const tamperedSignature = `${signatureValue.slice(0, -1)}${tamperedSuffix}`;
 
-    expect(validateWorkspaceToken(secret, `${payloadValue}.${tamperedSignature}`, new Date(issuedAtDate.getTime() + 30_000))).rejects.toThrow(
+    await expectRejectsWithMessage(
+      () => validateWorkspaceToken(secret, `${payloadValue}.${tamperedSignature}`, new Date(issuedAtDate.getTime() + 30_000)),
       "invalid workspace token signature",
     );
   });

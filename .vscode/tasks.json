@@ -1,0 +1,14 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Manual auth check or3-net",
+			"type": "shell",
+			"command": "bun",
+			"args": [
+				"./.tmp/manual-auth-check.ts"
+			],
+			"isBackground": false
+		}
+	]
+}

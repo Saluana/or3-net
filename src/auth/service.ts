@@ -130,19 +130,23 @@ export class AuthService {
       if (isExpiredWorkspaceTokenError(error)) {
         throw error;
       }
-      const apiKey = await this.authenticateApiKey(value);
-      const issuedAt = toUnixTimestampSeconds(apiKey.created_at);
-      const expiresAt = apiKey.expires_at === null
-        ? MAX_API_KEY_EXPIRY_SECONDS
-        : toUnixTimestampSeconds(apiKey.expires_at);
-      return {
-        subject: apiKey.api_key_id,
-        workspace_id: apiKey.workspace_id,
-        scopes: apiKey.scopes,
-        auth_type: "api-key",
-        issued_at: issuedAt,
-        expires_at: expiresAt,
-      };
+      try {
+        const apiKey = await this.authenticateApiKey(value);
+        const issuedAt = toUnixTimestampSeconds(apiKey.created_at);
+        const expiresAt = apiKey.expires_at === null
+          ? MAX_API_KEY_EXPIRY_SECONDS
+          : toUnixTimestampSeconds(apiKey.expires_at);
+        return {
+          subject: apiKey.api_key_id,
+          workspace_id: apiKey.workspace_id,
+          scopes: apiKey.scopes,
+          auth_type: "api-key",
+          issued_at: issuedAt,
+          expires_at: expiresAt,
+        };
+      } catch {
+        throw new Error("invalid bearer token");
+      }
     }
   }
 
