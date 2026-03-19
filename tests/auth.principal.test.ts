@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
-import { AuthService, createControlPlaneDatabase } from "../src/index.ts";
+import { AuthService, createControlPlaneDatabase, type StoredApiKey } from "../src/index.ts";
 import { validateWorkspaceToken, issueWorkspaceToken } from "../src/auth/tokens.ts";
 import { encodeBase64Url, hmacSha256Hex } from "../src/lib/crypto.ts";
 
@@ -82,36 +82,28 @@ describe("auth principal canonical fields", () => {
     expect(principal.auth_type).toBe("api-key");
     expect(principal.workspace_id).toBe("ws_test");
 
-    authService.revokeApiKey("ws_test", record.api_key_id);
+    const revokedRecord = authService.revokeApiKey("ws_test", record.api_key_id);
+    expect(revokedRecord.revoked_at).toBeString();
 
     await expect(authService.authenticateBearerToken(`Bearer ${apiKey}`)).rejects.toThrow("invalid bearer token");
   });
 
   test("api key auth rejects malformed persisted timestamp fields", async () => {
-    const authServiceWithMalformedApiKey = authService as AuthService & {
-      authenticateApiKey: (rawToken: string) => Promise<{
-        api_key_id: string;
-        workspace_id: string;
-        name: string;
-        key_hash: string;
-        scopes: string[];
-        created_at: string;
-        expires_at: string | null;
-        revoked_at: string | null;
-      }>;
-    };
-    authServiceWithMalformedApiKey.authenticateApiKey = async (_rawToken: string) => ({
-      api_key_id: "api_bad",
+    const { api_key: apiKey } = await authService.createApiKey({
       workspace_id: "ws_test",
-      name: "bad-key",
-      key_hash: "hashed",
+      name: "bad-timestamp-key",
       scopes: ["jobs:read"],
+    });
+    const authServiceWithMalformedApiKey = authService as AuthService & {
+      authenticateApiKey: (rawToken: string) => Promise<StoredApiKey>;
+    };
+    const authenticateApiKey = authServiceWithMalformedApiKey.authenticateApiKey.bind(authService);
+    authServiceWithMalformedApiKey.authenticateApiKey = async (rawToken: string) => ({
+      ...(await authenticateApiKey(rawToken)),
       created_at: "not-a-timestamp",
-      expires_at: null,
-      revoked_at: null,
     });
 
-    await expect(authService.authenticateBearerToken("Bearer definitely-not-a-workspace-token")).rejects.toThrow("invalid bearer token");
+    await expect(authService.authenticateBearerToken(`Bearer ${apiKey}`)).rejects.toThrow("invalid bearer token");
   });
 
   test("token validation remains compatible with legacy sub-only claims", async () => {
