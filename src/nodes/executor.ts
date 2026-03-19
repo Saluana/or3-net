@@ -6,7 +6,7 @@
  * control plane can start or monitor remote execution.
  */
 import type { ControlPlaneDatabase } from "../db/index.ts";
-import type { JobResult, NodeRequest, NodeResponse, StoredNode, TaskPackage } from "../index.ts";
+import type { JobResult, NodeEvent, NodeRequest, NodeResponse, StoredNode, TaskPackage } from "../index.ts";
 
 import type { NodeTransportRegistry } from "./transport-registry.ts";
 import { RemoteExecutionError, type NodeExecutionHandle, type NodeRpcTransport, type NodeTransportCredential } from "./transport.ts";
@@ -107,6 +107,27 @@ export class RemoteNodeExecutor {
       );
     }
     return transport.sendRequest(request, {
+      workspaceId: node.workspace_id,
+      nodeId: node.manifest.node_id,
+      credential: this.resolveCredential(node, credential),
+    });
+  }
+
+  /** Purpose: Sends an RPC request that keeps streaming node events after the initial response. */
+  public async sendStreamingRequest(
+    node: StoredNode,
+    request: NodeRequest,
+    credential?: { token: string; expires_at: string },
+  ): Promise<{ response: Promise<NodeResponse>; stream: AsyncIterable<NodeEvent> }> {
+    const transport = this.resolveTransport(node);
+    if (transport.sendStreamingRequest === undefined) {
+      throw new RemoteExecutionError(
+        "remote_execution_failed",
+        `transport ${transport.kind} does not support streaming RPC for node ${node.manifest.node_id}`,
+        { details: { node_id: node.manifest.node_id } },
+      );
+    }
+    return transport.sendStreamingRequest(request, {
       workspaceId: node.workspace_id,
       nodeId: node.manifest.node_id,
       credential: this.resolveCredential(node, credential),

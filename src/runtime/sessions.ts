@@ -26,9 +26,19 @@ import type {
   RuntimeSessionDescriptor,
   RuntimeSessionState,
   RuntimeExecutionHandle,
+  RuntimePtyCloseInput,
+  RuntimePtyCloseResult,
+  RuntimePtyEvent,
+  RuntimePtyOpenInput,
+  RuntimePtyOpenResult,
+  RuntimePtyResizeInput,
+  RuntimePtyResizeResult,
+  RuntimePtyStreamInput,
+  RuntimePtyWriteInput,
+  RuntimePtyWriteResult,
   WorkspaceCommitResult,
 } from "../contracts/runtime/index.ts";
-import { RuntimeError, runtimeErrorEnvelopeSchema } from "../contracts/runtime/index.ts";
+import { RuntimeError, runtimeErrorEnvelopeSchema, runtimePtyCapability } from "../contracts/runtime/index.ts";
 import type { ControlPlaneDatabase, StoredRuntimeSession } from "../db/index.ts";
 import { createId } from "../lib/ids.ts";
 import type { RuntimeSelectionService } from "./selection.ts";
@@ -105,6 +115,7 @@ interface ArchiveWorkspaceStageAdapter {
 export class RuntimeSessionService {
   private readonly stagingBaseDir: string;
   private readonly hostWorkspaceBaseDir: string;
+  private readonly activePtyMirrors = new Map<string, Promise<void>>();
 
   public constructor(
     private readonly registry: RuntimeRegistry,
@@ -498,6 +509,196 @@ export class RuntimeSessionService {
     });
   }
 
+  /** Purpose: Opens a PTY inside an existing runtime session. */
+  public async openPty(workspaceId: string, sessionId: string, input: Omit<RuntimePtyOpenInput, "session_ref">): Promise<RuntimePtyOpenResult> {
+    const stored = this.requireSession(workspaceId, sessionId);
+    ensureReadySession(stored.session);
+    ensureCapability(stored, runtimePtyCapability);
+    const adapter = this.requireAdapter(stored.session.adapter_id);
+    if (adapter.openPty === undefined) {
+      throw new RuntimeError("unsupported_capability", `adapter ${stored.session.adapter_id} does not support PTY`, {
+        details: { adapter_id: stored.session.adapter_id, capability: runtimePtyCapability },
+      });
+    }
+
+    const result = await adapter.openPty({
+      workspace_id: workspaceId,
+      session_ref: requireSessionRef(stored),
+      ...input,
+    });
+    this.database.workspace(workspaceId).appendRuntimeSessionEvent({
+      session_id: sessionId,
+      event_type: "pty.opened",
+      payload: {
+        pty_id: result.pty_id,
+        command: input.command ?? null,
+      },
+    });
+    this.startPtyMirror(workspaceId, sessionId, stored, result.pty_id);
+    return result;
+  }
+
+  /** Purpose: Sends input to a PTY inside an existing runtime session. */
+  public async writePty(workspaceId: string, sessionId: string, input: Omit<RuntimePtyWriteInput, "session_ref">): Promise<RuntimePtyWriteResult> {
+    const stored = this.requireSession(workspaceId, sessionId);
+    ensureReadySession(stored.session);
+    ensureCapability(stored, runtimePtyCapability);
+    const adapter = this.requireAdapter(stored.session.adapter_id);
+    if (adapter.writePty === undefined) {
+      throw new RuntimeError("unsupported_capability", `adapter ${stored.session.adapter_id} does not support PTY`, {
+        details: { adapter_id: stored.session.adapter_id, capability: runtimePtyCapability },
+      });
+    }
+
+    const result = await adapter.writePty({
+      workspace_id: workspaceId,
+      session_ref: requireSessionRef(stored),
+      ...input,
+    });
+    this.database.workspace(workspaceId).appendRuntimeSessionEvent({
+      session_id: sessionId,
+      event_type: "pty.input",
+      payload: {
+        pty_id: input.pty_id,
+        bytes: input.data.length,
+      },
+    });
+    return result;
+  }
+
+  /** Purpose: Resizes a PTY inside an existing runtime session. */
+  public async resizePty(workspaceId: string, sessionId: string, input: Omit<RuntimePtyResizeInput, "session_ref">): Promise<RuntimePtyResizeResult> {
+    const stored = this.requireSession(workspaceId, sessionId);
+    ensureReadySession(stored.session);
+    ensureCapability(stored, runtimePtyCapability);
+    const adapter = this.requireAdapter(stored.session.adapter_id);
+    if (adapter.resizePty === undefined) {
+      throw new RuntimeError("unsupported_capability", `adapter ${stored.session.adapter_id} does not support PTY`, {
+        details: { adapter_id: stored.session.adapter_id, capability: runtimePtyCapability },
+      });
+    }
+
+    const result = await adapter.resizePty({
+      workspace_id: workspaceId,
+      session_ref: requireSessionRef(stored),
+      ...input,
+    });
+    this.database.workspace(workspaceId).appendRuntimeSessionEvent({
+      session_id: sessionId,
+      event_type: "pty.resized",
+      payload: {
+        pty_id: input.pty_id,
+        cols: input.cols,
+        rows: input.rows,
+      },
+    });
+    return result;
+  }
+
+  /** Purpose: Closes a PTY inside an existing runtime session. */
+  public async closePty(workspaceId: string, sessionId: string, input: Omit<RuntimePtyCloseInput, "session_ref">): Promise<RuntimePtyCloseResult> {
+    const stored = this.requireSession(workspaceId, sessionId);
+    ensureReadySession(stored.session);
+    ensureCapability(stored, runtimePtyCapability);
+    const adapter = this.requireAdapter(stored.session.adapter_id);
+    if (adapter.closePty === undefined) {
+      throw new RuntimeError("unsupported_capability", `adapter ${stored.session.adapter_id} does not support PTY`, {
+        details: { adapter_id: stored.session.adapter_id, capability: runtimePtyCapability },
+      });
+    }
+
+    const result = await adapter.closePty({
+      workspace_id: workspaceId,
+      session_ref: requireSessionRef(stored),
+      ...input,
+    });
+    this.database.workspace(workspaceId).appendRuntimeSessionEvent({
+      session_id: sessionId,
+      event_type: "pty.closed",
+      payload: {
+        pty_id: input.pty_id,
+      },
+    });
+    return result;
+  }
+
+  /** Purpose: Streams PTY events for an existing runtime session by tailing persisted session events. */
+  public streamPty(workspaceId: string, sessionId: string, input: Omit<RuntimePtyStreamInput, "session_ref">): AsyncIterable<RuntimePtyEvent> {
+    const stored = this.requireSession(workspaceId, sessionId);
+    ensureReadySession(stored.session);
+    ensureCapability(stored, runtimePtyCapability);
+    const adapter = this.requireAdapter(stored.session.adapter_id);
+    if (adapter.streamPty === undefined) {
+      throw new RuntimeError("unsupported_capability", `adapter ${stored.session.adapter_id} does not support PTY streaming`, {
+        details: { adapter_id: stored.session.adapter_id, capability: runtimePtyCapability },
+      });
+    }
+
+    return createRuntimePtyEventStream(this.database.workspace(workspaceId), sessionId, input.pty_id, input.cursor);
+  }
+
+  private startPtyMirror(workspaceId: string, sessionId: string, stored: StoredRuntimeSession, ptyId: string): void {
+    const key = buildPtyMirrorKey(workspaceId, sessionId, ptyId);
+    if (this.activePtyMirrors.has(key)) {
+      return;
+    }
+
+    const adapter = this.requireAdapter(stored.session.adapter_id);
+    const streamPty = adapter.streamPty?.bind(adapter);
+    if (streamPty === undefined) {
+      return;
+    }
+
+    const mirror = (async () => {
+      try {
+        const stream = await streamPty({
+          workspace_id: workspaceId,
+          session_ref: requireSessionRef(stored),
+          pty_id: ptyId,
+        });
+        for await (const event of stream) {
+          const store = this.database.workspace(workspaceId);
+          if (event.event === "pty.output") {
+            store.appendRuntimeSessionEvent({
+              session_id: sessionId,
+              event_type: "pty.output",
+              payload: {
+                pty_id: event.data.pty_id,
+                text: event.data.text,
+                created_at: event.data.created_at ?? null,
+              },
+            });
+            continue;
+          }
+
+          store.appendRuntimeSessionEvent({
+            session_id: sessionId,
+            event_type: "pty.exit",
+            payload: {
+              pty_id: event.data.pty_id,
+              exit_code: event.data.exit_code,
+              signal: event.data.signal,
+              created_at: event.data.created_at ?? null,
+            },
+          });
+        }
+      } catch (error: unknown) {
+        this.database.workspace(workspaceId).appendRuntimeSessionEvent({
+          session_id: sessionId,
+          event_type: "pty.stream_failed",
+          payload: {
+            pty_id: ptyId,
+            message: error instanceof Error ? error.message : "PTY stream failed",
+          },
+        });
+      } finally {
+        this.activePtyMirrors.delete(key);
+      }
+    })();
+
+    this.activePtyMirrors.set(key, mirror);
+  }
+
   public async reconcileOnStartup(): Promise<RuntimeSessionReconciliationSummary> {
     const summary = { recovered: 0, destroyed: 0, failed: 0 };
 
@@ -856,6 +1057,99 @@ const synthesizeLogsFromEvents = (
   const nextCursor = chunks.at(-1)?.cursor;
   return nextCursor === undefined ? { chunks } : { chunks, next_cursor: nextCursor };
 };
+
+const createRuntimePtyEventStream = (
+  store: ReturnType<ControlPlaneDatabase["workspace"]>,
+  sessionId: string,
+  ptyId: string,
+  cursor?: string,
+): AsyncIterable<RuntimePtyEvent> => ({
+  [Symbol.asyncIterator](): AsyncIterator<RuntimePtyEvent> {
+    let nextCursor = Number.parseInt(cursor ?? "0", 10);
+    if (!Number.isFinite(nextCursor)) {
+      nextCursor = 0;
+    }
+    let finished = false;
+    const pending: RuntimePtyEvent[] = [];
+
+    return {
+      next: async (): Promise<IteratorResult<RuntimePtyEvent>> => {
+        for (;;) {
+          const buffered = pending.shift();
+          if (buffered !== undefined) {
+            return { done: false, value: buffered };
+          }
+
+          if (finished) {
+            return { done: true, value: undefined };
+          }
+
+          const events: RuntimePtyEvent[] = [];
+          for (const event of store.listRuntimeSessionEvents(sessionId, 1000)) {
+            if (event.sequence <= nextCursor) {
+              continue;
+            }
+            if (event.event_type !== "pty.output" && event.event_type !== "pty.exit" && event.event_type !== "pty.stream_failed") {
+              continue;
+            }
+
+            const payload = parseRuntimeSessionEventPayload(event.payload_json);
+            if (payload["pty_id"] !== ptyId) {
+              continue;
+            }
+
+            nextCursor = event.sequence;
+            if (event.event_type === "pty.stream_failed") {
+              finished = true;
+              throw new RuntimeError(
+                "adapter_unavailable",
+                typeof payload["message"] === "string" ? payload["message"] : "PTY stream failed",
+                { details: { pty_id: ptyId, session_id: sessionId } },
+              );
+            }
+            if (event.event_type === "pty.output" && typeof payload["text"] === "string") {
+              events.push({
+                event: "pty.output",
+                data: {
+                  pty_id: ptyId,
+                  text: payload["text"],
+                  created_at: event.created_at,
+                },
+              });
+              continue;
+            }
+
+            if (typeof payload["exit_code"] === "number") {
+              finished = true;
+              events.push({
+                event: "pty.exit",
+                data: {
+                  pty_id: ptyId,
+                  exit_code: payload["exit_code"],
+                  signal: typeof payload["signal"] === "string" ? payload["signal"] : null,
+                  created_at: event.created_at,
+                },
+              });
+            }
+          }
+
+          if (events.length > 0) {
+            pending.push(...events);
+            const nextEvent = pending.shift();
+            if (nextEvent !== undefined) {
+              return { done: false, value: nextEvent };
+            }
+          }
+
+          await Bun.sleep(50);
+        }
+      },
+    };
+  },
+});
+
+const buildPtyMirrorKey = (workspaceId: string, sessionId: string, ptyId: string): string =>
+  `${workspaceId}:${sessionId}:${ptyId}`;
 
 const parseRuntimeSessionEventPayload = (payloadJson: string): Record<string, unknown> => {
   try {

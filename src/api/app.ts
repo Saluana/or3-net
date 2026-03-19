@@ -45,6 +45,11 @@ import {
   runtimeCopyOutInputSchema,
   runtimeErrorToApiEnvelope,
   runtimeExecutionRequestSchema,
+  runtimePtyCloseInputSchema,
+  runtimePtyStreamInputSchema,
+  runtimePtyOpenInputSchema,
+  runtimePtyResizeInputSchema,
+  runtimePtyWriteInputSchema,
   runtimeSessionCreateInputSchema,
   runtimeSessionStateSchema,
 } from "../contracts/runtime/index.ts";
@@ -63,6 +68,7 @@ const MAX_NODE_BOOTSTRAP_BODY_BYTES = 64 * 1024;
 const MAX_RUNTIME_SESSION_CREATE_BODY_BYTES = 128 * 1024;
 const MAX_RUNTIME_EXEC_BODY_BYTES = 256 * 1024;
 const MAX_RUNTIME_COPY_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_RUNTIME_PTY_BODY_BYTES = 64 * 1024;
 const MAX_PREVIEW_BODY_BYTES = 128 * 1024;
 const MAX_PREVIEW_LAUNCH_BODY_BYTES = 16 * 1024;
 const MAX_LIST_QUERY_LIMIT = 100;
@@ -206,6 +212,21 @@ export class Or3NetApp {
       }),
       createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/exec", {
         POST: (request, groups) => this.handleExecInRuntimeSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/pty", {
+        POST: (request, groups) => this.handleOpenRuntimeSessionPty(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/pty/:ptyId/write", {
+        POST: (request, groups) => this.handleWriteRuntimeSessionPty(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId"), requireGroup(groups, "ptyId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/pty/:ptyId/resize", {
+        POST: (request, groups) => this.handleResizeRuntimeSessionPty(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId"), requireGroup(groups, "ptyId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/pty/:ptyId/close", {
+        POST: (request, groups) => this.handleCloseRuntimeSessionPty(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId"), requireGroup(groups, "ptyId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/pty/:ptyId/stream", {
+        GET: (request, groups, url) => this.handleStreamRuntimeSessionPty(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId"), requireGroup(groups, "ptyId"), url),
       }),
       createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/stop", {
         POST: (request, groups) => this.handleStopRuntimeSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
@@ -515,6 +536,45 @@ export class Or3NetApp {
       execution_id: handle.execution_id,
       result: await handle.result,
     });
+  }
+
+  private async handleOpenRuntimeSessionPty(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const payload = runtimePtyOpenInputSchema.omit({ session_ref: true }).parse(await readJsonBody(request, MAX_RUNTIME_PTY_BODY_BYTES));
+    const pty = await requireRuntimeSessionService(this.services.runtimeSessionService).openPty(principal.workspace_id, sessionId, payload);
+    return jsonResponse(201, { pty });
+  }
+
+  private async handleWriteRuntimeSessionPty(request: Request, workspaceId: string, sessionId: string, ptyId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const payload = runtimePtyWriteInputSchema.omit({ session_ref: true, pty_id: true }).parse(await readJsonBody(request, MAX_RUNTIME_PTY_BODY_BYTES));
+    const result = await requireRuntimeSessionService(this.services.runtimeSessionService).writePty(principal.workspace_id, sessionId, { ...payload, pty_id: ptyId });
+    return jsonResponse(200, { result });
+  }
+
+  private async handleResizeRuntimeSessionPty(request: Request, workspaceId: string, sessionId: string, ptyId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const payload = runtimePtyResizeInputSchema.omit({ session_ref: true, pty_id: true }).parse(await readJsonBody(request, MAX_RUNTIME_PTY_BODY_BYTES));
+    const result = await requireRuntimeSessionService(this.services.runtimeSessionService).resizePty(principal.workspace_id, sessionId, { ...payload, pty_id: ptyId });
+    return jsonResponse(200, { result });
+  }
+
+  private async handleCloseRuntimeSessionPty(request: Request, workspaceId: string, sessionId: string, ptyId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    runtimePtyCloseInputSchema.omit({ session_ref: true, pty_id: true }).parse(await readOptionalJson(request, MAX_RUNTIME_PTY_BODY_BYTES));
+    const result = await requireRuntimeSessionService(this.services.runtimeSessionService).closePty(principal.workspace_id, sessionId, { pty_id: ptyId });
+    return jsonResponse(200, { result });
+  }
+
+  private async handleStreamRuntimeSessionPty(request: Request, workspaceId: string, sessionId: string, ptyId: string, url: URL): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:read");
+    const cursor = url.searchParams.get("cursor") ?? undefined;
+    runtimePtyStreamInputSchema.omit({ session_ref: true, pty_id: true }).parse({ ...(cursor === undefined ? {} : { cursor }) });
+    const stream = requireRuntimeSessionService(this.services.runtimeSessionService).streamPty(principal.workspace_id, sessionId, {
+      pty_id: ptyId,
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    return runtimePtyStreamResponse(stream);
   }
 
   private async handleStopRuntimeSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
@@ -1187,6 +1247,35 @@ const runtimeExecutionStreamResponse = (handle: Awaited<ReturnType<RuntimeSessio
   });
 
   return new Response(stream, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+    },
+  });
+};
+
+const runtimePtyStreamResponse = (stream: AsyncIterable<{ event: string; data: Record<string, unknown> }>): Response => {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      void (async () => {
+        try {
+          for await (const event of stream) {
+            controller.enqueue(encoder.encode(`event: ${event.event}\ndata: ${JSON.stringify(event)}\n\n`));
+          }
+          controller.close();
+        } catch (error: unknown) {
+          const payload = error instanceof RuntimeError ? error.toEnvelope() : { message: error instanceof Error ? error.message : "PTY stream failed" };
+          controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify(payload)}\n\n`));
+          controller.close();
+        }
+      })();
+    },
+  });
+
+  return new Response(body, {
     status: 200,
     headers: {
       "Content-Type": "text/event-stream",

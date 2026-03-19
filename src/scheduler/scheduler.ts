@@ -11,6 +11,7 @@
  */
 import type { ControlPlaneDatabase, StoredLease, StoredNode } from "../db/index.ts";
 import type { Lease, TaskPackage } from "../contracts/index.ts";
+import { runtimePtyCapability } from "../contracts/runtime/capabilities.ts";
 import { createId } from "../lib/ids.ts";
 import type { NodeTransportRegistry } from "../nodes/transport-registry.ts";
 
@@ -127,7 +128,13 @@ export class LeaseScheduler {
 }
 
 const hasCapabilities = (node: StoredNode, requiredCapabilities: string[]): boolean =>
-  requiredCapabilities.every((capability) => node.manifest.capabilities.includes(capability));
+  requiredCapabilities.every((capability) => {
+    if (capability === runtimePtyCapability) {
+      return node.manifest.capabilities.includes(runtimePtyCapability) || node.manifest.capabilities.includes("pty");
+    }
+
+    return node.manifest.capabilities.includes(capability);
+  });
 
 const hasValidCertification = (node: StoredNode): boolean => {
   const certification = node.manifest.certification;

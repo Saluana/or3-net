@@ -207,6 +207,21 @@ export const nodeEventSchema = z.discriminatedUnion("event", [
     }),
   }),
   z.object({
+    event: z.literal("pty_output"),
+    data: z.object({
+      pty_id: nonEmptyStringSchema,
+      text: z.string(),
+    }),
+  }),
+  z.object({
+    event: z.literal("pty_exit"),
+    data: z.object({
+      pty_id: nonEmptyStringSchema,
+      exit_code: z.number().int(),
+      signal: z.string().nullable().default(null),
+    }),
+  }),
+  z.object({
     event: z.literal("tool_call"),
     data: z.object({
       name: nonEmptyStringSchema,

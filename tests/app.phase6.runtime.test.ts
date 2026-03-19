@@ -17,6 +17,7 @@ import {
   RuntimeRegistry,
   RuntimeSelectionService,
   RuntimeSessionService,
+  runtimePtyCapability,
 } from "../src/index.ts";
 import type {
   RuntimeAdapter,
@@ -31,6 +32,16 @@ import type {
   RuntimeFileTransferResult,
   RuntimeGetLogsInput,
   RuntimeLogsResult,
+  RuntimePtyCloseInput,
+  RuntimePtyCloseResult,
+  RuntimePtyEvent,
+  RuntimePtyOpenInput,
+  RuntimePtyOpenResult,
+  RuntimePtyResizeInput,
+  RuntimePtyResizeResult,
+  RuntimePtyStreamInput,
+  RuntimePtyWriteInput,
+  RuntimePtyWriteResult,
   RuntimeNodeDescriptor,
   RuntimeSessionCreateInput,
 } from "../src/contracts/runtime/index.ts";
@@ -85,7 +96,16 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
   public readonly manifest: RuntimeAdapterManifest;
   public readonly files = new Map<string, Map<string, string>>();
   public lastLogsInput: ({ workspace_id: string } & RuntimeGetLogsInput) | null = null;
+  public lastPtyOpenInput: ({ workspace_id: string } & RuntimePtyOpenInput) | null = null;
+  public lastPtyWriteInput: ({ workspace_id: string } & RuntimePtyWriteInput) | null = null;
+  public lastPtyResizeInput: ({ workspace_id: string } & RuntimePtyResizeInput) | null = null;
+  public lastPtyCloseInput: ({ workspace_id: string } & RuntimePtyCloseInput) | null = null;
+  public ptyStreamEvents: RuntimePtyEvent[] = [
+    { event: "pty.output", data: { pty_id: "pty_placeholder", text: "hello from pty" } },
+    { event: "pty.exit", data: { pty_id: "pty_placeholder", exit_code: 0, signal: null } },
+  ];
   private readonly states = new Map<string, RuntimeAdapterSessionHandle["status"]>();
+  private readonly ptySessions = new Map<string, string>();
 
   public constructor(capabilities: string[]) {
     this.manifest = {
@@ -181,6 +201,52 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
         meta: {},
       }),
       abort: () => Promise.resolve({ acknowledged: false, message: "not supported" }),
+    });
+  }
+
+  public openPty(input: { workspace_id: string } & RuntimePtyOpenInput): Promise<RuntimePtyOpenResult> {
+    void input.workspace_id;
+    this.lastPtyOpenInput = input;
+    const ptyId = `pty_${input.session_ref}`;
+    this.ptySessions.set(input.session_ref, ptyId);
+    return Promise.resolve({ pty_id: ptyId, session_ref: input.session_ref });
+  }
+
+  public writePty(input: { workspace_id: string } & RuntimePtyWriteInput): Promise<RuntimePtyWriteResult> {
+    void input.workspace_id;
+    this.lastPtyWriteInput = input;
+    return Promise.resolve({ accepted: true });
+  }
+
+  public resizePty(input: { workspace_id: string } & RuntimePtyResizeInput): Promise<RuntimePtyResizeResult> {
+    void input.workspace_id;
+    this.lastPtyResizeInput = input;
+    return Promise.resolve({ resized: true });
+  }
+
+  public closePty(input: { workspace_id: string } & RuntimePtyCloseInput): Promise<RuntimePtyCloseResult> {
+    void input.workspace_id;
+    this.lastPtyCloseInput = input;
+    this.ptySessions.delete(input.session_ref);
+    return Promise.resolve({ closed: true });
+  }
+
+  public streamPty(input: { workspace_id: string } & RuntimePtyStreamInput): Promise<AsyncIterable<RuntimePtyEvent>> {
+    void input.workspace_id;
+    const events = this.ptyStreamEvents.map((event) => ({
+      event: event.event,
+      data: {
+        ...event.data,
+        pty_id: input.pty_id,
+      },
+    })) as RuntimePtyEvent[];
+    return Promise.resolve({
+      async *[Symbol.asyncIterator](): AsyncIterator<RuntimePtyEvent> {
+        for (const event of events) {
+          await Promise.resolve();
+          yield event;
+        }
+      },
     });
   }
 
@@ -431,6 +497,85 @@ describe("phase 6 runtime api", () => {
     );
     const destroyPayload = (await destroyResponse.json()) as { session: { status: string } };
     expect(destroyPayload.session.status).toBe("destroyed");
+  });
+
+  test("supports runtime session PTY routes", async () => {
+    runtimeAdapter = new FakeRuntimeAdapter(["exec", runtimePtyCapability]);
+    app = createRuntimeApp({ adapter: runtimeAdapter });
+    const token = await createToken(["runtimes:read", "runtime-sessions:read", "runtime-sessions:write"]);
+    const authHeaders = { Authorization: `Bearer ${token}` };
+
+    const createResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_test/runtime-sessions", {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ required_capabilities: [runtimePtyCapability] }),
+      }),
+    );
+    expect(createResponse.status).toBe(201);
+    const createPayload = (await createResponse.json()) as { session: { session_id: string } };
+    const sessionId = createPayload.session.session_id;
+
+    const openResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/runtime-sessions/${sessionId}/pty`, {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ cols: 80, rows: 24, command: "bash", args: ["-l"], env: {}, cwd: "/workspace" }),
+      }),
+    );
+    expect(openResponse.status).toBe(201);
+    const openPayload = (await openResponse.json()) as { pty: { pty_id: string; session_ref: string } };
+    expect(openPayload.pty.session_ref).toContain(sessionId);
+
+    const writeResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/runtime-sessions/${sessionId}/pty/${openPayload.pty.pty_id}/write`, {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ data: "echo hello\n" }),
+      }),
+    );
+    expect(writeResponse.status).toBe(200);
+
+    const resizeResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/runtime-sessions/${sessionId}/pty/${openPayload.pty.pty_id}/resize`, {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ cols: 100, rows: 40 }),
+      }),
+    );
+    expect(resizeResponse.status).toBe(200);
+
+    const closeResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/runtime-sessions/${sessionId}/pty/${openPayload.pty.pty_id}/close`, {
+        method: "POST",
+        headers: authHeaders,
+      }),
+    );
+    expect(closeResponse.status).toBe(200);
+
+    expect(runtimeAdapter.lastPtyOpenInput?.command).toBe("bash");
+    expect(runtimeAdapter.lastPtyWriteInput?.data).toBe("echo hello\n");
+    expect(runtimeAdapter.lastPtyResizeInput?.cols).toBe(100);
+    expect(runtimeAdapter.lastPtyCloseInput?.pty_id).toBe(openPayload.pty.pty_id);
+
+    await Bun.sleep(10);
+    const streamResponse = await handleAppRequest(
+      app,
+      new Request(`http://or3.test/v1/workspaces/ws_test/runtime-sessions/${sessionId}/pty/${openPayload.pty.pty_id}/stream`, {
+        headers: { ...authHeaders, Accept: "text/event-stream" },
+      }),
+    );
+    expect(streamResponse.status).toBe(200);
+    expect(streamResponse.headers.get("Content-Type")).toContain("text/event-stream");
+    const streamText = await streamResponse.text();
+    expect(streamText).toContain("event: pty.output");
+    expect(streamText).toContain("hello from pty");
+    expect(streamText).toContain("event: pty.exit");
   });
 
   test("supports staged runtime session commit, discard, and status routes", async () => {

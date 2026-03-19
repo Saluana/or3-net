@@ -2,9 +2,15 @@ import { describe, expect, test } from "bun:test";
 
 import { RemoteExecutionError } from "../../../src/nodes/transport.ts";
 import {
+  createId,
+  hashApiKey,
+  LeaseScheduler,
+  NodeTransportRegistry,
+  OutboundWssNodeTransport,
   RemoteNodeRuntimeAdapter,
   RuntimeError,
   RuntimeCapabilitySet,
+  runtimePtyCapability,
   createControlPlaneDatabase,
 } from "../../../src/index.ts";
 import type { NodeExecutionHandle, StoredNode, TaskPackage } from "../../../src/index.ts";
@@ -233,6 +239,55 @@ describe("remote node runtime adapter", () => {
     expect(stored?.capabilities).toEqual(RuntimeCapabilitySet.fromValues(["exec"]));
   });
 
+  test("createSession accepts ext PTY requirement when the node manifest advertises plain pty", async () => {
+    const database = createControlPlaneDatabase();
+    database.saveWorkspace({ workspace_id: "ws_test", name: "Test", created_at: "2024-01-01T00:00:00.000Z" });
+
+    const ptyNode = makeRemoteNode({
+      manifest: {
+        ...makeRemoteNode().manifest,
+        capabilities: ["exec", "pty"],
+        supports_transports: ["outbound-wss"],
+      },
+    });
+    database.workspace("ws_test").saveNode({ manifest: ptyNode.manifest, pubkey_fingerprint: "fp", status: "approved", health_status: "healthy" });
+    database.workspace("ws_test").saveNodeCredential({
+      credential_id: createId("cred"),
+      node_id: ptyNode.manifest.node_id,
+      token_hash: await hashApiKey("cred_token"),
+      token_ciphertext: "cred_token",
+      expires_at: "2099-01-01T00:00:00.000Z",
+    });
+
+    const transportRegistry = new NodeTransportRegistry();
+    transportRegistry.registerNodeTransport("ws_test", ptyNode.manifest.node_id, new OutboundWssNodeTransport());
+
+    const adapter = new RemoteNodeRuntimeAdapter({
+      database,
+      nodeRegistryService: { listNodes: () => [ptyNode] },
+      leaseScheduler: new LeaseScheduler({ database, transportRegistry }),
+      remoteNodeExecutor: new FakeRemoteExecutorWithSendRequest(),
+    });
+
+    const created = await adapter.createSession({
+      workspace_id: "ws_test",
+      session_id: "sess_pty_req",
+      config: {
+        required_capabilities: RuntimeCapabilitySet.fromValues([runtimePtyCapability]),
+        workspace_mode: "none",
+        network_policy: { internet_access: false, ingress: "none" },
+        resource_hints: { metadata: {} },
+        persistence_mode: "ephemeral",
+        env_refs: [],
+        secret_refs: [],
+        timeout_rules: {},
+        artifact_rules: { capture_paths: [], push_on_completion: false, metadata: {} },
+      },
+    });
+
+    expect(created.capabilities).toEqual(RuntimeCapabilitySet.fromValues(["exec", runtimePtyCapability]));
+  });
+
   test("node capabilities derive from manifest capabilities", async () => {
     const database = createControlPlaneDatabase();
     database.saveWorkspace({ workspace_id: "ws_test", name: "Test", created_at: "2024-01-01T00:00:00.000Z" });
@@ -260,6 +315,32 @@ describe("remote node runtime adapter", () => {
     expect(nodes[0]?.capabilities).toEqual(
       RuntimeCapabilitySet.fromValues(["exec", "copy-out", "file-browse", "copy-in", "file-rw"]),
     );
+  });
+
+  test("node capabilities include PTY when the manifest advertises it", async () => {
+    const database = createControlPlaneDatabase();
+    database.saveWorkspace({ workspace_id: "ws_test", name: "Test", created_at: "2024-01-01T00:00:00.000Z" });
+
+    const ptyNode = makeRemoteNode({
+      manifest: {
+        ...makeRemoteNode().manifest,
+        capabilities: ["exec", runtimePtyCapability],
+      },
+    });
+    database.workspace("ws_test").saveNode({ manifest: ptyNode.manifest, pubkey_fingerprint: "fp", status: "approved", health_status: "healthy" });
+
+    const adapter = new RemoteNodeRuntimeAdapter({
+      database,
+      nodeRegistryService: { listNodes: () => [ptyNode] },
+      leaseScheduler: {
+        issueLease: () => ({ lease: { lease_id: "lease_pty", node_id: "node_pty", state: "active" } }),
+        releaseLease: () => undefined,
+      },
+      remoteNodeExecutor: new FakeRemoteExecutor(),
+    });
+
+    const nodes = await adapter.listNodes({ workspace_id: "ws_test" });
+    expect(nodes[0]?.capabilities).toEqual(RuntimeCapabilitySet.fromValues(["exec", runtimePtyCapability]));
   });
 
   test("copyIn sends file_write RPC and returns transfer result", async () => {
@@ -303,6 +384,123 @@ describe("remote node runtime adapter", () => {
     expect(result.path).toBe("/app/test.txt");
     expect(result.bytes_transferred).toBe(42);
     expect(executor.lastSentRequest?.method).toBe("file_write");
+  });
+
+  test("PTY lifecycle sends PTY RPCs and returns the opened PTY id", async () => {
+    const database = createControlPlaneDatabase();
+    database.saveWorkspace({ workspace_id: "ws_test", name: "Test", created_at: "2024-01-01T00:00:00.000Z" });
+
+    const ptyNode = makeRemoteNode({
+      manifest: {
+        ...makeRemoteNode().manifest,
+        capabilities: ["exec", runtimePtyCapability],
+      },
+    });
+    database.workspace("ws_test").saveNode({ manifest: ptyNode.manifest, pubkey_fingerprint: "fp", status: "approved", health_status: "healthy" });
+
+    const executor = new FakeRemoteExecutorWithSendRequest();
+    executor.sendRequestResult = {
+      id: "rpc_pty_open",
+      result: { output_text: "pty opened", artifacts: [], meta: { pty_id: "pty_remote_1" } },
+    };
+
+    const adapter = new RemoteNodeRuntimeAdapter({
+      database,
+      nodeRegistryService: { listNodes: () => [ptyNode] },
+      leaseScheduler: {
+        issueLease: () => ({ lease: { lease_id: "lease_pty", node_id: "node_remote_1", state: "active" } }),
+        releaseLease: () => undefined,
+      },
+      remoteNodeExecutor: executor,
+    });
+
+    setupLeaseForSession(database, "lease_pty", "node_remote_1", "sess_pty");
+
+    const opened = await adapter.openPty({
+      workspace_id: "ws_test",
+      session_ref: "lease_pty",
+      cols: 80,
+      rows: 24,
+      command: "bash",
+      args: ["-l"],
+      env: {},
+      cwd: "/workspace",
+    });
+    const written = await adapter.writePty({
+      workspace_id: "ws_test",
+      session_ref: "lease_pty",
+      pty_id: opened.pty_id,
+      data: "echo hello\n",
+    });
+    expect(executor.lastSentRequest?.method).toBe("pty_input");
+    expect(executor.lastSentRequest?.params?.["data"]).toBe("echo hello\n");
+    const resized = await adapter.resizePty({
+      workspace_id: "ws_test",
+      session_ref: "lease_pty",
+      pty_id: opened.pty_id,
+      cols: 100,
+      rows: 40,
+    });
+    const closed = await adapter.closePty({
+      workspace_id: "ws_test",
+      session_ref: "lease_pty",
+      pty_id: opened.pty_id,
+    });
+    const streamedEvents: { event: string; data: Record<string, unknown> }[] = [];
+    for await (const event of await adapter.streamPty({
+      workspace_id: "ws_test",
+      session_ref: "lease_pty",
+      pty_id: opened.pty_id,
+    })) {
+      streamedEvents.push(event as unknown as { event: string; data: Record<string, unknown> });
+    }
+
+    expect(opened.pty_id).toBe("pty_remote_1");
+    expect(written.accepted).toBe(true);
+    expect(resized.resized).toBe(true);
+    expect(closed.closed).toBe(true);
+    expect(executor.lastSentRequest?.method).toBe("pty_close");
+    expect(executor.lastSentRequest?.params?.["pty_id"]).toBe(opened.pty_id);
+    expect(streamedEvents).toEqual([
+      { event: "pty.output", data: { pty_id: "pty_remote_1", text: "hello from remote pty" } },
+      { event: "pty.exit", data: { pty_id: "pty_remote_1", exit_code: 0, signal: null } },
+    ]);
+  });
+
+  test("openPty fails clearly when the transport cannot stream PTY events", async () => {
+    const database = createControlPlaneDatabase();
+    database.saveWorkspace({ workspace_id: "ws_test", name: "Test", created_at: "2024-01-01T00:00:00.000Z" });
+
+    const ptyNode = makeRemoteNode({
+      manifest: {
+        ...makeRemoteNode().manifest,
+        capabilities: ["exec", runtimePtyCapability],
+      },
+    });
+    database.workspace("ws_test").saveNode({ manifest: ptyNode.manifest, pubkey_fingerprint: "fp", status: "approved", health_status: "healthy" });
+
+    const adapter = new RemoteNodeRuntimeAdapter({
+      database,
+      nodeRegistryService: { listNodes: () => [ptyNode] },
+      leaseScheduler: {
+        issueLease: () => ({ lease: { lease_id: "lease_pty", node_id: "node_remote_1", state: "active" } }),
+        releaseLease: () => undefined,
+      },
+      remoteNodeExecutor: new FakeRemoteExecutorWithSendRequest(false),
+    });
+
+    setupLeaseForSession(database, "lease_pty", "node_remote_1", "sess_pty");
+
+    await expectRuntimeError(adapter.openPty({
+      workspace_id: "ws_test",
+      session_ref: "lease_pty",
+      cols: 80,
+      rows: 24,
+      command: "bash",
+      args: [],
+      env: {},
+      cwd: "/workspace",
+    }), "adapter_unavailable");
   });
 
   test("copyIn rejects for nodes without file-write capability", async () => {
@@ -534,6 +732,10 @@ describe("remote node runtime adapter", () => {
 
 /** Extended fake executor that also supports sendRequest for file/log RPCs. */
 class FakeRemoteExecutorWithSendRequest extends FakeRemoteExecutor {
+  public constructor(private readonly supportsStreaming = true) {
+    super();
+  }
+
   public sendRequestResult: {
     id: string;
     result?: Record<string, unknown>;
@@ -541,6 +743,10 @@ class FakeRemoteExecutorWithSendRequest extends FakeRemoteExecutor {
   } = { id: "rpc_default", result: { output_text: "ok", artifacts: [], meta: {} } };
 
   public lastSentRequest: { id: string; method: string; params?: Record<string, unknown> } | null = null;
+  public streamingEvents: { event: string; data: Record<string, unknown> }[] = [
+    { event: "pty_output", data: { pty_id: "pty_remote_1", text: "hello from remote pty" } },
+    { event: "pty_exit", data: { pty_id: "pty_remote_1", exit_code: 0, signal: null } },
+  ];
 
   public sendRequest(
     _node: StoredNode,
@@ -548,6 +754,30 @@ class FakeRemoteExecutorWithSendRequest extends FakeRemoteExecutor {
   ): Promise<{ id: string; result?: Record<string, unknown>; error?: { code: string; message: string; retriable: boolean; details: Record<string, unknown> } }> {
     this.lastSentRequest = request;
     return Promise.resolve({ ...this.sendRequestResult, id: request.id });
+  }
+
+  public sendStreamingRequest(
+    _node: StoredNode,
+    request: { id: string; method: string; params?: Record<string, unknown> },
+  ): Promise<{ response: Promise<{ id: string; result?: Record<string, unknown>; error?: { code: string; message: string; retriable: boolean; details: Record<string, unknown> } }>; stream: AsyncIterable<{ event: string; data: Record<string, unknown> }> }> {
+    if (!this.supportsStreaming) {
+      throw new Error("streaming unavailable");
+    }
+    this.lastSentRequest = request;
+    return Promise.resolve({
+      response: Promise.resolve({ ...this.sendRequestResult, id: request.id }),
+      stream: {
+        async *[Symbol.asyncIterator](): AsyncIterator<{ event: string; data: Record<string, unknown> }> {
+          for (const event of [
+            { event: "pty_output", data: { pty_id: "pty_remote_1", text: "hello from remote pty" } },
+            { event: "pty_exit", data: { pty_id: "pty_remote_1", exit_code: 0, signal: null } },
+          ]) {
+            await Promise.resolve();
+            yield event;
+          }
+        },
+      },
+    });
   }
 }
 

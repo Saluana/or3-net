@@ -19,6 +19,7 @@ This fits the current architecture because:
 - `or3-node` already has `pty_*` RPC request handling in the agent loop
 - `or3-net` already has `pty_*` request schemas in the node protocol
 - the remaining gap is the missing real PTY backend, missing PTY event framing, and missing runtime-adapter projection in `or3-net`
+- OR3 Net treats PTY as the extension capability `ext:or3:pty` internally while still accepting the node-side PTY signal from `or3-node`
 
 ## Affected areas
 
@@ -48,7 +49,7 @@ This fits the current architecture because:
 - `src/contracts/runtime/adapter.ts`
   - Add optional PTY methods and PTY stream/result types to the runtime adapter contract.
 - `src/runtime/adapters/remote-node.ts`
-  - Project PTY capability from node manifests and implement PTY operations by forwarding to the connected node.
+  - Project PTY capability from node manifests, normalize the capability into `ext:or3:pty` internally, and implement PTY operations by forwarding to the connected node.
 - runtime session service / existing API routes under `src/api/**`
   - Extend the existing runtime-session path to expose PTY operations without creating a second public API family.
 - `tests/runtime/adapters/remote-node.test.ts`

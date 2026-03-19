@@ -82,6 +82,8 @@
 
 ## 11. Add PTY support
 
+Tracked in detail by `planning/node-agent-pty/*`; the concrete PTY implementation and follow-up validation now live there.
+
 - [x] [Req 9] Define PTY RPC and event framing over WSS for open, input, resize, close, output, and exit.
 - [x] [Req 9] Implement agent-side PTY lifecycle management with platform checks and session limits.
 - [x] [Req 9] Add OR3 Net server wiring for PTY-capable remote runtime sessions or a scoped machine-control route if runtime-session parity is staged.

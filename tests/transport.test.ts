@@ -493,6 +493,163 @@ describe("node transport abstraction", () => {
     expect(await transport.authenticateConnectionToken("invalid-token")).toBeNull();
     database.close();
   });
+
+  test("keeps PTY event streams alive after the initial response", async () => {
+    const database = createControlPlaneDatabase();
+    database.saveWorkspace({ workspace_id: "ws_transport", name: "Transport", created_at: "2024-01-01T00:00:00.000Z" });
+
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest = {
+      node_id: "node_live_pty",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote" as const,
+      capabilities: ["exec", "pty"],
+      isolation_class: "host-trusted",
+      supports_transports: ["outbound-wss" as const],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 1, memory_mb: 512, disk_mb: 512 },
+      lease_policy: { max_ttl_seconds: 60, supports_warm_pool: false, reset_methods: ["process_kill" as const] },
+      version: "1.0.0",
+    };
+    const registryService = new NodeRegistryService({ database });
+    await registryService.enrollNode("ws_transport", { ...unsignedManifest, signature: signNodeManifest(unsignedManifest, keyPair.secretKey) });
+    const approval = await registryService.approveNode("ws_transport", "node_live_pty");
+
+    const transport = new OutboundWssNodeTransport({ database });
+    const sentRequests: NodeRequest[] = [];
+    const fakeSocket = {
+      send(data: string): void {
+        const parsed = JSON.parse(data) as { type: string; payload: NodeRequest };
+        if (parsed.type !== "request") {
+          return;
+        }
+        sentRequests.push(parsed.payload);
+        if (parsed.payload.method !== "pty_open") {
+          return;
+        }
+
+        transport.handleLiveMessage("ws_transport", "node_live_pty", JSON.stringify({
+          type: "response",
+          payload: {
+            id: parsed.payload.id,
+            result: { output_text: "pty opened", artifacts: [], meta: { pty_id: "pty_remote_live" } },
+          },
+        }));
+        transport.handleLiveMessage("ws_transport", "node_live_pty", JSON.stringify({
+          type: "event",
+          request_id: parsed.payload.id,
+          payload: { event: "pty_output", data: { pty_id: "pty_remote_live", text: "live bytes" } },
+        }));
+        transport.handleLiveMessage("ws_transport", "node_live_pty", JSON.stringify({
+          type: "event",
+          request_id: parsed.payload.id,
+          payload: { event: "pty_exit", data: { pty_id: "pty_remote_live", exit_code: 0, signal: null } },
+        }));
+      },
+      close(): void {
+        return;
+      },
+    };
+
+    transport.attachLiveConnection({ workspaceId: "ws_transport", nodeId: "node_live_pty", socket: fakeSocket });
+
+    const streaming = await transport.sendStreamingRequest({
+      id: "rpc_pty_open",
+      method: "pty_open",
+      params: {
+        session_id: "sess_pty",
+        cols: 80,
+        rows: 24,
+        args: [],
+        env: {},
+      },
+    }, {
+      workspaceId: "ws_transport",
+      nodeId: "node_live_pty",
+      credential: { token: approval.credential.token, expiresAt: approval.credential.expires_at },
+    });
+
+    expect(sentRequests[0]?.method).toBe("pty_open");
+    expect(await streaming.response).toMatchObject({ result: { meta: { pty_id: "pty_remote_live" } } });
+    expect(await collect(streaming.stream)).toEqual([
+      { event: "pty_output", data: { pty_id: "pty_remote_live", text: "live bytes" } },
+      { event: "pty_exit", data: { pty_id: "pty_remote_live", exit_code: 0, signal: null } },
+    ]);
+    database.close();
+  });
+
+  test("cleans up failed PTY streaming requests after an immediate error response", async () => {
+    const database = createControlPlaneDatabase();
+    database.saveWorkspace({ workspace_id: "ws_transport", name: "Transport", created_at: "2024-01-01T00:00:00.000Z" });
+
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest = {
+      node_id: "node_live_pty_error",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote" as const,
+      capabilities: ["exec", "pty"],
+      isolation_class: "host-trusted",
+      supports_transports: ["outbound-wss" as const],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 1, memory_mb: 512, disk_mb: 512 },
+      lease_policy: { max_ttl_seconds: 60, supports_warm_pool: false, reset_methods: ["process_kill" as const] },
+      version: "1.0.0",
+    };
+    const registryService = new NodeRegistryService({ database });
+    await registryService.enrollNode("ws_transport", { ...unsignedManifest, signature: signNodeManifest(unsignedManifest, keyPair.secretKey) });
+    const approval = await registryService.approveNode("ws_transport", "node_live_pty_error");
+
+    const transport = new OutboundWssNodeTransport({ database });
+    const fakeSocket = {
+      send(data: string): void {
+        const parsed = JSON.parse(data) as { type: string; payload: NodeRequest };
+        if (parsed.type !== "request") {
+          return;
+        }
+
+        transport.handleLiveMessage("ws_transport", "node_live_pty_error", JSON.stringify({
+          type: "response",
+          payload: {
+            id: parsed.payload.id,
+            error: {
+              code: "pty_failed",
+              message: "open failed",
+              retriable: false,
+              details: {},
+            },
+          },
+        }));
+      },
+      close(): void {
+        return;
+      },
+    };
+
+    transport.attachLiveConnection({ workspaceId: "ws_transport", nodeId: "node_live_pty_error", socket: fakeSocket });
+
+    const streaming = await transport.sendStreamingRequest({
+      id: "rpc_pty_open_error",
+      method: "pty_open",
+      params: {
+        session_id: "sess_pty",
+        cols: 80,
+        rows: 24,
+        args: [],
+        env: {},
+      },
+    }, {
+      workspaceId: "ws_transport",
+      nodeId: "node_live_pty_error",
+      credential: { token: approval.credential.token, expiresAt: approval.credential.expires_at },
+    });
+
+    expect(await streaming.response).toMatchObject({ error: { code: "pty_failed", message: "open failed" } });
+    expect(await collect(streaming.stream)).toEqual([]);
+
+    const liveConnections = (transport as unknown as {
+      liveConnections: Map<string, { pending: Map<string, unknown> }>;
+    }).liveConnections;
+    expect(liveConnections.get("ws_transport:node_live_pty_error")?.pending.size).toBe(0);
+    database.close();
+  });
 });
 
 const collect = async <T>(iterable: AsyncIterable<T>): Promise<T[]> => {

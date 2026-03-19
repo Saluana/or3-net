@@ -29,6 +29,7 @@ interface LiveSocketLike {
 interface PendingLiveRequest {
   readonly context: NodeExecutionContext;
   readonly request: NodeRequest;
+  readonly keepEventsAfterResponse: boolean;
   readonly response: Promise<NodeResponse>;
   resolve(response: NodeResponse): void;
   reject(error: Error): void;
@@ -36,6 +37,7 @@ interface PendingLiveRequest {
   closeEvents(): void;
   failEvents(error: Error): void;
   readonly stream: AsyncIterable<JobStreamEvent>;
+  readonly nodeStream: AsyncIterable<NodeEvent>;
 }
 
 interface LiveConnection {
@@ -144,13 +146,19 @@ export class OutboundWssNodeTransport implements NodeRpcTransport {
           return;
         }
         pending.resolve(frame.payload);
-        pending.closeEvents();
-        connection.pending.delete(frame.payload.id);
+        if ("error" in frame.payload || !pending.keepEventsAfterResponse) {
+          pending.closeEvents();
+          connection.pending.delete(frame.payload.id);
+        }
         return;
       }
       case "event": {
         const pending = connection.pending.get(frame.request_id);
         pending?.pushEvent(frame.payload);
+        if (frame.payload.event === "pty_exit") {
+          pending?.closeEvents();
+          connection.pending.delete(frame.request_id);
+        }
         return;
       }
       case "heartbeat":
@@ -280,6 +288,23 @@ export class OutboundWssNodeTransport implements NodeRpcTransport {
     return nodeResponseSchema.parse(await handler(request, context));
   }
 
+  /** Purpose: Sends an RPC request and keeps the raw node event stream alive after the initial response. */
+  public sendStreamingRequest(
+    request: NodeRequest,
+    context: NodeExecutionContext,
+  ): Promise<{ response: Promise<NodeResponse>; stream: AsyncIterable<NodeEvent> }> {
+    const liveConnection = this.getUsableLiveConnection(context);
+    if (liveConnection === null) {
+      throw new Error(`no outbound-wss live connection is attached for node ${context.nodeId}`);
+    }
+
+    const pending = this.sendLiveRequest(liveConnection, request, context, { keepEventsAfterResponse: true });
+    return Promise.resolve({
+      response: pending.response,
+      stream: pending.nodeStream,
+    });
+  }
+
   private startLiveExecution(
     taskPackage: TaskPackage,
     context: NodeExecutionContext,
@@ -313,8 +338,9 @@ export class OutboundWssNodeTransport implements NodeRpcTransport {
     connection: LiveConnection,
     request: NodeRequest,
     context: NodeExecutionContext,
+    options: { keepEventsAfterResponse?: boolean } = {},
   ): PendingLiveRequest {
-    const pending = createPendingLiveRequest(context, request);
+    const pending = createPendingLiveRequest(context, request, options);
     connection.pending.set(request.id, pending);
     connection.socket.send(JSON.stringify({ type: "request", payload: request }));
     return pending;
@@ -379,10 +405,12 @@ const buildConnectionKey = (workspaceId: string, nodeId: string): string => `${w
 const createPendingLiveRequest = (
   context: NodeExecutionContext,
   request: NodeRequest,
+  options: { keepEventsAfterResponse?: boolean } = {},
 ): PendingLiveRequest => {
   let resolveResponse: ((response: NodeResponse) => void) | null = null;
   let rejectResponse: ((error: Error) => void) | null = null;
-  const queue = createStreamQueue();
+  const queue = createStreamQueue<JobStreamEvent>();
+  const nodeQueue = createStreamQueue<NodeEvent>();
   const response = new Promise<NodeResponse>((resolve, reject) => {
     resolveResponse = resolve;
     rejectResponse = reject;
@@ -390,15 +418,20 @@ const createPendingLiveRequest = (
   return {
     context,
     request,
+    keepEventsAfterResponse: options.keepEventsAfterResponse ?? false,
     response,
     resolve: (resolvedResponse): void => {
       resolveResponse?.(resolvedResponse);
-      queue.push({ type: "done" });
+      if (!(options.keepEventsAfterResponse ?? false)) {
+        queue.push({ type: "done" });
+        nodeQueue.push({ type: "done" });
+      }
     },
     reject: (error): void => {
       rejectResponse?.(error);
     },
     pushEvent: (event): void => {
+      nodeQueue.push({ type: "value", value: event });
       const normalized = normalizeNodeEvent(event);
       if (normalized !== null) {
         queue.push({ type: "value", value: normalized });
@@ -406,11 +439,14 @@ const createPendingLiveRequest = (
     },
     closeEvents: (): void => {
       queue.push({ type: "done" });
+      nodeQueue.push({ type: "done" });
     },
     failEvents: (error): void => {
       queue.push({ type: "error", error });
+      nodeQueue.push({ type: "error", error });
     },
-    stream: createQueuedStream(() => queue.take()),
+    stream: createQueuedStream<JobStreamEvent>(() => queue.take()),
+    nodeStream: createQueuedStream<NodeEvent>(() => nodeQueue.take()),
   };
 };
 
@@ -418,7 +454,7 @@ const trackExecutionStream = (
   stream: AsyncIterable<NodeEvent>,
   fallback: ReturnType<typeof parseNodeResponseResult>,
 ): { stream: AsyncIterable<JobStreamEvent>; result: Promise<JobResult> } => {
-  const queue = createStreamQueue();
+  const queue = createStreamQueue<JobStreamEvent>();
 
   const result = (async () => {
     let terminalResult = fallback;
@@ -454,25 +490,25 @@ const trackExecutionStream = (
   })();
 
   return {
-    stream: createQueuedStream(() => queue.take()),
+    stream: createQueuedStream<JobStreamEvent>(() => queue.take()),
     result,
   };
 };
 
-type StreamQueueEntry =
-  | { readonly type: "value"; readonly value: JobStreamEvent }
+type StreamQueueEntry<T> =
+  | { readonly type: "value"; readonly value: T }
   | { readonly type: "done" }
   | { readonly type: "error"; readonly error: unknown };
 
-interface StreamQueueNode {
-  readonly entry: StreamQueueEntry;
-  next: StreamQueueNode | null;
+interface StreamQueueNode<T> {
+  readonly entry: StreamQueueEntry<T>;
+  next: StreamQueueNode<T> | null;
 }
 
-const createQueuedStream = (takeEntry: () => Promise<StreamQueueEntry>): AsyncIterable<JobStreamEvent> => ({
-  [Symbol.asyncIterator](): AsyncIterator<JobStreamEvent> {
+const createQueuedStream = <T>(takeEntry: () => Promise<StreamQueueEntry<T>>): AsyncIterable<T> => ({
+  [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
-      next: async (): Promise<IteratorResult<JobStreamEvent>> => {
+      next: async (): Promise<IteratorResult<T>> => {
         const entry = await takeEntry();
         switch (entry.type) {
           case "value":
@@ -487,16 +523,16 @@ const createQueuedStream = (takeEntry: () => Promise<StreamQueueEntry>): AsyncIt
   },
 });
 
-const createStreamQueue = (): {
-  push(entry: StreamQueueEntry): void;
-  take(): Promise<StreamQueueEntry>;
+const createStreamQueue = <T>(): {
+  push(entry: StreamQueueEntry<T>): void;
+  take(): Promise<StreamQueueEntry<T>>;
 } => {
-  let head: StreamQueueNode | null = null;
-  let tail: StreamQueueNode | null = null;
-  let pendingResolve: ((entry: StreamQueueEntry) => void) | null = null;
+  let head: StreamQueueNode<T> | null = null;
+  let tail: StreamQueueNode<T> | null = null;
+  let pendingResolve: ((entry: StreamQueueEntry<T>) => void) | null = null;
 
   return {
-    push(entry: StreamQueueEntry): void {
+    push(entry: StreamQueueEntry<T>): void {
       if (pendingResolve !== null) {
         const resolve = pendingResolve;
         pendingResolve = null;
@@ -504,7 +540,7 @@ const createStreamQueue = (): {
         return;
       }
 
-      const node: StreamQueueNode = { entry, next: null };
+      const node: StreamQueueNode<T> = { entry, next: null };
       if (tail === null) {
         head = node;
         tail = node;
@@ -514,7 +550,7 @@ const createStreamQueue = (): {
       tail.next = node;
       tail = node;
     },
-    take(): Promise<StreamQueueEntry> {
+    take(): Promise<StreamQueueEntry<T>> {
       if (head !== null) {
         const node = head;
         head = node.next;

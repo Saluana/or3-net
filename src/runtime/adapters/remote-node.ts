@@ -26,12 +26,23 @@ import type {
   RuntimeFileTransferResult,
   RuntimeGetLogsInput,
   RuntimeLogsResult,
+  RuntimePtyCloseInput,
+  RuntimePtyCloseResult,
+  RuntimePtyEvent,
+  RuntimePtyOpenInput,
+  RuntimePtyOpenResult,
+  RuntimePtyResizeInput,
+  RuntimePtyResizeResult,
+  RuntimePtyStreamInput,
+  RuntimePtyWriteInput,
+  RuntimePtyWriteResult,
   RuntimeNodeDescriptor,
   RuntimeSessionCreateInput,
 } from "../../contracts/runtime/index.ts";
 import {
   RuntimeCapabilitySet,
   RuntimeError,
+  runtimePtyCapability,
 } from "../../contracts/runtime/index.ts";
 import type { ControlPlaneDatabase } from "../../db/index.ts";
 import { createId } from "../../lib/ids.ts";
@@ -49,6 +60,7 @@ export interface RemoteNodeRuntimeAdapterDependencies {
     heartbeat(node: StoredNode): Promise<void>;
     canExecute?(node: StoredNode): boolean;
     sendRequest?(node: StoredNode, request: { id: string; method: string; params?: Record<string, unknown> }): Promise<{ id: string; result?: Record<string, unknown>; error?: { code: string; message: string; retriable: boolean; details: Record<string, unknown> } }>;
+    sendStreamingRequest?(node: StoredNode, request: { id: string; method: string; params?: Record<string, unknown> }): Promise<{ response: Promise<{ id: string; result?: Record<string, unknown>; error?: { code: string; message: string; retriable: boolean; details: Record<string, unknown> } }>; stream: AsyncIterable<{ event: string; data: Record<string, unknown> }> }>;
   };
 }
 
@@ -60,7 +72,7 @@ const manifest: RuntimeAdapterManifest = {
   isolation_class: "remote-node",
   trust_tier: "production",
   locality: "remote",
-  capabilities: RuntimeCapabilitySet.fromValues(["exec"]),
+  capabilities: RuntimeCapabilitySet.fromValues(["exec", runtimePtyCapability]),
   supported_presets: [],
   session_modes: ["ephemeral"],
 };
@@ -72,12 +84,16 @@ const manifest: RuntimeAdapterManifest = {
  */
 export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
   public readonly manifest = manifest;
+  private readonly ptyStreams = new Map<string, AsyncIterable<RuntimePtyEvent>>();
 
   public constructor(private readonly dependencies: RemoteNodeRuntimeAdapterDependencies) {}
 
   /** Purpose: Derives the full capability set for a given node based on its manifest. */
   private nodeCapabilities(node: StoredNode): RuntimeCapabilitySet {
     const caps: RuntimeCapability[] = ["exec"];
+    if (hasNodePtyCapability(node)) {
+      caps.push(runtimePtyCapability);
+    }
     if (node.manifest.capabilities.includes("file-read")) {
       caps.push("copy-out", "file-browse");
     }
@@ -231,6 +247,160 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
     } catch (error: unknown) {
       throw mapRemoteError(error, "exec_failed", { node_id: node.manifest.node_id });
     }
+  }
+
+  public async openPty(input: { workspace_id: string } & RuntimePtyOpenInput): Promise<RuntimePtyOpenResult> {
+    const node = this.findNodeForSession(input.workspace_id, input.session_ref);
+    if (node === undefined) {
+      throw new RuntimeError("unsupported_capability", "remote runtime does not support PTY for this session");
+    }
+    if (!hasNodePtyCapability(node)) {
+      throw new RuntimeError("unsupported_capability", "remote runtime does not support PTY for this session");
+    }
+    const request = {
+      id: createId("rpc"),
+      method: "pty_open",
+      params: {
+        session_id: this.findAgentSessionId(input.workspace_id, input.session_ref) ?? input.session_ref,
+        cols: input.cols,
+        rows: input.rows,
+        command: input.command,
+        args: input.args,
+        env: input.env,
+        cwd: input.cwd,
+      },
+    } satisfies { id: string; method: string; params: Record<string, unknown> };
+    if (this.dependencies.remoteNodeExecutor.sendStreamingRequest === undefined) {
+      throw new RuntimeError("adapter_unavailable", "PTY requires a streaming node transport", {
+        details: { node_id: node.manifest.node_id },
+      });
+    }
+    let streaming: Awaited<ReturnType<NonNullable<RemoteNodeRuntimeAdapterDependencies["remoteNodeExecutor"]["sendStreamingRequest"]>>>;
+    try {
+      streaming = await this.dependencies.remoteNodeExecutor.sendStreamingRequest(node, request);
+    } catch (error: unknown) {
+      throw mapRemoteError(error, "adapter_unavailable", { node_id: node.manifest.node_id });
+    }
+    const response = await streaming.response;
+    if (response.error !== undefined) {
+      throw new RuntimeError("adapter_internal", response.error.message, {
+        retriable: response.error.retriable,
+        details: { node_id: node.manifest.node_id, ...response.error.details },
+      });
+    }
+    const meta = response.result?.["meta"];
+    let ptyId: string | null = null;
+    if (typeof meta === "object" && meta !== null) {
+      const metaPtyId = (meta as Record<string, unknown>)["pty_id"];
+      if (typeof metaPtyId === "string") {
+        ptyId = metaPtyId;
+      }
+    }
+    if (ptyId === null) {
+      const resultPtyId = response.result?.["pty_id"];
+      if (typeof resultPtyId === "string") {
+        ptyId = resultPtyId;
+      }
+    }
+    if (ptyId === null) {
+      throw new RuntimeError("adapter_internal", "PTY open response missing pty_id", {
+        details: { node_id: node.manifest.node_id },
+      });
+    }
+    this.ptyStreams.set(
+      buildPtyStreamKey(input.workspace_id, input.session_ref, ptyId),
+      mapNodePtyStream(streaming.stream, ptyId),
+    );
+    return { pty_id: ptyId, session_ref: input.session_ref };
+  }
+
+  public streamPty(input: { workspace_id: string } & RuntimePtyStreamInput): Promise<AsyncIterable<RuntimePtyEvent>> {
+    const key = buildPtyStreamKey(input.workspace_id, input.session_ref, input.pty_id);
+    const stream = this.ptyStreams.get(key);
+    if (stream === undefined) {
+      throw new RuntimeError("adapter_internal", `PTY stream ${input.pty_id} is not available`, {
+        details: { workspace_id: input.workspace_id, session_ref: input.session_ref, pty_id: input.pty_id },
+      });
+    }
+    this.ptyStreams.delete(key);
+    return Promise.resolve(stream);
+  }
+
+  public async writePty(input: { workspace_id: string } & RuntimePtyWriteInput): Promise<RuntimePtyWriteResult> {
+    const node = this.findNodeForSession(input.workspace_id, input.session_ref);
+    if (node === undefined) {
+      throw new RuntimeError("unsupported_capability", "remote runtime does not support PTY for this session");
+    }
+    if (!hasNodePtyCapability(node)) {
+      throw new RuntimeError("unsupported_capability", "remote runtime does not support PTY for this session");
+    }
+    const response = await this.sendRequestToNode(node, {
+      id: createId("rpc"),
+      method: "pty_input",
+      params: {
+        pty_id: input.pty_id,
+        data: input.data,
+      },
+    });
+    if (response.error !== undefined) {
+      throw new RuntimeError("adapter_internal", response.error.message, {
+        retriable: response.error.retriable,
+        details: { node_id: node.manifest.node_id, ...response.error.details },
+      });
+    }
+    return { accepted: true };
+  }
+
+  public async resizePty(input: { workspace_id: string } & RuntimePtyResizeInput): Promise<RuntimePtyResizeResult> {
+    const node = this.findNodeForSession(input.workspace_id, input.session_ref);
+    if (node === undefined) {
+      throw new RuntimeError("unsupported_capability", "remote runtime does not support PTY for this session");
+    }
+    if (!hasNodePtyCapability(node)) {
+      throw new RuntimeError("unsupported_capability", "remote runtime does not support PTY for this session");
+    }
+    const response = await this.sendRequestToNode(node, {
+      id: createId("rpc"),
+      method: "pty_resize",
+      params: {
+        session_id: this.findAgentSessionId(input.workspace_id, input.session_ref) ?? input.session_ref,
+        pty_id: input.pty_id,
+        cols: input.cols,
+        rows: input.rows,
+      },
+    });
+    if (response.error !== undefined) {
+      throw new RuntimeError("adapter_internal", response.error.message, {
+        retriable: response.error.retriable,
+        details: { node_id: node.manifest.node_id, ...response.error.details },
+      });
+    }
+    return { resized: true };
+  }
+
+  public async closePty(input: { workspace_id: string } & RuntimePtyCloseInput): Promise<RuntimePtyCloseResult> {
+    const node = this.findNodeForSession(input.workspace_id, input.session_ref);
+    if (node === undefined) {
+      throw new RuntimeError("unsupported_capability", "remote runtime does not support PTY for this session");
+    }
+    if (!hasNodePtyCapability(node)) {
+      throw new RuntimeError("unsupported_capability", "remote runtime does not support PTY for this session");
+    }
+    const response = await this.sendRequestToNode(node, {
+      id: createId("rpc"),
+      method: "pty_close",
+      params: {
+        session_id: this.findAgentSessionId(input.workspace_id, input.session_ref) ?? input.session_ref,
+        pty_id: input.pty_id,
+      },
+    });
+    if (response.error !== undefined) {
+      throw new RuntimeError("adapter_internal", response.error.message, {
+        retriable: response.error.retriable,
+        details: { node_id: node.manifest.node_id, ...response.error.details },
+      });
+    }
+    return { closed: true };
   }
 
   public async copyIn(input: { workspace_id: string } & RuntimeCopyInInput): Promise<RuntimeFileTransferResult> {
@@ -482,6 +652,39 @@ const mapNodeStream = async function* (
   }
 };
 
+const mapNodePtyStream = async function* (
+  stream: AsyncIterable<{ event: string; data: Record<string, unknown> }>,
+  expectedPtyId: string,
+): AsyncIterable<RuntimePtyEvent> {
+  for await (const event of stream) {
+    if (event.event === "pty_output" && typeof event.data["pty_id"] === "string" && event.data["pty_id"] === expectedPtyId && typeof event.data["text"] === "string") {
+      yield {
+        event: "pty.output",
+        data: {
+          pty_id: expectedPtyId,
+          text: event.data["text"],
+        },
+      };
+      continue;
+    }
+
+    if (event.event === "pty_exit" && typeof event.data["pty_id"] === "string" && event.data["pty_id"] === expectedPtyId && typeof event.data["exit_code"] === "number") {
+      yield {
+        event: "pty.exit",
+        data: {
+          pty_id: expectedPtyId,
+          exit_code: event.data["exit_code"],
+          signal: typeof event.data["signal"] === "string" ? event.data["signal"] : null,
+        },
+      };
+      return;
+    }
+  }
+};
+
+const buildPtyStreamKey = (workspaceId: string, sessionRef: string, ptyId: string): string =>
+  `${workspaceId}:${sessionRef}:${ptyId}`;
+
 const toRuntimeResult = (result: JobResult, sessionRef: string): {
   exit_code: number;
   stdout: string;
@@ -548,3 +751,6 @@ const mapRemoteError = (error: unknown, fallbackCode: RuntimeError["code"], deta
     cause: error,
   });
 };
+
+const hasNodePtyCapability = (node: StoredNode): boolean =>
+  node.manifest.capabilities.includes(runtimePtyCapability) || node.manifest.capabilities.includes("pty");

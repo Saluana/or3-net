@@ -9,6 +9,7 @@ Scope:
 - replace the current fake PTY behavior in `or3-node` with a real PTY backend
 - carry PTY lifecycle and streamed PTY events through the existing connected-node transport in `or3-net`
 - expose PTY operations through the existing runtime-session path instead of inventing a second public machine-control API
+- normalize PTY capability through the control plane as the extension capability `ext:or3:pty` while still accepting the node-side PTY signal from `or3-node`
 - keep PTY capability-gated and truthful by platform
 
 Assumptions:
@@ -63,6 +64,7 @@ As a user, I want PTY operations to be reachable through the existing runtime-se
 Acceptance criteria:
 
 - `or3-net` extends the runtime adapter contract with optional PTY operations instead of adding a parallel remote-machine API family
+- `or3-net` normalizes the control-plane PTY capability as `ext:or3:pty` while still projecting the node-side PTY signal from `or3-node`
 - `RemoteNodeRuntimeAdapter` projects PTY only for nodes whose manifests advertise `pty`
 - PTY open/input/resize/close operations are scoped to an existing runtime session and workspace
 - the adapter returns clear errors for missing sessions, revoked nodes, disconnected agents, and unsupported capabilities
