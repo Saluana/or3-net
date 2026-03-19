@@ -343,6 +343,50 @@ describe("remote node runtime adapter", () => {
     );
   });
 
+  test("getLogs preserves system chunks from the remote node", async () => {
+    const database = createControlPlaneDatabase();
+    database.saveWorkspace({ workspace_id: "ws_test", name: "Test", created_at: "2024-01-01T00:00:00.000Z" });
+    const node = makeRemoteNode();
+    database.workspace("ws_test").saveNode({
+      manifest: node.manifest,
+      pubkey_fingerprint: "fp",
+      status: "approved",
+      health_status: "healthy",
+    });
+    const executor = new FakeRemoteExecutorWithSendRequest();
+    executor.sendRequestResult = {
+      id: "rpc_logs",
+      result: {
+        output_text: "",
+        artifacts: [],
+        meta: {
+          chunks: [
+            { stream: "stdout", message: "hello", cursor: "1", created_at: "2024-01-01T00:00:00.000Z" },
+            { stream: "system", message: "output truncated", cursor: "2", created_at: "2024-01-01T00:00:01.000Z" },
+          ],
+          next_cursor: "2",
+        },
+      },
+    };
+
+    const adapter = new RemoteNodeRuntimeAdapter({
+      database,
+      nodeRegistryService: { listNodes: () => [node] },
+      leaseScheduler: {
+        issueLease: () => ({ lease: { lease_id: "lease_logs", node_id: "node_remote_1", state: "active" } }),
+        releaseLease: () => undefined,
+      },
+      remoteNodeExecutor: executor,
+    });
+
+    setupLeaseForSession(database, "lease_logs", "node_remote_1");
+
+    const result = await adapter.getLogs({ workspace_id: "ws_test", session_ref: "lease_logs" });
+
+    expect(result.chunks.map((chunk) => chunk.stream)).toEqual(["stdout", "system"]);
+    expect(result.next_cursor).toBe("2");
+  });
+
   test("copyOut sends file_read RPC and returns content", async () => {
     const database = createControlPlaneDatabase();
     database.saveWorkspace({ workspace_id: "ws_test", name: "Test", created_at: "2024-01-01T00:00:00.000Z" });

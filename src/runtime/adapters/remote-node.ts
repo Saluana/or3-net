@@ -319,7 +319,12 @@ export class RemoteNodeRuntimeAdapter implements RuntimeAdapter {
       const nextCursor = typeof meta["next_cursor"] === "string" ? meta["next_cursor"] : undefined;
       return {
         chunks: chunks.map((c) => ({
-          stream: c.stream === "stderr" ? "stderr" as const : "stdout" as const,
+          stream:
+            c.stream === "stderr"
+              ? ("stderr" as const)
+              : c.stream === "system"
+                ? ("system" as const)
+                : ("stdout" as const),
           message: c.message,
           cursor: c.cursor,
           created_at: c.created_at,
