@@ -89,6 +89,18 @@ export interface NodeCredentialRow {
   readonly rotated_at: number | null;
 }
 
+/** Purpose: Raw SQLite row for node bootstrap tokens used during enrollment. */
+export interface NodeBootstrapTokenRow {
+  readonly id: string;
+  readonly workspace_id: string;
+  readonly token_hash: string;
+  readonly token_ciphertext: string | null;
+  readonly node_id: string | null;
+  readonly created_at: number;
+  readonly expires_at: number;
+  readonly revoked_at: number | null;
+}
+
 /** Purpose: Raw SQLite row for persisted jobs. */
 export interface JobRow {
   readonly id: string;
@@ -323,6 +335,18 @@ export interface StoredNodeCredential {
   readonly rotated_at: string | null;
 }
 
+/** Purpose: Parsed node bootstrap token returned by the database client. */
+export interface StoredNodeBootstrapToken {
+  readonly bootstrap_token_id: string;
+  readonly workspace_id: string;
+  readonly token_hash: string;
+  readonly token_ciphertext: string | null;
+  readonly node_id: string | null;
+  readonly created_at: string;
+  readonly expires_at: string;
+  readonly revoked_at: string | null;
+}
+
 /** Purpose: Parsed network session record returned by the database client. */
 export interface StoredNetworkSession {
   readonly network_session_id: string;
@@ -534,6 +558,15 @@ export const schemaMigrations: readonly Migration[] = [
     name: "runtime-session-stage-transport",
     statements: [
       "ALTER TABLE runtime_sessions ADD COLUMN workspace_stage_transport TEXT",
+    ],
+  },
+  {
+    version: 10,
+    name: "node-bootstrap-tokens",
+    statements: [
+      "CREATE TABLE IF NOT EXISTS node_bootstrap_tokens (workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, id TEXT NOT NULL, token_hash TEXT NOT NULL, token_ciphertext TEXT, node_id TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER, PRIMARY KEY (workspace_id, id), FOREIGN KEY (workspace_id, node_id) REFERENCES nodes(workspace_id, id) ON DELETE SET NULL)",
+      "CREATE INDEX IF NOT EXISTS idx_node_bootstrap_tokens_lookup ON node_bootstrap_tokens(token_hash, revoked_at, expires_at)",
+      "CREATE INDEX IF NOT EXISTS idx_node_bootstrap_tokens_workspace ON node_bootstrap_tokens(workspace_id, created_at DESC)",
     ],
   },
 ];

@@ -28,6 +28,148 @@ export const runCli = async (argv: string[], deps: CliDependencies): Promise<num
 			case "auth:exchange":
 				await handleAuthExchange(parsed.flags, deps);
 				return 0;
+				case "runtimes:list":
+					await handleJsonRequest("GET", buildWorkspacePath(parsed.flags, "/runtimes"), parsed.flags, deps);
+					return 0;
+				case "runtimes:get":
+					await handleJsonRequest(
+						"GET",
+						buildWorkspacePath(parsed.flags, `/runtimes/${requireFlag(parsed.flags, "runtime-id")}`),
+						parsed.flags,
+						deps,
+					);
+					return 0;
+				case "runtimes:nodes":
+					await handleJsonRequest(
+						"GET",
+						buildWorkspacePath(parsed.flags, `/runtimes/${requireFlag(parsed.flags, "runtime-id")}/nodes`),
+						parsed.flags,
+						deps,
+					);
+					return 0;
+				case "runtime-sessions:list": {
+					const search = new URLSearchParams();
+					if (parsed.flags["status"] !== undefined) {
+						search.set("status", parsed.flags["status"]);
+					}
+					if (parsed.flags["adapter-id"] !== undefined) {
+						search.set("adapter_id", parsed.flags["adapter-id"]);
+					}
+					if (parsed.flags["limit"] !== undefined) {
+						search.set("limit", parsed.flags["limit"]);
+					}
+					const path = `${buildWorkspacePath(parsed.flags, "/runtime-sessions")}${search.size === 0 ? "" : `?${search.toString()}`}`;
+					await handleJsonRequest("GET", path, parsed.flags, deps);
+					return 0;
+				}
+				case "runtime-sessions:create":
+					await handleCreateRuntimeSession(parsed.flags, deps);
+					return 0;
+				case "runtime-sessions:get":
+					await handleJsonRequest(
+						"GET",
+						buildWorkspacePath(parsed.flags, `/runtime-sessions/${requireFlag(parsed.flags, "session-id")}`),
+						parsed.flags,
+						deps,
+					);
+					return 0;
+				case "runtime-sessions:exec":
+					await handleJsonRequest(
+						"POST",
+						buildWorkspacePath(parsed.flags, `/runtime-sessions/${requireFlag(parsed.flags, "session-id")}/exec`),
+						parsed.flags,
+						deps,
+						{
+							command: requireFlag(parsed.flags, "command"),
+							args: parsed.flags["args-json"] === undefined ? [] : parseStringArrayFlag(parsed.flags, "args-json"),
+							...(parsed.flags["cwd"] === undefined ? {} : { cwd: parsed.flags["cwd"] }),
+							env: parsed.flags["env-json"] === undefined ? {} : parseStringRecordFlag(parsed.flags, "env-json"),
+							...(parsed.flags["timeout-ms"] === undefined ? {} : { timeout_ms: Number(requireFlag(parsed.flags, "timeout-ms")) }),
+							...(parsed.flags["stdin"] === undefined ? {} : { stdin: parsed.flags["stdin"] }),
+							background: parsed.booleanFlags.has("background"),
+						},
+					);
+					return 0;
+				case "runtime-sessions:logs": {
+					const search = new URLSearchParams();
+					if (parsed.flags["cursor"] !== undefined) {
+						search.set("cursor", parsed.flags["cursor"]);
+					}
+					if (parsed.flags["limit"] !== undefined) {
+						search.set("limit", parsed.flags["limit"]);
+					}
+					const path = `${buildWorkspacePath(parsed.flags, `/runtime-sessions/${requireFlag(parsed.flags, "session-id")}/logs`)}${search.size === 0 ? "" : `?${search.toString()}`}`;
+					await handleJsonRequest("GET", path, parsed.flags, deps);
+					return 0;
+				}
+				case "runtime-sessions:copy-in":
+					await handleJsonRequest(
+						"POST",
+						buildWorkspacePath(parsed.flags, `/runtime-sessions/${requireFlag(parsed.flags, "session-id")}/files:copy-in`),
+						parsed.flags,
+						deps,
+						{
+							destination_path: requireFlag(parsed.flags, "destination-path"),
+							...(parsed.flags["content-text"] === undefined ? {} : { content_text: parsed.flags["content-text"] }),
+							...(parsed.flags["content-base64"] === undefined ? {} : { content_base64: parsed.flags["content-base64"] }),
+							...(parsed.flags["source-path"] === undefined ? {} : { source_path: parsed.flags["source-path"] }),
+							overwrite: parsed.booleanFlags.has("no-overwrite") ? false : true,
+						},
+					);
+					return 0;
+				case "runtime-sessions:copy-out":
+					await handleJsonRequest(
+						"POST",
+						buildWorkspacePath(parsed.flags, `/runtime-sessions/${requireFlag(parsed.flags, "session-id")}/files:copy-out`),
+						parsed.flags,
+						deps,
+						{
+							source_path: requireFlag(parsed.flags, "source-path"),
+							...(parsed.flags["destination-path"] === undefined ? {} : { destination_path: parsed.flags["destination-path"] }),
+							...(parsed.flags["encoding"] === undefined ? {} : { encoding: parsed.flags["encoding"] }),
+						},
+					);
+					return 0;
+				case "runtime-sessions:stop":
+					await handleJsonRequest(
+						"POST",
+						buildWorkspacePath(parsed.flags, `/runtime-sessions/${requireFlag(parsed.flags, "session-id")}/stop`),
+						parsed.flags,
+						deps,
+					);
+					return 0;
+				case "runtime-sessions:destroy":
+					await handleJsonRequest(
+						"POST",
+						buildWorkspacePath(parsed.flags, `/runtime-sessions/${requireFlag(parsed.flags, "session-id")}/destroy`),
+						parsed.flags,
+						deps,
+					);
+					return 0;
+				case "runtime-sessions:commit":
+					await handleJsonRequest(
+						"POST",
+						buildWorkspacePath(parsed.flags, `/runtime-sessions/${requireFlag(parsed.flags, "session-id")}/commit`),
+						parsed.flags,
+						deps,
+					);
+					return 0;
+				case "runtime-sessions:discard":
+					await handleJsonRequest(
+						"POST",
+						buildWorkspacePath(parsed.flags, `/runtime-sessions/${requireFlag(parsed.flags, "session-id")}/discard`),
+						parsed.flags,
+						deps,
+					);
+					return 0;
+				case "runtime-sessions:staging":
+					await handleJsonRequest(
+						"GET",
+						buildWorkspacePath(parsed.flags, `/runtime-sessions/${requireFlag(parsed.flags, "session-id")}/staging`),
+						parsed.flags,
+						deps,
+					);
+					return 0;
 			case "api-keys:list":
 				await handleJsonRequest("GET", buildWorkspacePath(parsed.flags, "/api-keys"), parsed.flags, deps);
 				return 0;
@@ -209,6 +351,56 @@ const requireFlag = (flags: Record<string, string>, key: string): string => {
 
 const parseJsonFlag = (flags: Record<string, string>, key: string): unknown => JSON.parse(requireFlag(flags, key)) as unknown;
 
+const parseObjectFlag = (flags: Record<string, string>, key: string): Record<string, unknown> => {
+	const value = parseJsonFlag(flags, key);
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error(`Flag --${key} must be a JSON object`);
+	}
+	return value as Record<string, unknown>;
+};
+
+const parseStringArrayFlag = (flags: Record<string, string>, key: string): string[] => {
+	const value = parseJsonFlag(flags, key);
+	if (!Array.isArray(value)) {
+		throw new Error(`Flag --${key} must be a JSON string array`);
+	}
+
+	const items: string[] = [];
+	for (const entry of value) {
+		if (typeof entry !== "string") {
+			throw new Error(`Flag --${key} must be a JSON string array`);
+		}
+		items.push(entry);
+	}
+	return items;
+};
+
+const parseStringRecordFlag = (flags: Record<string, string>, key: string): Record<string, string> => {
+	const value = parseObjectFlag(flags, key);
+	return Object.fromEntries(
+		Object.entries(value).map(([entryKey, entryValue]) => {
+			if (typeof entryValue !== "string") {
+				throw new Error(`Flag --${key} must contain only string values`);
+			}
+			return [entryKey, entryValue];
+		}),
+	);
+};
+
+const handleCreateRuntimeSession = async (flags: Record<string, string>, deps: CliDependencies): Promise<void> => {
+	const input = flags["input-json"] === undefined ? {} : parseObjectFlag(flags, "input-json");
+	await handleJsonRequest(
+		"POST",
+		buildWorkspacePath(flags, "/runtime-sessions"),
+		flags,
+		deps,
+		{
+			...input,
+			...(flags["runtime-id"] === undefined ? {} : { adapter_id: requireFlag(flags, "runtime-id") }),
+		},
+	);
+};
+
 const splitCsv = (value: string | undefined): string[] =>
 	value === undefined || value.trim() === "" ? [] : value.split(",").map((item) => item.trim()).filter((item) => item !== "");
 
@@ -273,6 +465,21 @@ const formatJson = (text: string): string => {
 
 const renderHelp = (): string => `${cliName} commands:
 	auth exchange --workspace-id <id> [--provider test] [--proof-json '{"ok":true}'] [--base-url <url>]
+	runtimes list --workspace-id <id> --token <token> [--base-url <url>]
+	runtimes get --workspace-id <id> --runtime-id <id> --token <token> [--base-url <url>]
+	runtimes nodes --workspace-id <id> --runtime-id <id> --token <token> [--base-url <url>]
+	runtime-sessions list --workspace-id <id> --token <token> [--status <status>] [--adapter-id <id>] [--limit <n>] [--base-url <url>]
+	runtime-sessions create --workspace-id <id> --token <token> [--runtime-id <id>] [--input-json '<json>'] [--base-url <url>]
+	runtime-sessions get --workspace-id <id> --session-id <id> --token <token> [--base-url <url>]
+	runtime-sessions exec --workspace-id <id> --session-id <id> --token <token> --command <cmd> [--args-json '["arg1","arg2"]'] [--cwd <path>] [--env-json '{"KEY":"value"}'] [--timeout-ms <n>] [--stdin <text>] [--background] [--base-url <url>]
+	runtime-sessions logs --workspace-id <id> --session-id <id> --token <token> [--cursor <cursor>] [--limit <n>] [--base-url <url>]
+	runtime-sessions copy-in --workspace-id <id> --session-id <id> --token <token> --destination-path <path> [--content-text <text> | --content-base64 <b64> | --source-path <path>] [--no-overwrite] [--base-url <url>]
+	runtime-sessions copy-out --workspace-id <id> --session-id <id> --token <token> --source-path <path> [--destination-path <path>] [--encoding text|base64] [--base-url <url>]
+	runtime-sessions stop --workspace-id <id> --session-id <id> --token <token> [--base-url <url>]
+	runtime-sessions destroy --workspace-id <id> --session-id <id> --token <token> [--base-url <url>]
+	runtime-sessions commit --workspace-id <id> --session-id <id> --token <token> [--base-url <url>]
+	runtime-sessions discard --workspace-id <id> --session-id <id> --token <token> [--base-url <url>]
+	runtime-sessions staging --workspace-id <id> --session-id <id> --token <token> [--base-url <url>]
 	api-keys list --workspace-id <id> --token <token> [--base-url <url>]
 	api-keys create --workspace-id <id> --token <token> --name <name> --scopes jobs:read,jobs:write [--expires-at <iso>] [--base-url <url>]
 	api-keys revoke --workspace-id <id> --api-key-id <id> --token <token> [--base-url <url>]

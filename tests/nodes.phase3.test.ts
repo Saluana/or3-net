@@ -136,6 +136,312 @@ describe("phase 3 node control plane", () => {
     expect(database.workspace("ws_nodes").listNodeCredentials("node_alpha")).toHaveLength(1);
   });
 
+  test("issues a bootstrap token and redeems it into pending enrollment", async () => {
+    const token = await exchangeAdminToken(app);
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_bootstrap",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote" as const,
+      capabilities: ["exec"],
+      isolation_class: "host-trusted",
+      supports_transports: ["outbound-wss", "https"],
+      resource_limits: {
+        max_concurrent_jobs: 2,
+        cpu_cores: 4,
+        memory_mb: 4096,
+        disk_mb: 8192,
+      },
+      lease_policy: {
+        max_ttl_seconds: 300,
+        supports_warm_pool: false,
+        reset_methods: ["process_kill", "credential_rotation"],
+      },
+      version: "1.0.0",
+    };
+    const manifest = {
+      ...unsignedManifest,
+      signature: signNodeManifest(unsignedManifest, keyPair.secretKey),
+    };
+
+    const issueResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_nodes/nodes/bootstrap-tokens", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(issueResponse.status).toBe(201);
+    const bootstrap = (await issueResponse.json()) as { token: string };
+    expect(bootstrap.token.startsWith("or3b_")).toBeTrue();
+
+    const redeemResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/nodes/bootstrap/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: bootstrap.token, manifest }),
+      }),
+    );
+    expect(redeemResponse.status).toBe(200);
+
+    const redemption = (await redeemResponse.json()) as {
+      workspace_id: string;
+      node: { status: string; manifest: { node_id: string } };
+      credential: null;
+    };
+    expect(redemption.workspace_id).toBe("ws_nodes");
+    expect(redemption.node.status).toBe("pending");
+    expect(redemption.node.manifest.node_id).toBe("node_bootstrap");
+    expect(redemption.credential).toBeNull();
+  });
+
+  test("redeeming an approved bootstrap-bound node returns a runtime credential", async () => {
+    const token = await exchangeAdminToken(app);
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_bootstrap_approved",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote" as const,
+      capabilities: ["exec"],
+      isolation_class: "host-trusted",
+      supports_transports: ["outbound-wss", "https"],
+      resource_limits: {
+        max_concurrent_jobs: 2,
+        cpu_cores: 4,
+        memory_mb: 4096,
+        disk_mb: 8192,
+      },
+      lease_policy: {
+        max_ttl_seconds: 300,
+        supports_warm_pool: false,
+        reset_methods: ["process_kill", "credential_rotation"],
+      },
+      version: "1.0.0",
+    };
+    const manifest = {
+      ...unsignedManifest,
+      signature: signNodeManifest(unsignedManifest, keyPair.secretKey),
+    };
+
+    const issueResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_nodes/nodes/bootstrap-tokens", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }),
+    );
+    const bootstrap = (await issueResponse.json()) as { token: string };
+
+    await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/nodes/bootstrap/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: bootstrap.token, manifest }),
+      }),
+    );
+
+    await nodeRegistry.approveNode("ws_nodes", "node_bootstrap_approved");
+
+    const redeemAfterApproval = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/nodes/bootstrap/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: bootstrap.token, manifest }),
+      }),
+    );
+
+    expect(redeemAfterApproval.status).toBe(200);
+    const redemption = (await redeemAfterApproval.json()) as {
+      node: { status: string };
+      credential: { token: string; expires_at: string } | null;
+    };
+    expect(redemption.node.status).toBe("approved");
+    expect(redemption.credential?.token.startsWith("or3n_")).toBeTrue();
+  });
+
+  test("rejects invalid bootstrap tokens", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_invalid_bootstrap",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote" as const,
+      capabilities: ["exec"],
+      isolation_class: "host-trusted",
+      supports_transports: ["outbound-wss", "https"],
+      resource_limits: {
+        max_concurrent_jobs: 1,
+        cpu_cores: 2,
+        memory_mb: 2048,
+        disk_mb: 4096,
+      },
+      lease_policy: {
+        max_ttl_seconds: 300,
+        supports_warm_pool: false,
+        reset_methods: ["process_kill"],
+      },
+      version: "1.0.0",
+    };
+    const manifest = {
+      ...unsignedManifest,
+      signature: signNodeManifest(unsignedManifest, keyPair.secretKey),
+    };
+
+    const redeemResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/nodes/bootstrap/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: "or3b_invalid", manifest }),
+      }),
+    );
+
+    expect(redeemResponse.status).toBe(400);
+    expect(await redeemResponse.text()).toContain("invalid or expired node bootstrap token");
+  });
+
+  test("rejects expired bootstrap tokens", async () => {
+    const token = await exchangeAdminToken(app);
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_expired_bootstrap",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote" as const,
+      capabilities: ["exec"],
+      isolation_class: "host-trusted",
+      supports_transports: ["outbound-wss", "https"],
+      resource_limits: {
+        max_concurrent_jobs: 1,
+        cpu_cores: 2,
+        memory_mb: 2048,
+        disk_mb: 4096,
+      },
+      lease_policy: {
+        max_ttl_seconds: 300,
+        supports_warm_pool: false,
+        reset_methods: ["process_kill"],
+      },
+      version: "1.0.0",
+    };
+    const manifest = {
+      ...unsignedManifest,
+      signature: signNodeManifest(unsignedManifest, keyPair.secretKey),
+    };
+
+    const issueResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_nodes/nodes/bootstrap-tokens", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ expires_at: "2000-01-01T00:00:00.000Z" }),
+      }),
+    );
+    expect(issueResponse.status).toBe(201);
+    const bootstrap = (await issueResponse.json()) as { token: string };
+
+    const redeemResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/nodes/bootstrap/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: bootstrap.token, manifest }),
+      }),
+    );
+
+    expect(redeemResponse.status).toBe(400);
+    expect(await redeemResponse.text()).toContain("invalid or expired node bootstrap token");
+  });
+
+  test("rejects bootstrap redemption when the same node id uses a different public key", async () => {
+    const token = await exchangeAdminToken(app);
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_pubkey_mismatch",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote" as const,
+      capabilities: ["exec"],
+      isolation_class: "host-trusted",
+      supports_transports: ["outbound-wss", "https"],
+      resource_limits: {
+        max_concurrent_jobs: 2,
+        cpu_cores: 4,
+        memory_mb: 4096,
+        disk_mb: 8192,
+      },
+      lease_policy: {
+        max_ttl_seconds: 300,
+        supports_warm_pool: false,
+        reset_methods: ["process_kill", "credential_rotation"],
+      },
+      version: "1.0.0",
+    };
+    const manifest = {
+      ...unsignedManifest,
+      signature: signNodeManifest(unsignedManifest, keyPair.secretKey),
+    };
+
+    const issueResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_nodes/nodes/bootstrap-tokens", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }),
+    );
+    const bootstrap = (await issueResponse.json()) as { token: string };
+
+    const firstRedeem = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/nodes/bootstrap/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: bootstrap.token, manifest }),
+      }),
+    );
+    expect(firstRedeem.status).toBe(200);
+
+    const otherKeyPair = nacl.sign.keyPair();
+    const mismatchedManifest = {
+      ...unsignedManifest,
+      pubkey: Buffer.from(otherKeyPair.publicKey).toString("base64"),
+    };
+
+    const secondRedeem = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/nodes/bootstrap/redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: bootstrap.token,
+          manifest: {
+            ...mismatchedManifest,
+            signature: signNodeManifest(mismatchedManifest, otherKeyPair.secretKey),
+          },
+        }),
+      }),
+    );
+
+    expect(secondRedeem.status).toBe(400);
+    expect(await secondRedeem.text()).toContain("different public key");
+  });
+
   test("matches the least-busy approved node and issues a lease", async () => {
     const keyPair = nacl.sign.keyPair();
     const makeManifest = (nodeId: string, maxConcurrentJobs: number): UnsignedManifest & { signature: string } => {

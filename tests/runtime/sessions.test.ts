@@ -10,6 +10,7 @@ import {
   RuntimeRegistry,
   RuntimeSelectionService,
   RuntimeSessionService,
+  runtimePtyCapability,
   createControlPlaneDatabase,
 } from "../../src/index.ts";
 import { createWorkspaceArchive, ensureWorkspaceStageDir } from "../../src/runtime/workspace-stage.ts";
@@ -24,6 +25,16 @@ import type {
   RuntimeExecutionRequest,
   RuntimeGetLogsInput,
   RuntimeLogsResult,
+  RuntimePtyCloseInput,
+  RuntimePtyCloseResult,
+  RuntimePtyEvent,
+  RuntimePtyOpenInput,
+  RuntimePtyOpenResult,
+  RuntimePtyResizeInput,
+  RuntimePtyResizeResult,
+  RuntimePtyStreamInput,
+  RuntimePtyWriteInput,
+  RuntimePtyWriteResult,
   RuntimeNodeDescriptor,
   RuntimeSessionCreateInput,
   RuntimeSessionState,
@@ -38,7 +49,7 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
     isolation_class: "container",
     trust_tier: "development",
     locality: "local",
-    capabilities: RuntimeCapabilitySet.fromValues(["exec", "copy-in", "copy-out", "stop"]),
+    capabilities: RuntimeCapabilitySet.fromValues(["exec", "copy-in", "copy-out", "stop", runtimePtyCapability]),
     supported_presets: ["python"],
     session_modes: ["ephemeral"],
   };
@@ -47,7 +58,7 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
     ref: "fake-session-ref",
     adapter_id: "fake",
     status: "ready",
-    capabilities: RuntimeCapabilitySet.fromValues(["exec", "copy-in", "copy-out", "stop"]),
+    capabilities: RuntimeCapabilitySet.fromValues(["exec", "copy-in", "copy-out", "stop", runtimePtyCapability]),
   };
   public createError: Error | null = null;
   public destroyError: Error | null = null;
@@ -55,12 +66,23 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
     ref: "fake-session-ref",
     adapter_id: "fake",
     status: "ready",
-    capabilities: RuntimeCapabilitySet.fromValues(["exec", "copy-in", "copy-out", "stop"]),
+    capabilities: RuntimeCapabilitySet.fromValues(["exec", "copy-in", "copy-out", "stop", runtimePtyCapability]),
   };
   public stopResult: { stopped: boolean; status: RuntimeSessionState } = { stopped: true, status: "stopped" };
+  public execResult = { exit_code: 0, stdout: "ok", stderr: "", artifacts: [], meta: {} };
+  public logsResult: RuntimeLogsResult = { chunks: [{ stream: "stdout", message: "hello" }] };
   public readonly sessionFiles = new Map<string, Map<string, string>>();
   public readonly importedArchives = new Map<string, Uint8Array>();
   public readonly exportedArchives = new Map<string, Uint8Array>();
+  public readonly ptySessions = new Map<string, string>();
+  public lastPtyOpenInput: ({ workspace_id: string } & RuntimePtyOpenInput) | null = null;
+  public lastPtyWriteInput: ({ workspace_id: string } & RuntimePtyWriteInput) | null = null;
+  public lastPtyResizeInput: ({ workspace_id: string } & RuntimePtyResizeInput) | null = null;
+  public lastPtyCloseInput: ({ workspace_id: string } & RuntimePtyCloseInput) | null = null;
+  public ptyStreamEvents: RuntimePtyEvent[] = [
+    { event: "pty.output", data: { pty_id: "pty_placeholder", text: "hello from stream" } },
+    { event: "pty.exit", data: { pty_id: "pty_placeholder", exit_code: 0, signal: null } },
+  ];
   public archiveEnabled = true;
 
   public health(): Promise<RuntimeAdapterHealth> {
@@ -73,7 +95,7 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
         node_id: "node_1",
         runtime_id: "fake",
         health: { status: "healthy", checked_at: new Date().toISOString() },
-        capabilities: RuntimeCapabilitySet.fromValues(["exec", "copy-in", "copy-out", "stop"]),
+        capabilities: RuntimeCapabilitySet.fromValues(["exec", "copy-in", "copy-out", "stop", runtimePtyCapability]),
         resource_limits: { max_concurrent_execs: 1 },
         locality: "local",
       },
@@ -104,7 +126,7 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
     void input;
     return Promise.resolve({
       execution_id: "exec_1",
-      result: Promise.resolve({ exit_code: 0, stdout: "ok", stderr: "", artifacts: [], meta: {} }),
+      result: Promise.resolve(this.execResult),
       abort: () => Promise.resolve({ acknowledged: true }),
     });
   }
@@ -120,6 +142,47 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
     const files = this.sessionFiles.get(input.session_ref) ?? new Map<string, string>();
     const content = files.get(input.source_path) ?? "";
     return Promise.resolve({ path: input.source_path, bytes_transferred: content.length, encoding: "text", content_text: content });
+  }
+
+  public openPty(input: { workspace_id: string } & RuntimePtyOpenInput): Promise<RuntimePtyOpenResult> {
+    const ptyId = `pty_${input.session_ref}`;
+    this.lastPtyOpenInput = input;
+    this.ptySessions.set(input.session_ref, ptyId);
+    return Promise.resolve({ pty_id: ptyId, session_ref: input.session_ref });
+  }
+
+  public writePty(input: { workspace_id: string } & RuntimePtyWriteInput): Promise<RuntimePtyWriteResult> {
+    this.lastPtyWriteInput = input;
+    return Promise.resolve({ accepted: true });
+  }
+
+  public resizePty(input: { workspace_id: string } & RuntimePtyResizeInput): Promise<RuntimePtyResizeResult> {
+    this.lastPtyResizeInput = input;
+    return Promise.resolve({ resized: true });
+  }
+
+  public closePty(input: { workspace_id: string } & RuntimePtyCloseInput): Promise<RuntimePtyCloseResult> {
+    this.lastPtyCloseInput = input;
+    this.ptySessions.delete(input.session_ref);
+    return Promise.resolve({ closed: true });
+  }
+
+  public streamPty(input: { workspace_id: string } & RuntimePtyStreamInput): Promise<AsyncIterable<RuntimePtyEvent>> {
+    const events = this.ptyStreamEvents.map((event) => ({
+      event: event.event,
+      data: {
+        ...event.data,
+        pty_id: input.pty_id,
+      },
+    })) as RuntimePtyEvent[];
+    return Promise.resolve({
+      async *[Symbol.asyncIterator](): AsyncIterator<RuntimePtyEvent> {
+        for (const event of events) {
+          await Promise.resolve();
+          yield event;
+        }
+      },
+    });
   }
 
   public getWorkspaceStageTransportCapabilities(): { archive: boolean; file_api: boolean } {
@@ -149,7 +212,7 @@ class FakeRuntimeAdapter implements RuntimeAdapter {
 
   public getLogs(input: { workspace_id: string } & RuntimeGetLogsInput): Promise<RuntimeLogsResult> {
     void input;
-    return Promise.resolve({ chunks: [{ stream: "stdout", message: "hello" }] });
+    return Promise.resolve(this.logsResult);
   }
 
   public stop(): Promise<{ stopped: boolean; status: RuntimeSessionState }> {
@@ -292,6 +355,131 @@ describe("runtime session service", () => {
       service.exec("ws_test", "sess_2", { command: "echo", args: [], env: {}, background: false }),
     );
     expect(error.code).toBe("unsupported_capability");
+  });
+
+  test("PTY lifecycle proxies through the selected adapter", async () => {
+    database.workspace("ws_test").saveRuntimeSession({
+      session_id: "sess_pty",
+      adapter_id: "fake",
+      adapter_session_ref: "fake-session-ref",
+      status: "ready",
+      capabilities: ["exec", runtimePtyCapability],
+      isolation_class: "container",
+      trust_tier: "development",
+    });
+
+    const opened = await service.openPty("ws_test", "sess_pty", {
+      cols: 80,
+      rows: 24,
+      command: "bash",
+      args: ["-l"],
+      env: {},
+      cwd: "/workspace",
+    });
+    const written = await service.writePty("ws_test", "sess_pty", { pty_id: opened.pty_id, data: "echo hello\n" });
+    const resized = await service.resizePty("ws_test", "sess_pty", { pty_id: opened.pty_id, cols: 100, rows: 40 });
+    const closed = await service.closePty("ws_test", "sess_pty", { pty_id: opened.pty_id });
+
+    expect(opened.pty_id).toBe(`pty_fake-session-ref`);
+    expect(written.accepted).toBe(true);
+    expect(resized.resized).toBe(true);
+    expect(closed.closed).toBe(true);
+    expect(adapter.lastPtyOpenInput?.command).toBe("bash");
+    expect(adapter.lastPtyWriteInput?.data).toBe("echo hello\n");
+    expect(adapter.lastPtyResizeInput?.cols).toBe(100);
+    expect(adapter.lastPtyCloseInput?.pty_id).toBe(opened.pty_id);
+  });
+
+  test("PTY stream tails persisted runtime session PTY events", async () => {
+    database.workspace("ws_test").saveRuntimeSession({
+      session_id: "sess_pty_stream",
+      adapter_id: "fake",
+      adapter_session_ref: "fake-session-ref",
+      status: "ready",
+      capabilities: ["exec", runtimePtyCapability],
+      isolation_class: "container",
+      trust_tier: "development",
+    });
+
+    const opened = await service.openPty("ws_test", "sess_pty_stream", {
+      cols: 80,
+      rows: 24,
+      command: "bash",
+      args: [],
+      env: {},
+      cwd: "/workspace",
+    });
+
+    const stream = service.streamPty("ws_test", "sess_pty_stream", { pty_id: opened.pty_id });
+    const events: RuntimePtyEvent[] = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ event: "pty.output", data: { pty_id: opened.pty_id, text: "hello from stream" } });
+    expect(events[1]).toMatchObject({ event: "pty.exit", data: { pty_id: opened.pty_id, exit_code: 0 } });
+  });
+
+  test("PTY stream surfaces mirrored stream failures instead of hanging", async () => {
+    database.workspace("ws_test").saveRuntimeSession({
+      session_id: "sess_pty_failed",
+      adapter_id: "fake",
+      adapter_session_ref: "fake-session-ref",
+      status: "ready",
+      capabilities: ["exec", runtimePtyCapability],
+      isolation_class: "container",
+      trust_tier: "development",
+    });
+
+    const opened = await service.openPty("ws_test", "sess_pty_failed", {
+      cols: 80,
+      rows: 24,
+      command: "bash",
+      args: [],
+      env: {},
+      cwd: "/workspace",
+    });
+
+    database.workspace("ws_test").appendRuntimeSessionEvent({
+      session_id: "sess_pty_failed",
+      event_type: "pty.stream_failed",
+      payload: {
+        pty_id: opened.pty_id,
+        message: "stream bridge lost",
+      },
+    });
+
+    const iterator = service.streamPty("ws_test", "sess_pty_failed", { pty_id: opened.pty_id })[Symbol.asyncIterator]();
+    try {
+      await iterator.next();
+      throw new Error("expected PTY stream failure");
+    } catch (error: unknown) {
+      expect(error).toMatchObject({ code: "adapter_unavailable", message: "stream bridge lost" });
+    }
+  });
+
+  test("getLogs falls back to persisted exec output when adapter returns no logs", async () => {
+    adapter.logsResult = { chunks: [] };
+    adapter.execResult = { exit_code: 0, stdout: "stdout line", stderr: "stderr line", artifacts: [], meta: {} };
+
+    const session = await service.createSession("ws_test", {
+      workspace_mode: "none",
+      network_policy: { internet_access: false, ingress: "none" },
+      resource_hints: { metadata: {} },
+      persistence_mode: "ephemeral",
+      env_refs: [],
+      secret_refs: [],
+      timeout_rules: {},
+      artifact_rules: { capture_paths: [], push_on_completion: false, metadata: {} },
+    });
+
+    await service.exec("ws_test", session.session_id, { command: "echo", args: [], env: {}, background: false }).then((handle) => handle.result);
+    const logs = await service.getLogs("ws_test", session.session_id, { limit: 10 });
+
+    expect(logs.chunks).toHaveLength(2);
+    expect(logs.chunks[0]).toMatchObject({ stream: "stdout", message: "stdout line" });
+    expect(logs.chunks[1]).toMatchObject({ stream: "stderr", message: "stderr line" });
   });
 
   test("unsupported capability returns unsupported_capability error", async () => {

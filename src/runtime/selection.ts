@@ -38,6 +38,7 @@ const localityRank: Record<RuntimeLocality, number> = {
 
 /** Purpose: Criteria used to select a runtime adapter or node. */
 export interface RuntimeSelectionCriteria {
+  readonly adapter_id?: string;
   readonly required_capabilities?: readonly RuntimeCapability[];
   readonly preset_id?: string;
   readonly trust_tier?: RuntimeTrustTier;
@@ -64,6 +65,10 @@ export class RuntimeSelectionService {
     const requiredCapabilities = [...(criteria.required_capabilities ?? [])];
     const candidates: (RuntimeSelectionResult | null)[] = await Promise.all(
       this.registry.list().map(async (adapter) => {
+        if (criteria.adapter_id !== undefined && adapter.manifest.adapter_id !== criteria.adapter_id) {
+          return null;
+        }
+
         const adapterHealth = await getAdapterHealth(adapter, workspaceId);
         if (healthRank[adapterHealth.status] === 0) {
           return null;
@@ -106,6 +111,7 @@ export class RuntimeSelectionService {
       throw new RuntimeError("policy_denied", "no runtime adapter matches the requested criteria", {
         details: {
           workspace_id: workspaceId,
+          adapter_id: criteria.adapter_id,
           required_capabilities: requiredCapabilities,
           preset_id: criteria.preset_id,
           trust_tier: criteria.trust_tier,

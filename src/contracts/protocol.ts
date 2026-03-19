@@ -50,6 +50,140 @@ export const nodeRequestSchema = z.discriminatedUnion("method", [
       job_id: nonEmptyStringSchema,
     }),
   }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("create_session"),
+    params: z.object({
+      session_id: nonEmptyStringSchema,
+      workspace_id: nonEmptyStringSchema,
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("get_session"),
+    params: z.object({
+      session_id: nonEmptyStringSchema,
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("destroy_session"),
+    params: z.object({
+      session_id: nonEmptyStringSchema,
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("session_exec"),
+    params: z.object({
+      session_id: nonEmptyStringSchema,
+      command: nonEmptyStringSchema,
+      args: z.array(z.string()).default([]),
+      cwd: z.string().optional(),
+      env: z.record(z.string(), z.string()).default({}),
+      timeout_ms: nonNegativeIntegerSchema.optional(),
+      stdin: z.string().optional(),
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("get_logs"),
+    params: z.object({
+      session_id: nonEmptyStringSchema,
+      cursor: z.string().optional(),
+      limit: nonNegativeIntegerSchema.optional(),
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("file_read"),
+    params: z.object({
+      path: nonEmptyStringSchema,
+      encoding: z.enum(["text", "base64"]).default("text"),
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("file_write"),
+    params: z.object({
+      path: nonEmptyStringSchema,
+      content_text: z.string().optional(),
+      content_base64: z.string().optional(),
+      overwrite: z.boolean().default(true),
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("file_delete"),
+    params: z.object({
+      path: nonEmptyStringSchema,
+      recursive: z.boolean().default(false),
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("file_browse"),
+    params: z.object({
+      path: z.string().optional(),
+      recursive: z.boolean().default(false),
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("pty_open"),
+    params: z.object({
+      session_id: nonEmptyStringSchema,
+      cols: nonNegativeIntegerSchema.default(80),
+      rows: nonNegativeIntegerSchema.default(24),
+      command: z.string().optional(),
+      args: z.array(z.string()).default([]),
+      env: z.record(z.string(), z.string()).default({}),
+      cwd: z.string().optional(),
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("pty_input"),
+    params: z.object({
+      pty_id: nonEmptyStringSchema,
+      data: nonEmptyStringSchema,
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("pty_resize"),
+    params: z.object({
+      pty_id: nonEmptyStringSchema,
+      cols: nonNegativeIntegerSchema,
+      rows: nonNegativeIntegerSchema,
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("pty_close"),
+    params: z.object({
+      pty_id: nonEmptyStringSchema,
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("service_launch"),
+    params: z.object({
+      service_name: nonEmptyStringSchema,
+      command: nonEmptyStringSchema,
+      args: z.array(z.string()).default([]),
+      port: nonNegativeIntegerSchema,
+      env: z.record(z.string(), z.string()).default({}),
+      cwd: z.string().optional(),
+    }),
+  }),
+  z.object({
+    id: nonEmptyStringSchema,
+    method: z.literal("service_stop"),
+    params: z.object({
+      service_id: nonEmptyStringSchema,
+    }),
+  }),
 ]);
 
 /** Purpose: Response envelope for node RPC requests. */
@@ -70,6 +204,21 @@ export const nodeEventSchema = z.discriminatedUnion("event", [
     event: z.literal("output"),
     data: z.object({
       text: z.string(),
+    }),
+  }),
+  z.object({
+    event: z.literal("pty_output"),
+    data: z.object({
+      pty_id: nonEmptyStringSchema,
+      text: z.string(),
+    }),
+  }),
+  z.object({
+    event: z.literal("pty_exit"),
+    data: z.object({
+      pty_id: nonEmptyStringSchema,
+      exit_code: z.number().int(),
+      signal: z.string().nullable().default(null),
     }),
   }),
   z.object({
@@ -100,6 +249,39 @@ export const nodeEventSchema = z.discriminatedUnion("event", [
   }),
 ]);
 
+/** Purpose: Transport frame used to send a node RPC request over a live socket. */
+export const nodeTransportRequestFrameSchema = z.object({
+  type: z.literal("request"),
+  payload: nodeRequestSchema,
+});
+
+/** Purpose: Transport frame used to send a node RPC response over a live socket. */
+export const nodeTransportResponseFrameSchema = z.object({
+  type: z.literal("response"),
+  payload: nodeResponseSchema,
+});
+
+/** Purpose: Transport frame used to stream node events for an in-flight request over a live socket. */
+export const nodeTransportEventFrameSchema = z.object({
+  type: z.literal("event"),
+  request_id: nonEmptyStringSchema,
+  payload: nodeEventSchema,
+});
+
+/** Purpose: Lightweight idle heartbeat frame emitted by connected nodes to refresh last-seen state. */
+export const nodeTransportHeartbeatFrameSchema = z.object({
+  type: z.literal("heartbeat"),
+  sent_at: nonEmptyStringSchema,
+});
+
+/** Purpose: Framed websocket message exchanged between the control plane and a connected node. */
+export const nodeTransportFrameSchema = z.discriminatedUnion("type", [
+  nodeTransportRequestFrameSchema,
+  nodeTransportResponseFrameSchema,
+  nodeTransportEventFrameSchema,
+  nodeTransportHeartbeatFrameSchema,
+]);
+
 /**
  * Purpose:
  * Normalized job-level event stream used internally by the control plane.
@@ -119,3 +301,4 @@ export type JobStreamEvent = z.infer<typeof jobStreamEventSchema>;
 export type NodeEvent = z.infer<typeof nodeEventSchema>;
 export type NodeRequest = z.infer<typeof nodeRequestSchema>;
 export type NodeResponse = z.infer<typeof nodeResponseSchema>;
+export type NodeTransportFrame = z.infer<typeof nodeTransportFrameSchema>;

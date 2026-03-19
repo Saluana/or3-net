@@ -1,5 +1,7 @@
 # OR3 Network v1 — Requirements
 
+> Migration note: OpenSandbox is now the selected sandbox-style provider for `or3-net`. Older `or3-sandbox` wording in this requirements doc is retained only where historical prerequisite context still matters.
+
 ## Introduction
 
 OR3 Network (`or3-net`) is a Bun/TypeScript control and communications layer that sits between client applications (starting with `or3-chat`) and the OR3 execution infrastructure (`or3-intern` + `or3-sandbox`). It provides:

@@ -23,14 +23,14 @@ import { agentSchema, previewDescriptorSchema, previewLaunchRequestSchema } from
 import { exchangeSessionRequestSchema } from "../contracts/platform/auth.ts";
 import { platformErrorCodes, type PlatformErrorCode } from "../contracts/platform/error-codes.ts";
 import type { AuditContext } from "../contracts/platform/types.ts";
-import { defaultErrorCodeForStatus, normalizeInternError, normalizeSandboxError } from "../contracts/platform/compat.ts";
+import { defaultErrorCodeForStatus, normalizeInternError, normalizeProviderRequestError } from "../contracts/platform/compat.ts";
 import type { WorkspacePrincipal } from "../auth/tokens.ts";
 import { consoleEntryPath, renderConsoleHtml } from "../console/index.ts";
 import type { LocalJobService } from "../execution/local-jobs.ts";
 import { createJobRequestSchema } from "../execution/local-jobs.ts";
-import type { SandboxNodeAdapter } from "../nodes/adapter-sandbox.ts";
+import type { NodeExecutionAdapter, ProviderRequestContext } from "../nodes/execution-adapter.ts";
 import type { NodeRegistryService } from "../nodes/index.ts";
-import { enrollNodeRequestSchema } from "../nodes/index.ts";
+import { enrollNodeRequestSchema, issueNodeBootstrapTokenRequestSchema, redeemNodeBootstrapTokenRequestSchema } from "../nodes/index.ts";
 import { PreviewStateError, type PreviewService } from "../previews/service.ts";
 import { errorResponse, resolveRequestId } from "./response-helpers.ts";
 import type { InMemoryWorkspaceFileService } from "../workspace/files.ts";
@@ -45,12 +45,17 @@ import {
   runtimeCopyOutInputSchema,
   runtimeErrorToApiEnvelope,
   runtimeExecutionRequestSchema,
+  runtimePtyCloseInputSchema,
+  runtimePtyStreamInputSchema,
+  runtimePtyOpenInputSchema,
+  runtimePtyResizeInputSchema,
+  runtimePtyWriteInputSchema,
   runtimeSessionCreateInputSchema,
   runtimeSessionStateSchema,
 } from "../contracts/runtime/index.ts";
 import { InternRequestError } from "../../sdk/intern/types.ts";
-import type { SandboxRequestContext } from "../../sdk/sandbox/types.ts";
-import { SandboxRequestError } from "../../sdk/sandbox/types.ts";
+import { isProviderRequestErrorLike as isOpenSandboxProviderRequestErrorLike } from "../../sdk/opensandbox/types.ts";
+import { isProviderRequestErrorLike as isCloudflareSandboxProviderRequestErrorLike } from "../../sdk/cloudflare-sandbox/types.ts";
 
 const DEFAULT_PUBLIC_BASE_URL = "http://localhost";
 const DEFAULT_TRUSTED_REQUEST_ORIGIN_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "or3.test"]);
@@ -59,15 +64,24 @@ const MAX_CREATE_JOB_BODY_BYTES = 256 * 1024;
 const MAX_API_KEY_BODY_BYTES = 32 * 1024;
 const MAX_AGENT_BODY_BYTES = 256 * 1024;
 const MAX_NODE_ENROLL_BODY_BYTES = 256 * 1024;
+const MAX_NODE_BOOTSTRAP_BODY_BYTES = 64 * 1024;
 const MAX_RUNTIME_SESSION_CREATE_BODY_BYTES = 128 * 1024;
 const MAX_RUNTIME_EXEC_BODY_BYTES = 256 * 1024;
 const MAX_RUNTIME_COPY_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_RUNTIME_PTY_BODY_BYTES = 64 * 1024;
 const MAX_PREVIEW_BODY_BYTES = 128 * 1024;
 const MAX_PREVIEW_LAUNCH_BODY_BYTES = 16 * 1024;
 const MAX_LIST_QUERY_LIMIT = 100;
 const MAX_RUNTIME_LOG_LIMIT = 500;
 const MAX_SESSION_EVENT_LIMIT = 200;
 const NO_STORE_CACHE_CONTROL = "no-store";
+
+const isKnownProviderRequestError = (error: unknown): error is {
+  readonly message: string;
+  readonly status: number;
+  readonly code?: string | undefined;
+  readonly retryAfterMs?: number | undefined;
+} => isOpenSandboxProviderRequestErrorLike(error) || isCloudflareSandboxProviderRequestErrorLike(error);
 
 const createApiKeyRequestSchema = z.object({
   name: z.string().trim().min(1),
@@ -91,7 +105,7 @@ interface AppServices {
   readonly agentService?: AgentService;
   readonly previewService?: PreviewService;
   readonly workspaceFileService?: InMemoryWorkspaceFileService;
-  readonly sandboxNodeAdapter?: SandboxNodeAdapter;
+  readonly nodeExecutionAdapter?: NodeExecutionAdapter;
 }
 
 type RouteGroups = Record<string, string | undefined>;
@@ -199,6 +213,21 @@ export class Or3NetApp {
       createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/exec", {
         POST: (request, groups) => this.handleExecInRuntimeSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
       }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/pty", {
+        POST: (request, groups) => this.handleOpenRuntimeSessionPty(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/pty/:ptyId/write", {
+        POST: (request, groups) => this.handleWriteRuntimeSessionPty(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId"), requireGroup(groups, "ptyId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/pty/:ptyId/resize", {
+        POST: (request, groups) => this.handleResizeRuntimeSessionPty(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId"), requireGroup(groups, "ptyId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/pty/:ptyId/close", {
+        POST: (request, groups) => this.handleCloseRuntimeSessionPty(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId"), requireGroup(groups, "ptyId")),
+      }),
+      createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/pty/:ptyId/stream", {
+        GET: (request, groups, url) => this.handleStreamRuntimeSessionPty(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId"), requireGroup(groups, "ptyId"), url),
+      }),
       createRoute("/v1/workspaces/:workspaceId/runtime-sessions/:sessionId/stop", {
         POST: (request, groups) => this.handleStopRuntimeSession(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "sessionId")),
       }),
@@ -245,11 +274,20 @@ export class Or3NetApp {
       createRoute("/v1/workspaces/:workspaceId/nodes", {
         GET: (request, groups) => this.handleListNodes(request, requireGroup(groups, "workspaceId")),
       }),
+      createRoute("/v1/workspaces/:workspaceId/nodes/:nodeId", {
+        GET: (request, groups) => this.handleGetNode(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "nodeId")),
+      }),
       createRoute("/v1/workspaces/:workspaceId/nodes/enroll", {
         POST: (request, groups) => this.handleEnrollNode(request, requireGroup(groups, "workspaceId")),
       }),
+      createRoute("/v1/workspaces/:workspaceId/nodes/bootstrap-tokens", {
+        POST: (request, groups) => this.handleIssueNodeBootstrapToken(request, requireGroup(groups, "workspaceId")),
+      }),
       createRoute("/v1/workspaces/:workspaceId/nodes/:nodeId/approve", {
         POST: (request, groups) => this.handleApproveNode(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "nodeId")),
+      }),
+      createRoute("/v1/nodes/bootstrap/redeem", {
+        POST: (request) => this.handleRedeemNodeBootstrapToken(request),
       }),
       createRoute("/v1/workspaces/:workspaceId/nodes/:nodeId/services", {
         GET: (request, groups) => this.handleListNodeServices(request, requireGroup(groups, "workspaceId"), requireGroup(groups, "nodeId")),
@@ -500,6 +538,45 @@ export class Or3NetApp {
     });
   }
 
+  private async handleOpenRuntimeSessionPty(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const payload = runtimePtyOpenInputSchema.omit({ session_ref: true }).parse(await readJsonBody(request, MAX_RUNTIME_PTY_BODY_BYTES));
+    const pty = await requireRuntimeSessionService(this.services.runtimeSessionService).openPty(principal.workspace_id, sessionId, payload);
+    return jsonResponse(201, { pty });
+  }
+
+  private async handleWriteRuntimeSessionPty(request: Request, workspaceId: string, sessionId: string, ptyId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const payload = runtimePtyWriteInputSchema.omit({ session_ref: true, pty_id: true }).parse(await readJsonBody(request, MAX_RUNTIME_PTY_BODY_BYTES));
+    const result = await requireRuntimeSessionService(this.services.runtimeSessionService).writePty(principal.workspace_id, sessionId, { ...payload, pty_id: ptyId });
+    return jsonResponse(200, { result });
+  }
+
+  private async handleResizeRuntimeSessionPty(request: Request, workspaceId: string, sessionId: string, ptyId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    const payload = runtimePtyResizeInputSchema.omit({ session_ref: true, pty_id: true }).parse(await readJsonBody(request, MAX_RUNTIME_PTY_BODY_BYTES));
+    const result = await requireRuntimeSessionService(this.services.runtimeSessionService).resizePty(principal.workspace_id, sessionId, { ...payload, pty_id: ptyId });
+    return jsonResponse(200, { result });
+  }
+
+  private async handleCloseRuntimeSessionPty(request: Request, workspaceId: string, sessionId: string, ptyId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
+    runtimePtyCloseInputSchema.omit({ session_ref: true, pty_id: true }).parse(await readOptionalJson(request, MAX_RUNTIME_PTY_BODY_BYTES));
+    const result = await requireRuntimeSessionService(this.services.runtimeSessionService).closePty(principal.workspace_id, sessionId, { pty_id: ptyId });
+    return jsonResponse(200, { result });
+  }
+
+  private async handleStreamRuntimeSessionPty(request: Request, workspaceId: string, sessionId: string, ptyId: string, url: URL): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:read");
+    const cursor = url.searchParams.get("cursor") ?? undefined;
+    runtimePtyStreamInputSchema.omit({ session_ref: true, pty_id: true }).parse({ ...(cursor === undefined ? {} : { cursor }) });
+    const stream = requireRuntimeSessionService(this.services.runtimeSessionService).streamPty(principal.workspace_id, sessionId, {
+      pty_id: ptyId,
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    return runtimePtyStreamResponse(stream);
+  }
+
   private async handleStopRuntimeSession(request: Request, workspaceId: string, sessionId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "runtime-sessions:write");
     const session = await requireRuntimeSessionService(this.services.runtimeSessionService).stopSession(principal.workspace_id, sessionId);
@@ -604,6 +681,24 @@ export class Or3NetApp {
     return jsonResponse(200, { items: registry.listNodes(principal.workspace_id) });
   }
 
+  private async handleGetNode(request: Request, workspaceId: string, nodeId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "nodes:read");
+    const registry = requireNodeRegistry(this.services.nodeRegistryService);
+    const nodes = registry.listNodes(principal.workspace_id);
+    const node = nodes.find((n) => n.manifest.node_id === nodeId);
+    if (node === undefined) {
+      throw new HttpError(404, `node ${nodeId} not found`);
+    }
+    return jsonResponse(200, {
+      node,
+      connection: {
+        last_seen_at: node.last_seen_at,
+        health_status: node.health_status,
+        last_error: node.last_error,
+      },
+    });
+  }
+
   private async handleEnrollNode(request: Request, workspaceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "nodes:write");
     const registry = requireNodeRegistry(this.services.nodeRegistryService);
@@ -619,20 +714,43 @@ export class Or3NetApp {
     return jsonResponse(200, approval);
   }
 
+  private async handleIssueNodeBootstrapToken(request: Request, workspaceId: string): Promise<Response> {
+    const principal = await this.requirePrincipal(request, workspaceId, "nodes:write");
+    const registry = requireNodeRegistry(this.services.nodeRegistryService);
+    const payload = issueNodeBootstrapTokenRequestSchema.parse(await readOptionalJson(request, MAX_NODE_BOOTSTRAP_BODY_BYTES));
+    const bootstrapToken = await registry.issueBootstrapToken(principal.workspace_id, payload);
+    return jsonResponse(201, bootstrapToken);
+  }
+
+  private async handleRedeemNodeBootstrapToken(request: Request): Promise<Response> {
+    const registry = requireNodeRegistry(this.services.nodeRegistryService);
+    const payload = redeemNodeBootstrapTokenRequestSchema.parse(await readJsonBody(request, MAX_NODE_BOOTSTRAP_BODY_BYTES));
+    let redemption;
+    try {
+      redemption = await registry.redeemBootstrapToken(payload);
+    } catch (error: unknown) {
+      if (error instanceof Error && isNodeBootstrapClientError(error)) {
+        throw new HttpError(400, error.message, { code: platformErrorCodes.inputInvalidParameter });
+      }
+      throw error;
+    }
+    return jsonResponse(200, redemption);
+  }
+
   private async handleListNodeServices(request: Request, workspaceId: string, nodeId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "services:read");
-    const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
+    const adapter = requireNodeExecutionAdapter(this.services.nodeExecutionAdapter);
     const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
     return jsonResponse(200, { items: adapter.listServices(node) });
   }
 
   private async handleLaunchNodeService(request: Request, workspaceId: string, nodeId: string, serviceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "services:write");
-    const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
+    const adapter = requireNodeExecutionAdapter(this.services.nodeExecutionAdapter);
     const previewService = requirePreviewService(this.services.previewService);
     const auditContext = createRequestAuditContext(request, principal);
     const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
-    const internalLaunch = await adapter.prepareServiceLaunch(principal.workspace_id, node, serviceId, toSandboxRequestContext(auditContext));
+    const internalLaunch = await adapter.prepareServiceLaunch(principal.workspace_id, node, serviceId, toProviderRequestContext(auditContext));
     const launch = previewService.mintLaunchCapability({
       origin: resolvePublicBaseUrl(this.services.publicBaseUrl, request.url),
       workspace_id: principal.workspace_id,
@@ -654,23 +772,23 @@ export class Or3NetApp {
     const auditContext = createRequestAuditContext(request, principal);
     const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
     const revokedLaunches = previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
-    const revokedTunnels = await requireSandboxAdapter(this.services.sandboxNodeAdapter).revokeServiceLaunch(
+    const revokedTunnels = await requireNodeExecutionAdapter(this.services.nodeExecutionAdapter).revokeServiceLaunch(
       principal.workspace_id,
       node,
       serviceId,
-      toSandboxRequestContext(auditContext),
+      toProviderRequestContext(auditContext),
     );
     return jsonResponse(200, { ok: true, revoked: revokedLaunches + revokedTunnels });
   }
 
   private async handleRestartNodeService(request: Request, workspaceId: string, nodeId: string, serviceId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "services:write");
-    const adapter = requireSandboxAdapter(this.services.sandboxNodeAdapter);
+    const adapter = requireNodeExecutionAdapter(this.services.nodeExecutionAdapter);
     const previewService = requirePreviewService(this.services.previewService);
     const auditContext = createRequestAuditContext(request, principal);
     const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
     previewService.revokeLaunchScope(buildServiceLaunchScope(principal.workspace_id, nodeId, serviceId));
-    const result = await adapter.restartService(principal.workspace_id, node, serviceId, toSandboxRequestContext(auditContext));
+    const result = await adapter.restartService(principal.workspace_id, node, serviceId, toProviderRequestContext(auditContext));
     return jsonResponse(200, result);
   }
 
@@ -918,9 +1036,9 @@ const requireWorkspaceFileService = (service: InMemoryWorkspaceFileService | und
   return service;
 };
 
-const requireSandboxAdapter = (service: SandboxNodeAdapter | undefined): SandboxNodeAdapter => {
+const requireNodeExecutionAdapter = (service: NodeExecutionAdapter | undefined): NodeExecutionAdapter => {
   if (service === undefined) {
-    throw new HttpError(503, "sandbox node adapter is not configured", { code: platformErrorCodes.serverUnavailable });
+    throw new HttpError(503, "node execution adapter is not configured", { code: platformErrorCodes.serverUnavailable });
   }
   return service;
 };
@@ -1025,8 +1143,8 @@ export const handleAppRequest = async (app: Or3NetApp, request: Request): Promis
     if (error instanceof RuntimeError) {
       return errorResponse(runtimeErrorToApiEnvelope(error, requestId));
     }
-    if (error instanceof SandboxRequestError) {
-      return errorResponse(normalizeSandboxError(error, requestId));
+    if (isKnownProviderRequestError(error)) {
+      return errorResponse(normalizeProviderRequestError(error, requestId));
     }
     if (error instanceof InternRequestError) {
       return errorResponse(normalizeInternError(error, requestId));
@@ -1073,6 +1191,11 @@ const withRequestId = (request: Request, requestId: string): Request => {
 const isNotFoundError = (error: Error): boolean => {
   const message = error.message.toLowerCase();
   return message.includes("was not found") || message.endsWith("not found");
+};
+
+const isNodeBootstrapClientError = (error: Error): boolean => {
+  const message = error.message.toLowerCase();
+  return message.includes("bootstrap token") || message.includes("different public key");
 };
 
 const previewStateErrorCode = (error: PreviewStateError): PlatformErrorCode => {
@@ -1133,6 +1256,35 @@ const runtimeExecutionStreamResponse = (handle: Awaited<ReturnType<RuntimeSessio
   });
 };
 
+const runtimePtyStreamResponse = (stream: AsyncIterable<{ event: string; data: Record<string, unknown> }>): Response => {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      void (async () => {
+        try {
+          for await (const event of stream) {
+            controller.enqueue(encoder.encode(`event: ${event.event}\ndata: ${JSON.stringify(event)}\n\n`));
+          }
+          controller.close();
+        } catch (error: unknown) {
+          const payload = error instanceof RuntimeError ? error.toEnvelope() : { message: error instanceof Error ? error.message : "PTY stream failed" };
+          controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify(payload)}\n\n`));
+          controller.close();
+        }
+      })();
+    },
+  });
+
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+    },
+  });
+};
+
 const createRoute = (pathname: string, methods: Record<string, RouteHandler>): RouteEntry => ({
   pattern: new URLPattern({ pathname }),
   methods: new Map(Object.entries(methods)),
@@ -1162,7 +1314,7 @@ const createRequestAuditContext = (request: Request, principal: WorkspacePrincip
   subject: principal.subject,
 });
 
-const toSandboxRequestContext = (auditContext: AuditContext): SandboxRequestContext => ({
+const toProviderRequestContext = (auditContext: AuditContext): ProviderRequestContext => ({
   requestId: auditContext.request_id,
   workspaceId: auditContext.workspace_id,
 });

@@ -1,5 +1,7 @@
 # OR3 Network v1 — Technical Design
 
+> Migration note: OpenSandbox has replaced `or3-sandbox` as the first-party sandbox-style backend in the current codebase. Legacy mentions below remain as historical context unless explicitly updated.
+
 > **Cross-ref:** A typed runtime adapter contract wrapping the node protocol and transport-resolution layers is planned in `planning/runtime-contract/`. It adds `RuntimeAdapter`, `RuntimeRegistry`, runtime session management, and public runtime catalog/session APIs above the existing node RPC and transport infrastructure described below.
 
 ## Overview

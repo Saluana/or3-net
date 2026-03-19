@@ -68,6 +68,87 @@ export const runtimeGetLogsInputSchema = z.object({
   limit: nonNegativeIntegerSchema.optional(),
 });
 
+/** Purpose: Request payload for opening a PTY in a runtime session. */
+export const runtimePtyOpenInputSchema = z.object({
+  session_ref: nonEmptyStringSchema,
+  cols: nonNegativeIntegerSchema.optional(),
+  rows: nonNegativeIntegerSchema.optional(),
+  command: nonEmptyStringSchema.optional(),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string(), z.string()).default({}),
+  cwd: nonEmptyStringSchema.optional(),
+});
+
+/** Purpose: Result returned after a runtime adapter opens a PTY. */
+export const runtimePtyOpenResultSchema = z.object({
+  pty_id: nonEmptyStringSchema,
+  session_ref: nonEmptyStringSchema,
+});
+
+/** Purpose: Request payload for sending input into a runtime PTY. */
+export const runtimePtyWriteInputSchema = z.object({
+  session_ref: nonEmptyStringSchema,
+  pty_id: nonEmptyStringSchema,
+  data: z.string(),
+});
+
+/** Purpose: Result returned after writing to a runtime PTY. */
+export const runtimePtyWriteResultSchema = z.object({
+  accepted: z.literal(true),
+});
+
+/** Purpose: Request payload for resizing a runtime PTY. */
+export const runtimePtyResizeInputSchema = z.object({
+  session_ref: nonEmptyStringSchema,
+  pty_id: nonEmptyStringSchema,
+  cols: nonNegativeIntegerSchema,
+  rows: nonNegativeIntegerSchema,
+});
+
+/** Purpose: Result returned after resizing a runtime PTY. */
+export const runtimePtyResizeResultSchema = z.object({
+  resized: z.literal(true),
+});
+
+/** Purpose: Request payload for closing a runtime PTY. */
+export const runtimePtyCloseInputSchema = z.object({
+  session_ref: nonEmptyStringSchema,
+  pty_id: nonEmptyStringSchema,
+});
+
+/** Purpose: Result returned after closing a runtime PTY. */
+export const runtimePtyCloseResultSchema = z.object({
+  closed: z.literal(true),
+});
+
+/** Purpose: Request payload for streaming runtime PTY events. */
+export const runtimePtyStreamInputSchema = z.object({
+  session_ref: nonEmptyStringSchema,
+  pty_id: nonEmptyStringSchema,
+  cursor: z.string().optional(),
+});
+
+/** Purpose: A PTY event emitted by runtime adapters. */
+export const runtimePtyEventSchema = z.discriminatedUnion("event", [
+  z.object({
+    event: z.literal("pty.output"),
+    data: z.object({
+      pty_id: nonEmptyStringSchema,
+      text: z.string(),
+      created_at: isoDateTimeSchema.optional(),
+    }),
+  }),
+  z.object({
+    event: z.literal("pty.exit"),
+    data: z.object({
+      pty_id: nonEmptyStringSchema,
+      exit_code: z.number().int(),
+      signal: z.string().nullable().default(null),
+      created_at: isoDateTimeSchema.optional(),
+    }),
+  }),
+]);
+
 /** Purpose: Single runtime log chunk returned from log APIs or streams. */
 export const runtimeLogChunkSchema = z.object({
   stream: z.enum(["stdout", "stderr", "system"]).default("stdout"),
@@ -192,6 +273,16 @@ export type RuntimeCopyOutInput = z.infer<typeof runtimeCopyOutInputSchema>;
 export type RuntimeFileTransferResult = z.infer<typeof runtimeFileTransferResultSchema>;
 export type RuntimeGetLogsInput = z.infer<typeof runtimeGetLogsInputSchema>;
 export type RuntimeLogsResult = z.infer<typeof runtimeLogsResultSchema>;
+export type RuntimePtyOpenInput = z.infer<typeof runtimePtyOpenInputSchema>;
+export type RuntimePtyOpenResult = z.infer<typeof runtimePtyOpenResultSchema>;
+export type RuntimePtyWriteInput = z.infer<typeof runtimePtyWriteInputSchema>;
+export type RuntimePtyWriteResult = z.infer<typeof runtimePtyWriteResultSchema>;
+export type RuntimePtyResizeInput = z.infer<typeof runtimePtyResizeInputSchema>;
+export type RuntimePtyResizeResult = z.infer<typeof runtimePtyResizeResultSchema>;
+export type RuntimePtyCloseInput = z.infer<typeof runtimePtyCloseInputSchema>;
+export type RuntimePtyCloseResult = z.infer<typeof runtimePtyCloseResultSchema>;
+export type RuntimePtyStreamInput = z.infer<typeof runtimePtyStreamInputSchema>;
+export type RuntimePtyEvent = z.infer<typeof runtimePtyEventSchema>;
 export type RuntimeFileBrowseInput = z.infer<typeof runtimeFileBrowseInputSchema>;
 export type RuntimeFileEntry = z.infer<typeof runtimeFileEntrySchema>;
 export type RuntimeFileReadInput = z.infer<typeof runtimeFileReadInputSchema>;
@@ -246,6 +337,11 @@ export interface RuntimeAdapter {
     session_ref: string;
     request: RuntimeExecutionRequest;
   }): Promise<RuntimeExecutionHandle>;
+  openPty?(input: { workspace_id: string } & RuntimePtyOpenInput): Promise<RuntimePtyOpenResult>;
+  writePty?(input: { workspace_id: string } & RuntimePtyWriteInput): Promise<RuntimePtyWriteResult>;
+  resizePty?(input: { workspace_id: string } & RuntimePtyResizeInput): Promise<RuntimePtyResizeResult>;
+  closePty?(input: { workspace_id: string } & RuntimePtyCloseInput): Promise<RuntimePtyCloseResult>;
+  streamPty?(input: { workspace_id: string } & RuntimePtyStreamInput): Promise<AsyncIterable<RuntimePtyEvent>>;
   copyIn(input: { workspace_id: string } & RuntimeCopyInInput): Promise<RuntimeFileTransferResult>;
   copyOut(input: { workspace_id: string } & RuntimeCopyOutInput): Promise<RuntimeFileTransferResult>;
   getLogs(input: { workspace_id: string } & RuntimeGetLogsInput): Promise<RuntimeLogsResult>;

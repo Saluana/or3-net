@@ -5,13 +5,18 @@
  * Shared node transport contracts and error-normalization helpers used by the
  * remote execution path.
  */
-import type { JobError, JobResult, JobStreamEvent, NodeEvent, NodeResponse, TaskPackage } from "../contracts/index.ts";
+import type { JobError, JobResult, JobStreamEvent, NodeEvent, NodeRequest, NodeResponse, TaskPackage } from "../contracts/index.ts";
 
 /** Purpose: Transport interface implemented by remote node RPC connectors. */
 export interface NodeRpcTransport {
   readonly kind: "https" | "outbound-wss";
   startExecution(taskPackage: TaskPackage, context: NodeExecutionContext): Promise<NodeExecutionHandle>;
   heartbeat?(context: NodeExecutionContext): Promise<void>;
+  sendRequest?(request: NodeRequest, context: NodeExecutionContext): Promise<NodeResponse>;
+  sendStreamingRequest?(request: NodeRequest, context: NodeExecutionContext): Promise<{
+    response: Promise<NodeResponse>;
+    stream: AsyncIterable<NodeEvent>;
+  }>;
 }
 
 /** Purpose: Time-bounded credential material used for node transport auth. */
@@ -100,6 +105,9 @@ export const normalizeNodeEvent = (event: NodeEvent): JobStreamEvent | null => {
   switch (event.event) {
     case "output":
       return { event: "text.delta", data: { text: event.data.text } };
+    case "pty_output":
+    case "pty_exit":
+      return null;
     case "tool_call":
       return { event: "tool.call", data: { name: event.data.name } };
     case "tool_result":
@@ -110,6 +118,7 @@ export const normalizeNodeEvent = (event: NodeEvent): JobStreamEvent | null => {
     case "error":
       return null;
   }
+  return null;
 };
 
 /** Purpose: Extracts the terminal result from a sequence of node events. */

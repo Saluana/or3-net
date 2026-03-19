@@ -54,6 +54,7 @@ import type {
   RuntimeArtifactRow,
   RuntimeSessionEventRow,
   RuntimeSessionRow,
+  NodeBootstrapTokenRow,
   StoredAgent,
   StoredApiKey,
   StoredIdempotencyRecord,
@@ -62,6 +63,7 @@ import type {
   StoredLease,
   StoredNetworkSession,
   StoredNode,
+  StoredNodeBootstrapToken,
   StoredNodeCredential,
   StoredPreview,
   StoredRuntimeArtifact,
@@ -285,6 +287,18 @@ export const parseNodeCredentialRow = (row: NodeCredentialRow): StoredNodeCreden
   issued_at: toIsoDateTime(row.issued_at),
   expires_at: toIsoDateTime(row.expires_at),
   rotated_at: row.rotated_at === null ? null : toIsoDateTime(row.rotated_at),
+});
+
+/** Purpose: Converts a raw node-bootstrap-token row into the stored token view. */
+export const parseNodeBootstrapTokenRow = (row: NodeBootstrapTokenRow): StoredNodeBootstrapToken => ({
+  bootstrap_token_id: row.id,
+  workspace_id: row.workspace_id,
+  token_hash: row.token_hash,
+  token_ciphertext: row.token_ciphertext,
+  node_id: row.node_id,
+  created_at: toIsoDateTime(row.created_at),
+  expires_at: toIsoDateTime(row.expires_at),
+  revoked_at: row.revoked_at === null ? null : toIsoDateTime(row.revoked_at),
 });
 
 /** Purpose: Converts a raw idempotency-record row into the stored replay view. */

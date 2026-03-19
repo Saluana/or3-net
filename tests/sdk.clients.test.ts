@@ -1,10 +1,21 @@
-import { describe, expect, test } from "bun:test";
+/* eslint-disable @typescript-eslint/array-type, @typescript-eslint/require-await, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-return */
+import { afterEach, describe, expect, test } from "bun:test";
+
+import { Sandbox, SandboxManager } from "@alibaba-group/opensandbox";
 
 import { HttpInternClient } from "../sdk/intern/client.ts";
-import { HttpSandboxClient } from "../sdk/sandbox/client.ts";
 import { isInternSubagentsUnavailable } from "../sdk/intern/index.ts";
+import { resolveOpenSandboxClientConfig, SdkOpenSandboxClient } from "../sdk/opensandbox/client.ts";
 
-describe("HTTP SDK clients", () => {
+describe("SDK clients", () => {
+  const restoreCallbacks: Array<() => void> = [];
+
+  afterEach(() => {
+    while (restoreCallbacks.length > 0) {
+      restoreCallbacks.pop()?.();
+    }
+  });
+
   test("intern client sends service auth headers and parses multi-line SSE payloads", async () => {
     const requests: Request[] = [];
     const fetchImpl = ((input: FetchInput, init?: RequestInit) => {
@@ -136,55 +147,132 @@ describe("HTTP SDK clients", () => {
     expect(collect(client.streamJob("job_1"))).rejects.toThrow("Intern stream response missing body");
   });
 
-  test("sandbox client sends bearer auth and flushes the final SSE frame at EOF", async () => {
-    const requests: Request[] = [];
-    const fetchImpl = ((input: FetchInput, init?: RequestInit) => {
-      requests.push(toRequest(input, init));
-      return Promise.resolve(new Response(
-        chunkedStream([
-          "event: stdout\ndata: hello\n\n",
-          "event: result\ndata: {\"exit_code\":0}",
-        ]),
-        {
-          status: 200,
-          headers: { "Content-Type": "text/event-stream" },
-        },
-      ));
-    }) as unknown as typeof fetch;
-    const client = new HttpSandboxClient({
-      baseUrl: "https://sandbox.test",
-      token: "sandbox-token",
-      fetch: fetchImpl,
+  test("OpenSandbox wrapper maps lifecycle and connection operations onto the SDK", async () => {
+    const runCalls: string[] = [];
+    const endpointCalls: number[] = [];
+    const writes: Array<{ path: string; data: string }> = [];
+    const directories: string[] = [];
+    const pauseCalls: string[] = [];
+    const killCalls: string[] = [];
+    const renewCalls: number[] = [];
+
+    patchStatic(Sandbox, "create", async () => createFakeSandbox("osbx_created", {
+      onRun: (command) => runCalls.push(command),
+      onEndpoint: (port) => endpointCalls.push(port),
+      onWrite: (entries) => writes.push(...entries),
+      onCreateDirectories: (paths) => directories.push(...paths.map((entry) => entry.path)),
+      onPause: (id) => pauseCalls.push(id),
+      onKill: (id) => killCalls.push(id),
+      onRenew: (timeout) => renewCalls.push(timeout),
+    }), restoreCallbacks);
+    patchStatic(Sandbox, "connect", async ({ sandboxId }: { sandboxId: string }) => createFakeSandbox(sandboxId, {
+      onRun: (command) => runCalls.push(command),
+      onEndpoint: (port) => endpointCalls.push(port),
+      onWrite: (entries) => writes.push(...entries),
+      onCreateDirectories: (paths) => directories.push(...paths.map((entry) => entry.path)),
+      onPause: (id) => pauseCalls.push(id),
+      onKill: (id) => killCalls.push(id),
+      onRenew: (timeout) => renewCalls.push(timeout),
+    }), restoreCallbacks);
+    patchStatic(Sandbox, "resume", async ({ sandboxId }: { sandboxId: string }) => createFakeSandbox(sandboxId, {
+      onPause: (id) => pauseCalls.push(id),
+      onKill: (id) => killCalls.push(id),
+      onRenew: (timeout) => renewCalls.push(timeout),
+    }), restoreCallbacks);
+    patchStatic(SandboxManager, "create", (() => ({
+      listSandboxInfos: async () => ({
+        items: [createSdkSandboxInfo("osbx_created", "running", { or3_workspace_id: "ws_test" })],
+      }),
+      getSandboxInfo: async (id: string) => createSdkSandboxInfo(id, "paused"),
+      pauseSandbox: async (id: string) => {
+        pauseCalls.push(id);
+      },
+      killSandbox: async (id: string) => {
+        killCalls.push(id);
+      },
+      close: async () => undefined,
+    })) as any, restoreCallbacks);
+
+    const client = new SdkOpenSandboxClient({
+      apiKey: "api-key",
+      domain: "sandbox.test",
+      defaultImage: "ubuntu",
+      defaultTimeoutSeconds: 120,
     });
 
-    const events = await collect(
-      client.execStream("sbx_1", { command: ["echo", "hello"] }, { requestId: "req_sandbox", workspaceId: "ws_test" }),
-    );
+    const connection = await client.create({ workspace_id: "ws_test", metadata: { or3: "yes" } });
+    const streamed: string[] = [];
+    const resultEvents: Record<string, unknown>[] = [];
+    const result = await connection.runCommand("echo hello", {}, {
+      onStdout: ({ text }) => {
+        streamed.push(text);
+      },
+      onResult: (payload) => {
+        resultEvents.push(payload);
+      },
+    });
+    await connection.writeFiles([{ path: "/tmp/demo.txt", data: "hello" }]);
+    await connection.createDirectories([{ path: "/tmp/demo" }]);
+    const content = await connection.readFile("/tmp/demo.txt");
+    const endpoint = await connection.getEndpoint(3000);
+    await connection.pause();
+    await connection.resume();
+    await connection.renew(90);
+    await connection.kill();
+    await connection.close();
 
-    expect(events).toEqual([
-      { event: "stdout", data: { chunk: "hello" } },
-      { event: "result", data: { exit_code: 0 } },
+    expect(streamed).toEqual(["echo hello"]);
+    expect(resultEvents).toEqual([{ status: "completed" }]);
+    expect(result).toMatchObject({ exit_code: 0, stdout: "echo hello", stderr: "" });
+    expect(content).toBe("hello");
+    expect(endpoint).toEqual({ endpoint: "launch.local/osbx_created/3000", url: "https://launch.local/osbx_created/3000" });
+    expect(runCalls).toEqual(["echo hello"]);
+    expect(writes).toEqual([{ path: "/tmp/demo.txt", data: "hello" }]);
+    expect(directories).toEqual(["/tmp/demo"]);
+    expect(endpointCalls).toEqual([3000]);
+
+    expect(await client.list({ page_size: 10 })).toEqual([
+      {
+        id: "osbx_created",
+        status: "running",
+        created_at: "2024-01-01T00:00:00.000Z",
+        expires_at: null,
+        metadata: { or3_workspace_id: "ws_test" },
+      },
     ]);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.headers.get("Authorization")).toBe("Bearer sandbox-token");
-    expect(requests[0]?.headers.get("Accept")).toBe("text/event-stream");
-    expect(requests[0]?.headers.get("Content-Type")).toBe("application/json");
-    expect(requests[0]?.headers.get("X-Request-Id")).toBe("req_sandbox");
-    expect(requests[0]?.headers.get("X-Workspace-Id")).toBe("ws_test");
-    expect(requests[0]?.url).toContain("/v1/sandboxes/sbx_1/exec?stream=1");
+    expect(await client.get("osbx_created")).toEqual({
+      id: "osbx_created",
+      status: "paused",
+      created_at: "2024-01-01T00:00:00.000Z",
+      expires_at: null,
+    });
+    await client.pause("osbx_created");
+    await client.resume("osbx_created");
+    await client.renew("osbx_created", 120);
+    await client.kill("osbx_created");
+
+    expect(pauseCalls).toContain("osbx_created");
+    expect(killCalls).toContain("osbx_created");
+    expect(renewCalls).toContain(90);
+    expect(renewCalls).toContain(120);
   });
 
   test("SDK clients surface parsed backend request errors and retry metadata", async () => {
-    const sandboxClient = new HttpSandboxClient({
-      baseUrl: "https://sandbox.test",
-      token: "sandbox-token",
-      fetch: (() =>
-        Promise.resolve(
-          new Response(JSON.stringify({ error: "rate limited", code: "rate_limited", status: 429 }), {
-            status: 429,
-            headers: { "Content-Type": "application/json", "Retry-After": "3" },
-          }),
-        )) as unknown as typeof fetch,
+    patchStatic(Sandbox, "create", async () => {
+      const error = new Error("request failed") as Error & {
+        status?: number;
+        retryAfter?: number;
+        error?: { message: string; code: string; status: number };
+      };
+      error.status = 429;
+      error.retryAfter = 3;
+      error.error = { message: "rate limited", code: "rate_limited", status: 429 };
+      throw error;
+    }, restoreCallbacks);
+
+    const sandboxClient = new SdkOpenSandboxClient({
+      apiKey: "api-key",
+      domain: "sandbox.test",
     });
     const internClient = new HttpInternClient({
       baseUrl: "https://intern.test",
@@ -200,14 +288,15 @@ describe("HTTP SDK clients", () => {
 
     let sandboxError: unknown;
     try {
-      await sandboxClient.runtimeHealth();
+      await sandboxClient.create({ workspace_id: "ws_test" });
     } catch (error: unknown) {
       sandboxError = error;
     }
     expect(sandboxError).toMatchObject({
-      name: "SandboxRequestError",
+      name: "OpenSandboxRequestError",
       message: "rate limited",
       status: 429,
+      code: "rate_limited",
       retryAfterMs: 3000,
     });
 
@@ -225,87 +314,64 @@ describe("HTTP SDK clients", () => {
     });
   });
 
-  test("sandbox client exposes file, runtime, tunnel, and signed-url helper methods", async () => {
-    const requests: Request[] = [];
-    const fetchImpl = ((input: FetchInput, init?: RequestInit) => {
-      const request = toRequest(input, init);
-      requests.push(request);
-      const url = new URL(request.url);
-      if (url.pathname.endsWith("/files/workspace.txt") && request.method === "GET") {
-        return Promise.resolve(new Response(JSON.stringify({ path: "/workspace.txt", content: "hello", encoding: "utf-8" }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.pathname.endsWith("/workspace-import") && request.method === "POST") {
-        return Promise.resolve(new Response(null, { status: 204 }));
-      }
-      if (url.pathname.endsWith("/workspace-export") && request.method === "POST") {
-        return Promise.resolve(new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "Content-Type": "application/gzip" } }));
-      }
-      if (url.pathname.endsWith("/files/workspace") && request.method === "POST") {
-        return Promise.resolve(new Response(null, { status: 204 }));
-      }
-      if (url.pathname === "/v1/runtime/health") {
-        return Promise.resolve(new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.pathname === "/v1/runtime/info") {
-        return Promise.resolve(new Response(JSON.stringify({ runtime: "docker" }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.pathname === "/v1/runtime/capacity") {
-        return Promise.resolve(new Response(JSON.stringify({ total: 2, available: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.pathname === "/v1/quotas/me") {
-        return Promise.resolve(new Response(JSON.stringify({ cpu_seconds_remaining: 10 }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.pathname === "/metrics") {
-        return Promise.resolve(new Response("sandbox_up 1\n", { status: 200, headers: { "Content-Type": "text/plain" } }));
-      }
-      if (url.pathname.endsWith("/tunnels") && request.method === "POST") {
-        return Promise.resolve(new Response(JSON.stringify({ id: "tun_1", sandbox_id: "sbx_1", target_port: 3000, endpoint: "https://sandbox.test/v1/tunnels/tun_1/proxy", auth_mode: "token", visibility: "private" }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.pathname.endsWith("/tunnels/tun_1") && request.method === "DELETE") {
-        return Promise.resolve(new Response(null, { status: 204 }));
-      }
-      if (url.pathname.endsWith("/tunnels/tun_1/signed-url") && request.method === "POST") {
-        return Promise.resolve(new Response(JSON.stringify({ url: "https://sandbox.test/v1/tunnels/tun_1/proxy?or3_sig=abc", expires_at: "2099-01-01T00:00:00.000Z" }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
-    }) as unknown as typeof fetch;
+  test("OpenSandbox wrapper preserves provider exit codes from result payloads", async () => {
+    patchStatic(Sandbox, "create", async () => ({
+      id: "osbx_exit",
+      commands: {
+        run: async () => ({
+          logs: { stdout: [{ text: "boom" }], stderr: [{ text: "bad" }] },
+          result: [{ status: "failed", exit_code: 7 }],
+        }),
+      },
+      files: {
+        writeFiles: async () => undefined,
+        readFile: async () => "",
+        createDirectories: async () => undefined,
+      },
+      getEndpoint: async () => ({ endpoint: "launch.local/osbx_exit/3000" }),
+      getEndpointUrl: async () => "https://launch.local/osbx_exit/3000",
+      pause: async () => undefined,
+      resume: async () => createFakeSandbox("osbx_exit"),
+      renew: async () => undefined,
+      kill: async () => undefined,
+      close: async () => undefined,
+    }) as unknown as Sandbox, restoreCallbacks);
 
-    const client = new HttpSandboxClient({ baseUrl: "https://sandbox.test", token: "sandbox-token", fetch: fetchImpl });
-    const file = await client.readFile("sbx_1", "/workspace.txt");
-    expect(file.content).toBe("hello");
-    await client.mkdir("sbx_1", "/workspace");
-    await client.importWorkspaceArchive("sbx_1", new Uint8Array([7, 8, 9]));
-    expect([...await client.exportWorkspaceArchive("sbx_1", { paths: ["README.md"] })]).toEqual([1, 2, 3]);
-    const tunnel = await client.createTunnel("sbx_1", { target_port: 3000, protocol: "http", auth_mode: "token", visibility: "private" });
-    const signedUrl = await client.createSignedTunnelUrl("tun_1", { path: "/", ttl_seconds: 300 });
-    expect(await client.runtimeHealth()).toEqual({ status: "ok" });
-    expect(await client.runtimeInfo()).toEqual({ runtime: "docker" });
-    expect(await client.runtimeCapacity()).toEqual({ total: 2, available: 1 });
-    expect(await client.getQuota()).toEqual({ cpu_seconds_remaining: 10 });
-    expect(await client.getMetrics()).toBe("sandbox_up 1\n");
-    await client.revokeTunnel("tun_1");
-
-    expect(tunnel).toEqual({ id: "tun_1", sandbox_id: "sbx_1", target_port: 3000, endpoint: "https://sandbox.test/v1/tunnels/tun_1/proxy", auth_mode: "token", visibility: "private" });
-    expect(signedUrl).toEqual({ url: "https://sandbox.test/v1/tunnels/tun_1/proxy?or3_sig=abc", expires_at: "2099-01-01T00:00:00.000Z" });
-    expect(requests.some((request) => request.url.includes("/v1/sandboxes/sbx_1/files/workspace.txt") && request.method === "GET")).toBeTrue();
-    expect(requests.some((request) => request.url.includes("/v1/sandboxes/sbx_1/workspace-import") && request.method === "POST")).toBeTrue();
-    expect(requests.some((request) => request.url.includes("/v1/sandboxes/sbx_1/workspace-export") && request.method === "POST")).toBeTrue();
-    expect(requests.some((request) => request.url.includes("/v1/sandboxes/sbx_1/tunnels") && request.method === "POST")).toBeTrue();
-    expect(requests.some((request) => request.url.includes("/v1/tunnels/tun_1/signed-url") && request.method === "POST")).toBeTrue();
-    expect(requests.some((request) => request.url.includes("/v1/runtime/health"))).toBeTrue();
-    expect(requests.some((request) => request.url.includes("/metrics"))).toBeTrue();
-  });
-
-  test("sandbox client rejects stream responses without a body", () => {
-    const client = new HttpSandboxClient({
-      baseUrl: "https://sandbox.test",
-      token: "sandbox-token",
-      fetch: (() => Promise.resolve(new Response(null, { status: 200 }))) as unknown as typeof fetch,
+    const client = new SdkOpenSandboxClient({
+      apiKey: "api-key",
+      domain: "sandbox.test",
     });
 
-    expect(collect(client.execStream("sbx_1", { command: ["pwd"] }))).rejects.toThrow(
-      "Sandbox stream response missing body",
-    );
+    const connection = await client.create({ workspace_id: "ws_test" });
+    const result = await connection.runCommand("false");
+
+    expect(result.exit_code).toBe(7);
+    expect(result.stdout).toBe("boom");
+    expect(result.stderr).toBe("bad");
+  });
+
+  test("resolveOpenSandboxClientConfig normalizes env aliases and optional fields", () => {
+    expect(resolveOpenSandboxClientConfig({})).toBeNull();
+
+    expect(resolveOpenSandboxClientConfig({
+      OR3_NET_OPENSANDBOX_API_KEY: "api-key",
+      OR3_NET_OPENSANDBOX_BASE_URL: "sandbox.test",
+      OR3_NET_OPENSANDBOX_PROTOCOL: "https",
+      OR3_NET_OPENSANDBOX_REQUEST_TIMEOUT_SECONDS: "12",
+      OR3_NET_OPENSANDBOX_READY_TIMEOUT_SECONDS: "45",
+      OR3_NET_OPENSANDBOX_DEFAULT_TIMEOUT_SECONDS: "90",
+      OR3_NET_OPENSANDBOX_DEFAULT_IMAGE: "ubuntu",
+      OR3_NET_OPENSANDBOX_USE_SERVER_PROXY: "true",
+    })).toEqual({
+      apiKey: "api-key",
+      domain: "sandbox.test",
+      protocol: "https",
+      requestTimeoutSeconds: 12,
+      defaultReadyTimeoutSeconds: 45,
+      defaultTimeoutSeconds: 90,
+      defaultImage: "ubuntu",
+      useServerProxy: true,
+    });
   });
 
   test("intern client uses documented stream and abort endpoints", async () => {
@@ -362,6 +428,90 @@ describe("HTTP SDK clients", () => {
 
     expect(isInternSubagentsUnavailable(subagentError)).toBeTrue();
   });
+});
+
+const createFakeSandbox = (
+  sandboxId: string,
+  hooks: {
+    onRun?: (command: string) => void;
+    onEndpoint?: (port: number) => void;
+    onWrite?: (entries: Array<{ path: string; data: string }>) => void;
+    onCreateDirectories?: (paths: Array<{ path: string }>) => void;
+    onPause?: (sandboxId: string) => void;
+    onKill?: (sandboxId: string) => void;
+    onRenew?: (timeout: number) => void;
+  } = {},
+): Sandbox => {
+  const files = new Map<string, string>();
+  return {
+    id: sandboxId,
+    commands: {
+      run: async (
+        command: string,
+        _options: unknown,
+        handlers: { onStdout?: (message: { text: string }) => void; onResult?: (payload: Record<string, unknown>) => void },
+      ) => {
+        hooks.onRun?.(command);
+        handlers.onStdout?.({ text: command });
+        handlers.onResult?.({ status: "completed" });
+        return {
+          logs: { stdout: [{ text: command }], stderr: [] },
+          result: [{ status: "completed", exit_code: 0 }],
+        };
+      },
+    },
+    files: {
+      writeFiles: async (entries: Array<{ path: string; data: string }>) => {
+        hooks.onWrite?.(entries);
+        for (const entry of entries) {
+          files.set(entry.path, entry.data);
+        }
+      },
+      readFile: async (path: string) => files.get(path) ?? "",
+      createDirectories: async (paths: Array<{ path: string }>) => {
+        hooks.onCreateDirectories?.(paths);
+      },
+    },
+    getEndpoint: async (port: number) => {
+      hooks.onEndpoint?.(port);
+      return { endpoint: `launch.local/${sandboxId}/${String(port)}` };
+    },
+    getEndpointUrl: async (port: number) => `https://launch.local/${sandboxId}/${String(port)}`,
+    pause: async () => {
+      hooks.onPause?.(sandboxId);
+    },
+    resume: async () => createFakeSandbox(sandboxId, hooks),
+    renew: async (timeout: number) => {
+      hooks.onRenew?.(timeout);
+    },
+    kill: async () => {
+      hooks.onKill?.(sandboxId);
+    },
+    close: async () => undefined,
+  } as unknown as Sandbox;
+};
+
+const patchStatic = <T extends object, K extends keyof T>(
+  target: T,
+  key: K,
+  replacement: T[K],
+  restoreCallbacks: Array<() => void>,
+): void => {
+  const original = target[key];
+  target[key] = replacement;
+  restoreCallbacks.push(() => {
+    target[key] = original;
+  });
+};
+
+const createSdkSandboxInfo = (id: string, state: string, metadata?: Record<string, unknown>): any => ({
+  id,
+  image: "ubuntu",
+  entrypoint: ["tail", "-f", "/dev/null"],
+  createdAt: new Date("2024-01-01T00:00:00.000Z"),
+  expiresAt: null,
+  status: { state },
+  ...(metadata === undefined ? {} : { metadata }),
 });
 
 const collect = async <T>(iterable: AsyncIterable<T>): Promise<T[]> => {

@@ -19,17 +19,22 @@ import { Database } from "bun:sqlite";
 
 import { jobErrorSchema, workspaceSchema } from "../contracts/index.ts";
 import { serializeWithSchema } from "../contracts/shared.ts";
+import { hashApiKey } from "../lib/crypto.ts";
 import { fromIsoDateTime } from "../lib/time.ts";
 import type {
   ApiKeyRow,
   IdempotencyRecordRow,
+  NodeCredentialRow,
+  NodeBootstrapTokenRow,
   StoredApiKey,
   StoredIdempotencyRecord,
+  StoredNodeCredential,
+  StoredNodeBootstrapToken,
   StoredWorkspace,
   WorkspaceRow,
 } from "./schema.ts";
 import { schemaMigrations } from "./schema.ts";
-import { parseApiKeyRow, parseIdempotencyRecordRow, parseWorkspaceRow } from "./codecs.ts";
+import { parseApiKeyRow, parseIdempotencyRecordRow, parseNodeBootstrapTokenRow, parseNodeCredentialRow, parseWorkspaceRow } from "./codecs.ts";
 import { WorkspaceStore } from "./workspace-store.ts";
 import {
   activeLeaseState,
@@ -215,6 +220,33 @@ export class ControlPlaneDatabase {
       .query<ApiKeyRow, [string]>("SELECT * FROM api_keys WHERE workspace_id = ? ORDER BY created_at DESC")
       .all(workspaceId)
       .map(parseApiKeyRow);
+  }
+
+  /** Purpose: Looks up an active node bootstrap token by its stored hash. */
+  public findActiveNodeBootstrapTokenByHash(tokenHash: string, nowMs = Date.now()): StoredNodeBootstrapToken | null {
+    const row = this.sqlite
+      .query<NodeBootstrapTokenRow, [string, number]>(
+        "SELECT * FROM node_bootstrap_tokens WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ? LIMIT 1",
+      )
+      .get(tokenHash, nowMs);
+
+    return row === null ? null : parseNodeBootstrapTokenRow(row);
+  }
+
+  /** Purpose: Looks up an active node runtime credential by its stored hash across workspaces. */
+  public findActiveNodeCredentialByHash(tokenHash: string, nowMs = Date.now()): StoredNodeCredential | null {
+    const row = this.sqlite
+      .query<NodeCredentialRow, [string, number]>(
+        "SELECT * FROM node_credentials WHERE token_hash = ? AND rotated_at IS NULL AND expires_at > ? LIMIT 1",
+      )
+      .get(tokenHash, nowMs);
+
+    return row === null ? null : parseNodeCredentialRow(row);
+  }
+
+  /** Purpose: Hashes and resolves an active node runtime credential token. */
+  public async resolveActiveNodeCredential(token: string, nowMs = Date.now()): Promise<StoredNodeCredential | null> {
+    return this.findActiveNodeCredentialByHash(await hashApiKey(token), nowMs);
   }
 
   /** Purpose: Marks an API key as revoked. */

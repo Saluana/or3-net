@@ -86,4 +86,4 @@ In other words, the control plane is assembled from services rather than hidden 
 
 - For route-level behavior, see [HTTP API](api/http-api.md)
 - For internal-turn and subagent requests, see [Intern SDK](sdk/intern-sdk.md)
-- For sandbox lifecycle and exec APIs, see [Sandbox SDK](sdk/sandbox-sdk.md)
+- For OpenSandbox lifecycle and exec APIs, see [OpenSandbox SDK](sdk/opensandbox-sdk.md)

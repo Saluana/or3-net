@@ -231,4 +231,4 @@ Otherwise the server creates one.
 - [Jobs and Sessions](../concepts/jobs-and-sessions.md)
 - [Runtimes and Nodes](../concepts/runtimes-and-nodes.md)
 - [Intern SDK](../sdk/intern-sdk.md)
-- [Sandbox SDK](../sdk/sandbox-sdk.md)
+- [OpenSandbox SDK](../sdk/opensandbox-sdk.md)

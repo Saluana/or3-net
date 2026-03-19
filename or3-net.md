@@ -1,5 +1,7 @@
 # OR3 Net Architecture
 
+> Migration note: OpenSandbox now fills the sandbox-style backend role in `or3-net`. References to `or3-sandbox` below describe the earlier design direction and should be treated as historical unless a section says otherwise.
+
 This document describes the **target architecture** for OR3 once the planned `or3-net`, `or3-chat`, `or3-intern`, `or3-sandbox`, and desktop work is implemented.
 
 It is meant to be the easy-to-understand, whole-system view:

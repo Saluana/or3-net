@@ -6,6 +6,15 @@
   "scripts": {
     "cli": "bun run cli/index.ts",
     "lint": "bunx eslint . --max-warnings 0",
+    "opensandbox:init": "bash ./scripts/opensandbox/opensandbox-init.sh",
+    "opensandbox:init:refresh": "bash ./scripts/opensandbox/opensandbox-init.sh --refresh",
+    "opensandbox:or3-cli": "bash ./scripts/opensandbox/opensandbox-or3-cli-session.sh",
+    "opensandbox:manual": "bash ./scripts/opensandbox/opensandbox-manual-cli-session.sh",
+    "opensandbox:or3-server": "source ./.local/opensandbox/env.sh && bun ./scripts/opensandbox/opensandbox-or3-server.ts",
+    "opensandbox:server": "bash ./scripts/opensandbox/opensandbox-server.sh",
+    "opensandbox:stream": "bun ./scripts/opensandbox/opensandbox-stream.ts",
+    "opensandbox:smoke": "bun ./scripts/opensandbox/opensandbox-manual-test.ts",
+    "opensandbox:smoke:cli": "bash ./scripts/opensandbox/opensandbox-cli-smoke.sh",
     "test:contracts": "bun test tests/contracts/*.test.ts tests/sdk.clients.test.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"
@@ -23,6 +32,8 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@alibaba-group/opensandbox": "^0.1.4",
+    "@cloudflare/sandbox": "^0.7.18",
     "tar-stream": "^3.1.8",
     "tweetnacl": "^1.0.3",
     "zod": "^4.3.6"

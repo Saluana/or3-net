@@ -1,5 +1,7 @@
 # OR3 Network v1 — Tasks
 
+> Migration note: the OpenSandbox migration supersedes the older `or3-sandbox` task language in this historical task list.
+
 ## 1. External prerequisites
 
 - [x] [Req P0.1] Track the `or3-intern` internal service API work in `/Users/brendon/Documents/or3-intern/planning/or3-net-plan.md` and keep `or3-net` assumptions aligned with the final endpoint/auth shape.

@@ -42,7 +42,12 @@ export const runtimeCoreCapabilityValues = [
 export const runtimeCapabilityNotes = {
   "workspace-materialize":
     "Stages selected workspace content into a runtime session. Host root resolution and explicit commit semantics stay in the host-workspace-staging layer.",
+  "ext:or3:pty":
+    "Interactive terminal access for runtime sessions. Implementations may project this over a native PTY or a remote terminal transport.",
 } as const;
+
+/** Purpose: Namespaced runtime capability used for interactive PTY access. */
+export const runtimePtyCapability = "ext:or3:pty" as const;
 
 const runtimeExtensionCapabilityPattern = /^ext:[a-z0-9][a-z0-9-]*:[a-z0-9][a-z0-9-]*$/;
 

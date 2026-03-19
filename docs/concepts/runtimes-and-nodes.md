@@ -30,7 +30,7 @@ See [src/contracts/runtime](../../src/contracts/runtime).
 
 ## Built-in runtime adapters
 
-OR3 Net currently ships with three main built-in adapters.
+OR3 Net currently ships with three main built-in adapters plus one managed-provider option.
 
 ### Local container
 
@@ -44,15 +44,35 @@ Use it when you want:
 
 ### Sandbox
 
-The sandbox adapter uses the sandbox service through the sandbox SDK.
+The sandbox adapter uses an API-driven sandbox backend.
 
 Use it when you want:
 
 - API-driven sandbox lifecycle
 - filesystem operations
-- archive import/export
-- service tunnels
+- file-based staging and service launch
 - execution in a dedicated sandbox environment
+
+Current built-ins in this family are:
+
+- `OpenSandboxRuntimeAdapter` / `OpenSandboxNodeAdapter`
+- `CloudflareSandboxRuntimeAdapter` / `CloudflareSandboxNodeAdapter` for managed deployments
+
+### Cloudflare Sandbox
+
+The Cloudflare sandbox adapter is a **managed-provider path** that runs through a Worker bridge.
+
+Use it when you want:
+
+- Cloudflare-managed execution environments
+- Worker-routed preview URLs
+- explicit HTTP bridge integration rather than direct Bun SDK coupling
+
+Important constraints:
+
+- preview routing requires `proxyToSandbox()` in the Worker bridge
+- preview URLs require a custom wildcard domain
+- `.workers.dev` is not enough for full preview support
 
 ### Remote node
 
@@ -205,4 +225,5 @@ The key point is that OR3 Net treats these as control-plane concepts with expiry
 - [Mental Model](mental-model.md)
 - [Jobs and Sessions](jobs-and-sessions.md)
 - [HTTP API](../api/http-api.md)
-- [Sandbox SDK](../sdk/sandbox-sdk.md)
+- [OpenSandbox SDK](../sdk/opensandbox-sdk.md)
+- [Cloudflare Sandbox SDK](../sdk/cloudflare-sandbox-sdk.md)

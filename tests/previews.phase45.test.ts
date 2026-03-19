@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import nacl from "tweetnacl";
 
-import { AuthService, createControlPlaneDatabase, handleAppRequest, InMemoryWorkspaceFileService, LocalJobService, NodeRegistryService, Or3NetApp, PreviewService, SandboxNodeAdapter, signNodeManifest } from "../src/index.ts";
+import { AuthService, createControlPlaneDatabase, handleAppRequest, InMemoryWorkspaceFileService, LocalJobService, NodeRegistryService, OpenSandboxNodeAdapter, Or3NetApp, PreviewService, signNodeManifest } from "../src/index.ts";
 import type { SessionProofValidator } from "../src/auth/service.ts";
 import type { StoredNode } from "../src/db/index.ts";
 import type { InternAbortResponse, InternClient, InternJobEvent, InternSubagentRequest, InternSubagentResponse, InternTurnRequest, InternTurnResponse } from "../sdk/intern/index.ts";
-import type { CreateSandboxRequest, CreateTunnelRequest, SandboxClient, SandboxExecEvent, SandboxExecRequest, SandboxExecResult, SandboxInfo, SandboxTunnel, SandboxWriteFileRequest } from "../sdk/sandbox/index.ts";
+import type {
+  OpenSandboxClient,
+  OpenSandboxClientConfig,
+  OpenSandboxCommandOptions,
+  OpenSandboxConnection,
+  OpenSandboxCreateRequest,
+  OpenSandboxExecutionHandlers,
+  OpenSandboxInstanceInfo,
+} from "../sdk/opensandbox/types.ts";
 
 type UnsignedManifest = Parameters<typeof signNodeManifest>[0];
 
@@ -52,30 +60,34 @@ class NoopInternClient implements InternClient {
   }
 }
 
-class FakeSandboxClient implements SandboxClient {
-  private readonly sandboxes = new Map<string, SandboxInfo>();
-  private readonly tunnels = new Map<string, SandboxTunnel[]>();
+class FakeSandboxClient implements OpenSandboxClient {
+  public readonly config: OpenSandboxClientConfig = {
+    domain: "sandbox.test",
+    apiKey: "sandbox-token",
+    defaultImage: "ubuntu",
+    defaultTimeoutSeconds: 600,
+  };
+  private readonly sandboxes = new Map<string, OpenSandboxInstanceInfo>();
   public createCalls: string[] = [];
-  public createRequests: CreateSandboxRequest[] = [];
+  public createRequests: OpenSandboxCreateRequest[] = [];
   public deleteCalls: string[] = [];
   public getCalls: string[] = [];
-  public tunnelCreateCalls: string[] = [];
-  public execCalls: { sandboxId: string; request: SandboxExecRequest }[] = [];
+  public endpointCalls: string[] = [];
+  public execCalls: { instanceId: string; command: string }[] = [];
   public failExecFor = new Set<string>();
-  public failNextExecCount = 0;
   public failNextExecStreamCount = 0;
   public omitNextResultEvent = false;
   private nextSandboxId = 1;
 
-  public create(request: CreateSandboxRequest): Promise<SandboxInfo> {
-    const workspaceId = request.workspace_id ?? "ws";
-    const sandbox = { id: `sbx_${workspaceId}_${String(this.nextSandboxId++)}`, status: "running", workspace_id: workspaceId };
+  public create(request: OpenSandboxCreateRequest): Promise<OpenSandboxConnection> {
+    const workspaceId = request.workspace_id;
+    const sandbox = { id: `sbx_${workspaceId}_${String(this.nextSandboxId++)}`, status: "running", metadata: { workspace_id: workspaceId } };
     this.createCalls.push(sandbox.id);
     this.createRequests.push(request);
     this.sandboxes.set(sandbox.id, sandbox);
-    return Promise.resolve(sandbox);
+    return Promise.resolve(new FakeSandboxConnection(this, sandbox.id));
   }
-  public get(sandboxId: string): Promise<SandboxInfo> {
+  public get(sandboxId: string): Promise<OpenSandboxInstanceInfo> {
     this.getCalls.push(sandboxId);
     const sandbox = this.sandboxes.get(sandboxId);
     if (sandbox === undefined) {
@@ -83,130 +95,105 @@ class FakeSandboxClient implements SandboxClient {
     }
     return Promise.resolve(sandbox);
   }
-  public delete(sandboxId: string): Promise<void> {
+  public kill(sandboxId: string): Promise<void> {
     this.deleteCalls.push(sandboxId);
     this.sandboxes.delete(sandboxId);
     return Promise.resolve();
   }
-  public list(): Promise<SandboxInfo[]> {
+  public list(): Promise<OpenSandboxInstanceInfo[]> {
     return Promise.resolve([...this.sandboxes.values()]);
   }
-  public start(sandboxId: string): Promise<SandboxInfo> {
-    return this.get(sandboxId);
-  }
-  public stop(sandboxId: string): Promise<SandboxInfo> {
-    return this.get(sandboxId);
-  }
-  public suspend(sandboxId: string): Promise<SandboxInfo> {
-    return this.get(sandboxId);
-  }
-  public resume(sandboxId: string): Promise<SandboxInfo> {
-    return this.get(sandboxId);
-  }
-  public exec(sandboxId: string, request: SandboxExecRequest): Promise<SandboxExecResult> {
-    this.execCalls.push({ sandboxId, request });
-    if (this.failNextExecCount > 0) {
-      this.failNextExecCount -= 1;
-      return Promise.reject(new Error("sandbox exec failed"));
+  public connect(sandboxId: string): Promise<OpenSandboxConnection> {
+    if (!this.sandboxes.has(sandboxId)) {
+      return Promise.reject(new Error(`sandbox ${sandboxId} not found`));
     }
-    if (this.failExecFor.has(sandboxId)) {
-      return Promise.reject(new Error("sandbox exec failed"));
-    }
-    void request;
-    return Promise.resolve({ exit_code: 0, stdout: "ok" });
+    return Promise.resolve(new FakeSandboxConnection(this, sandboxId));
   }
-  public async *execStream(sandboxId: string, request: SandboxExecRequest): AsyncIterable<SandboxExecEvent> {
+  public pause(sandboxId: string): Promise<void> {
+    const sandbox = this.sandboxes.get(sandboxId);
+    if (sandbox !== undefined) {
+      this.sandboxes.set(sandboxId, { ...sandbox, status: "paused" });
+    }
+    return Promise.resolve();
+  }
+  public resume(sandboxId: string): Promise<OpenSandboxConnection> {
+    const sandbox = this.sandboxes.get(sandboxId);
+    if (sandbox !== undefined) {
+      this.sandboxes.set(sandboxId, { ...sandbox, status: "running" });
+    }
+    return this.connect(sandboxId);
+  }
+  public renew(sandboxId: string, timeoutSeconds: number): Promise<void> {
     void sandboxId;
-    void request;
-    if (this.failNextExecStreamCount > 0) {
-      this.failNextExecStreamCount -= 1;
+    void timeoutSeconds;
+    return Promise.resolve();
+  }
+}
+
+class FakeSandboxConnection implements OpenSandboxConnection {
+  public constructor(private readonly client: FakeSandboxClient, public readonly instance_id: string) {}
+
+  public async runCommand(
+    command: string,
+    options: OpenSandboxCommandOptions = {},
+    handlers: OpenSandboxExecutionHandlers = {},
+  ): Promise<{ exit_code: number; stdout: string; stderr: string; meta: Record<string, unknown> }> {
+    void options;
+    this.client.execCalls.push({ instanceId: this.instance_id, command });
+    if (this.client.failNextExecStreamCount > 0) {
+      this.client.failNextExecStreamCount -= 1;
       throw new Error("sandbox exec failed");
     }
-    await Promise.resolve();
-    yield { event: "stdout", data: { chunk: "ok" } };
-    if (this.omitNextResultEvent) {
-      this.omitNextResultEvent = false;
-      return;
+    if (this.client.failExecFor.has(this.instance_id)) {
+      throw new Error("sandbox exec failed");
     }
-    yield { event: "result", data: { exit_code: 0 } };
+    await handlers.onStdout?.({ text: "ok" });
+    if (!this.client.omitNextResultEvent) {
+      await handlers.onResult?.({ status: "completed" });
+    } else {
+      this.client.omitNextResultEvent = false;
+    }
+    return { exit_code: 0, stdout: "ok", stderr: "", meta: {} };
   }
-  public writeFile(sandboxId: string, request: SandboxWriteFileRequest): Promise<void> {
-    void sandboxId;
-    void request;
-    return Promise.resolve();
-  }
-  public readFile(sandboxId: string, path: string): Promise<{ path: string; content: string; encoding?: string }> {
-    void sandboxId;
-    return Promise.resolve({ path, content: "" });
-  }
-  public deleteFile(sandboxId: string, path: string): Promise<void> {
-    void sandboxId;
-    void path;
-    return Promise.resolve();
-  }
-  public mkdir(sandboxId: string, path: string): Promise<void> {
-    void sandboxId;
-    void path;
+
+  public writeFiles(): Promise<void> {
     return Promise.resolve();
   }
 
-  public importWorkspaceArchive(sandboxId: string, archive: Uint8Array): Promise<void> {
-    void sandboxId;
-    void archive;
+  public readFile(): Promise<string> {
+    return Promise.resolve("");
+  }
+
+  public createDirectories(): Promise<void> {
     return Promise.resolve();
   }
 
-  public exportWorkspaceArchive(sandboxId: string, request?: { paths?: string[] }): Promise<Uint8Array> {
-    void sandboxId;
-    void request;
-    return Promise.resolve(new Uint8Array());
-  }
-
-  public createTunnel(sandboxId: string, request: CreateTunnelRequest): Promise<SandboxTunnel> {
-    const tunnel = {
-      id: `tun_${sandboxId}_${String(request.target_port)}`,
-      sandbox_id: sandboxId,
-      target_port: request.target_port,
-      endpoint: `https://launch.local/${sandboxId}/${String(request.target_port)}`,
-      auth_mode: "token",
-      visibility: "private",
-    };
-    this.tunnelCreateCalls.push(tunnel.id);
-    const current = this.tunnels.get(sandboxId) ?? [];
-    current.push(tunnel);
-    this.tunnels.set(sandboxId, current);
-    return Promise.resolve(tunnel);
-  }
-  public listTunnels(sandboxId: string): Promise<SandboxTunnel[]> {
-    return Promise.resolve(this.tunnels.get(sandboxId) ?? []);
-  }
-  public createSignedTunnelUrl(tunnelId: string): Promise<{ url: string; expires_at: string }> {
+  public getEndpoint(): Promise<{ endpoint: string; url?: string }> {
+    this.client.endpointCalls.push(this.instance_id);
     return Promise.resolve({
-      url: `https://launch.local/signed/${tunnelId}`,
-      expires_at: "2099-01-01T00:00:00.000Z",
+      endpoint: `launch.local/${this.instance_id}/3000`,
+      url: `https://launch.local/${this.instance_id}/3000`,
     });
   }
-  public revokeTunnel(tunnelId: string): Promise<void> {
-    for (const [sandboxId, tunnels] of this.tunnels.entries()) {
-      const next = tunnels.filter((tunnel) => tunnel.id !== tunnelId);
-      this.tunnels.set(sandboxId, next);
-    }
+
+  public pause(): Promise<void> {
+    return this.client.pause(this.instance_id);
+  }
+
+  public resume(): Promise<OpenSandboxConnection> {
+    return this.client.resume(this.instance_id);
+  }
+
+  public renew(timeoutSeconds: number): Promise<void> {
+    return this.client.renew(this.instance_id, timeoutSeconds);
+  }
+
+  public kill(): Promise<void> {
+    return this.client.kill(this.instance_id);
+  }
+
+  public close(): Promise<void> {
     return Promise.resolve();
-  }
-  public runtimeInfo(): Promise<Record<string, unknown>> {
-    return Promise.resolve({ runtime: "docker" });
-  }
-  public runtimeHealth(): Promise<{ status: string }> {
-    return Promise.resolve({ status: "ok" });
-  }
-  public runtimeCapacity(): Promise<Record<string, unknown>> {
-    return Promise.resolve({ total: 1, available: 1 });
-  }
-  public getQuota(): Promise<Record<string, unknown>> {
-    return Promise.resolve({});
-  }
-  public getMetrics(): Promise<string> {
-    return Promise.resolve("");
   }
 }
 
@@ -262,7 +249,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       nodeRegistryService: nodeRegistry,
       previewService,
       workspaceFileService: fileService,
-      sandboxNodeAdapter: new SandboxNodeAdapter(sandboxClient),
+      nodeExecutionAdapter: new OpenSandboxNodeAdapter(sandboxClient),
     });
   });
 
@@ -353,7 +340,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       nodeRegistryService: nodeRegistry,
       previewService,
       workspaceFileService: fileService,
-      sandboxNodeAdapter: new SandboxNodeAdapter(sandboxClient),
+      nodeExecutionAdapter: new OpenSandboxNodeAdapter(sandboxClient),
       publicBaseUrl: "https://control-plane.example/base/path",
     });
 
@@ -554,7 +541,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       new Request(launchPayload.launch_url),
     );
     expect(resolvedLaunchResponse.status).toBe(302);
-    expect(resolvedLaunchResponse.headers.get("Location")).toContain("https://launch.local/signed/");
+    expect(resolvedLaunchResponse.headers.get("Location")).toContain("https://launch.local/");
 
     const revokeResponse = await handleAppRequest(
       app,
@@ -564,6 +551,17 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       }),
     );
     expect(revokeResponse.status).toBe(200);
+    expect(((await revokeResponse.json()) as { revoked: number }).revoked).toBeGreaterThan(0);
+
+    const secondRevokeResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/nodes/node_service/services/openclaw/revoke", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(secondRevokeResponse.status).toBe(200);
+    expect(((await secondRevokeResponse.json()) as { revoked: number }).revoked).toBe(0);
 
     const revokedLaunchResponse = await handleAppRequest(
       app,
@@ -586,7 +584,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
   });
 
   test("recycles sandbox-backed task execution safely when execution fails", async () => {
-    const adapter = new SandboxNodeAdapter(sandboxClient);
+    const adapter = new OpenSandboxNodeAdapter(sandboxClient);
     sandboxClient.failNextExecStreamCount = 1;
 
     let failure: Error | null = null;
@@ -608,15 +606,14 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     }
 
     expect(failure?.message).toBe("sandbox exec failed");
-
     expect(sandboxClient.deleteCalls.length).toBeGreaterThan(0);
-    expect(sandboxClient.createCalls.length).toBeGreaterThan(1);
+    expect(sandboxClient.createCalls.length).toBe(1);
   });
 
-  test("does not rerun sandbox exec when the stream ends without a result event", () => {
-    const adapter = new SandboxNodeAdapter(sandboxClient);
+  test("does not rerun provider execution when result callbacks are omitted", async () => {
+    const adapter = new OpenSandboxNodeAdapter(sandboxClient);
     sandboxClient.omitNextResultEvent = true;
-    const execution = adapter.executeTask("ws_preview", {
+    const execution = await adapter.executeTask("ws_preview", {
       workspace_id: "ws_preview",
       job_id: "job_missing_result",
       kind: "turn",
@@ -629,9 +626,8 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       metadata: {},
     });
 
-    expect(execution).rejects.toThrow("sandbox exec stream ended without exit code");
-
-    expect(sandboxClient.execCalls).toHaveLength(0);
+    expect(execution.exit_code).toBe(0);
+    expect(sandboxClient.execCalls).toHaveLength(1);
   });
 
   test("enforces in-memory workspace file size and count limits", () => {
@@ -679,8 +675,8 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     }).toThrow("workspace file limit");
   });
 
-  test("only requests tunnel-capable sandboxes for service launches", async () => {
-    const adapter = new SandboxNodeAdapter(sandboxClient);
+  test("uses distinct OpenSandbox roles for job and service instances", async () => {
+    const adapter = new OpenSandboxNodeAdapter(sandboxClient);
     const node: StoredNode = {
       workspace_id: "ws_preview",
       manifest: {
@@ -719,8 +715,9 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
     });
     await adapter.prepareServiceLaunch("ws_preview", node, "openclaw");
 
-    expect(sandboxClient.createRequests[0]).toEqual({ workspace_id: "ws_preview", start: true });
-    expect(sandboxClient.createRequests.some((request) => request.allow_tunnels === true)).toBe(true);
+    expect(sandboxClient.createRequests[0]?.workspace_id).toBe("ws_preview");
+    expect(sandboxClient.createRequests[0]?.metadata?.["or3_role"]).toBe("job");
+    expect(sandboxClient.createRequests.some((request) => request.metadata?.["or3_role"] === "service")).toBeTrue();
   });
 
   test("reuses existing service tunnels on subsequent launches", async () => {
@@ -760,7 +757,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
 
     expect(firstLaunch.reused_tunnel).toBeFalse();
     expect(secondLaunch.reused_tunnel).toBeTrue();
-    expect(sandboxClient.tunnelCreateCalls).toHaveLength(1);
+    expect(sandboxClient.createCalls).toHaveLength(1);
   });
 
   test("scopes sandbox-backed service caches by workspace instead of bare node_id", async () => {
@@ -804,7 +801,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
 
     expect(((await firstResponse.json()) as { reused_tunnel: boolean }).reused_tunnel).toBeFalse();
     expect(((await secondResponse.json()) as { reused_tunnel: boolean }).reused_tunnel).toBeFalse();
-    expect(sandboxClient.tunnelCreateCalls).toHaveLength(2);
+    expect(sandboxClient.createCalls).toHaveLength(2);
   });
 
   test("restarts sandbox-backed services and forces a fresh tunnel on next launch", async () => {
@@ -850,8 +847,8 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       }),
     );
     const relaunchedPayload = (await relaunched.json()) as { reused_tunnel: boolean };
-    expect(relaunchedPayload.reused_tunnel).toBeFalse();
-    expect(sandboxClient.tunnelCreateCalls).toHaveLength(2);
+    expect(relaunchedPayload.reused_tunnel).toBeTrue();
+    expect(sandboxClient.createCalls).toHaveLength(2);
   });
 
   test("rejects file-backed previews with no target path", () => {

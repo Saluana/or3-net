@@ -8,8 +8,9 @@ import {
   LocalJobService,
   NodeRegistryService,
   NodeTransportRegistry,
+  OutboundWssNodeTransport,
+  OpenSandboxNodeAdapter,
   RemoteNodeExecutor,
-  SandboxNodeAdapter,
   signNodeManifest,
 } from "../src/index.ts";
 import type {
@@ -22,16 +23,14 @@ import type {
   InternTurnResponse,
 } from "../sdk/intern/index.ts";
 import type {
-  CreateSandboxRequest,
-  CreateTunnelRequest,
-  SandboxClient,
-  SandboxExecEvent,
-  SandboxExecRequest,
-  SandboxExecResult,
-  SandboxInfo,
-  SandboxTunnel,
-  SandboxWriteFileRequest,
-} from "../sdk/sandbox/index.ts";
+  OpenSandboxClient,
+  OpenSandboxClientConfig,
+  OpenSandboxCommandOptions,
+  OpenSandboxConnection,
+  OpenSandboxCreateRequest,
+  OpenSandboxExecutionHandlers,
+  OpenSandboxInstanceInfo,
+} from "../sdk/opensandbox/types.ts";
 
 type StreamFactory = (request: InternTurnRequest) => AsyncIterable<InternJobEvent>;
 type UnsignedManifest = Parameters<typeof signNodeManifest>[0];
@@ -70,25 +69,33 @@ class ScriptedInternClient implements InternClient {
   }
 }
 
-class FakeSandboxClient implements SandboxClient {
+class FakeSandboxClient implements OpenSandboxClient {
+  public readonly config: OpenSandboxClientConfig = {
+    domain: "sandbox.test",
+    apiKey: "sandbox-token",
+    defaultImage: "ubuntu",
+    defaultTimeoutSeconds: 600,
+  };
   public readonly createdSandboxIds: string[] = [];
-  public readonly execCalls: { sandboxId: string; request: SandboxExecRequest }[] = [];
-  private readonly sandboxes = new Map<string, SandboxInfo>();
+  public readonly execCalls: { instanceId: string; command: string }[] = [];
+  public readonly writes: { instanceId: string; path: string; data: string }[] = [];
+  public readonly directories: { instanceId: string; path: string }[] = [];
+  private readonly sandboxes = new Map<string, OpenSandboxInstanceInfo>();
   private nextId = 1;
 
-  public create(request: CreateSandboxRequest): Promise<SandboxInfo> {
-    const workspaceId = request.workspace_id ?? "ws_jobs";
+  public create(request: OpenSandboxCreateRequest): Promise<OpenSandboxConnection> {
+    const workspaceId = request.workspace_id;
     const sandbox = {
       id: `sbx_${String(this.nextId++)}`,
       status: "running",
-      workspace_id: workspaceId,
+      metadata: { workspace_id: workspaceId },
     };
     this.createdSandboxIds.push(sandbox.id);
     this.sandboxes.set(sandbox.id, sandbox);
-    return Promise.resolve(sandbox);
+    return Promise.resolve(new FakeSandboxConnection(this, sandbox.id));
   }
 
-  public get(sandboxId: string): Promise<SandboxInfo> {
+  public get(sandboxId: string): Promise<OpenSandboxInstanceInfo> {
     const sandbox = this.sandboxes.get(sandboxId);
     if (sandbox === undefined) {
       return Promise.reject(new Error(`sandbox ${sandboxId} not found`));
@@ -96,123 +103,106 @@ class FakeSandboxClient implements SandboxClient {
     return Promise.resolve(sandbox);
   }
 
-  public delete(sandboxId: string): Promise<void> {
-    this.sandboxes.delete(sandboxId);
-    return Promise.resolve();
-  }
-
-  public list(): Promise<SandboxInfo[]> {
+  public list(): Promise<OpenSandboxInstanceInfo[]> {
     return Promise.resolve([...this.sandboxes.values()]);
   }
 
-  public start(sandboxId: string): Promise<SandboxInfo> {
-    return this.get(sandboxId);
+  public connect(instanceId: string): Promise<OpenSandboxConnection> {
+    if (!this.sandboxes.has(instanceId)) {
+      return Promise.reject(new Error(`sandbox ${instanceId} not found`));
+    }
+    return Promise.resolve(new FakeSandboxConnection(this, instanceId));
   }
 
-  public stop(sandboxId: string): Promise<SandboxInfo> {
-    return this.get(sandboxId);
-  }
-
-  public suspend(sandboxId: string): Promise<SandboxInfo> {
-    return this.get(sandboxId);
-  }
-
-  public resume(sandboxId: string): Promise<SandboxInfo> {
-    return this.get(sandboxId);
-  }
-
-  public exec(sandboxId: string, request: SandboxExecRequest): Promise<SandboxExecResult> {
-    this.execCalls.push({ sandboxId, request });
-    return Promise.resolve({ exit_code: 0, stdout: "ok" });
-  }
-
-  public async *execStream(sandboxId: string, request: SandboxExecRequest): AsyncIterable<SandboxExecEvent> {
-    void sandboxId;
-    void request;
-    await Promise.resolve();
-    yield { event: "stdout", data: { chunk: "ok" } };
-    yield { event: "result", data: { exit_code: 0 } };
-  }
-
-  public writeFile(sandboxId: string, request: SandboxWriteFileRequest): Promise<void> {
-    void sandboxId;
-    void request;
+  public pause(instanceId: string): Promise<void> {
+    const sandbox = this.sandboxes.get(instanceId);
+    if (sandbox !== undefined) {
+      this.sandboxes.set(instanceId, { ...sandbox, status: "paused" });
+    }
     return Promise.resolve();
   }
 
-  public readFile(sandboxId: string, path: string): Promise<{ path: string; content: string; encoding?: string }> {
-    void sandboxId;
-    return Promise.resolve({ path, content: "" });
+  public resume(instanceId: string): Promise<OpenSandboxConnection> {
+    const sandbox = this.sandboxes.get(instanceId);
+    if (sandbox !== undefined) {
+      this.sandboxes.set(instanceId, { ...sandbox, status: "running" });
+    }
+    return this.connect(instanceId);
   }
 
-  public deleteFile(sandboxId: string, path: string): Promise<void> {
-    void sandboxId;
+  public renew(instanceId: string, timeoutSeconds: number): Promise<void> {
+    void instanceId;
+    void timeoutSeconds;
+    return Promise.resolve();
+  }
+
+  public kill(instanceId: string): Promise<void> {
+    this.sandboxes.delete(instanceId);
+    return Promise.resolve();
+  }
+}
+
+class FakeSandboxConnection implements OpenSandboxConnection {
+  public constructor(private readonly client: FakeSandboxClient, public readonly instance_id: string) {}
+
+  public async runCommand(
+    command: string,
+    options: OpenSandboxCommandOptions = {},
+    handlers: OpenSandboxExecutionHandlers = {},
+  ): Promise<{ exit_code: number; stdout: string; stderr: string; meta: Record<string, unknown> }> {
+    void options;
+    this.client.execCalls.push({ instanceId: this.instance_id, command });
+    await handlers.onStdout?.({ text: "ok" });
+    await handlers.onResult?.({ status: "completed" });
+    return {
+      exit_code: 0,
+      stdout: "ok",
+      stderr: "",
+      meta: {},
+    };
+  }
+
+  public writeFiles(entries: { path: string; data: string }[]): Promise<void> {
+    this.client.writes.push(...entries.map((entry) => ({ instanceId: this.instance_id, ...entry })));
+    return Promise.resolve();
+  }
+
+  public readFile(path: string): Promise<string> {
     void path;
-    return Promise.resolve();
-  }
-
-  public mkdir(sandboxId: string, path: string): Promise<void> {
-    void sandboxId;
-    void path;
-    return Promise.resolve();
-  }
-
-  public importWorkspaceArchive(sandboxId: string, archive: Uint8Array): Promise<void> {
-    void sandboxId;
-    void archive;
-    return Promise.resolve();
-  }
-
-  public exportWorkspaceArchive(sandboxId: string, request?: { paths?: string[] }): Promise<Uint8Array> {
-    void sandboxId;
-    void request;
-    return Promise.resolve(new Uint8Array());
-  }
-
-  public createTunnel(sandboxId: string, request: CreateTunnelRequest): Promise<SandboxTunnel> {
-    return Promise.resolve({
-      id: `tun_${sandboxId}_${String(request.target_port)}`,
-      sandbox_id: sandboxId,
-      target_port: request.target_port,
-      endpoint: `https://launch.local/${sandboxId}/${String(request.target_port)}`,
-    });
-  }
-
-  public listTunnels(sandboxId: string): Promise<SandboxTunnel[]> {
-    void sandboxId;
-    return Promise.resolve([]);
-  }
-
-  public revokeTunnel(tunnelId: string): Promise<void> {
-    void tunnelId;
-    return Promise.resolve();
-  }
-
-  public createSignedTunnelUrl(tunnelId: string): Promise<{ url: string; expires_at: string }> {
-    return Promise.resolve({
-      url: `https://launch.local/signed/${tunnelId}`,
-      expires_at: "2099-01-01T00:00:00.000Z",
-    });
-  }
-
-  public runtimeInfo(): Promise<{ runtime: string }> {
-    return Promise.resolve({ runtime: "docker" });
-  }
-
-  public runtimeHealth(): Promise<{ status: string }> {
-    return Promise.resolve({ status: "ok" });
-  }
-
-  public runtimeCapacity(): Promise<{ total: number; available: number }> {
-    return Promise.resolve({ total: 1, available: 1 });
-  }
-
-  public getQuota(): Promise<Record<string, unknown>> {
-    return Promise.resolve({});
-  }
-
-  public getMetrics(): Promise<string> {
     return Promise.resolve("");
+  }
+
+  public createDirectories(paths: { path: string }[]): Promise<void> {
+    this.client.directories.push(...paths.map((entry) => ({ instanceId: this.instance_id, path: entry.path })));
+    return Promise.resolve();
+  }
+
+  public getEndpoint(port: number): Promise<{ endpoint: string; url?: string }> {
+    void port;
+    return Promise.resolve({
+      endpoint: `launch.local/${this.instance_id}/3000`,
+      url: `https://launch.local/${this.instance_id}/3000`,
+    });
+  }
+
+  public pause(): Promise<void> {
+    return this.client.pause(this.instance_id);
+  }
+
+  public resume(): Promise<OpenSandboxConnection> {
+    return this.client.resume(this.instance_id);
+  }
+
+  public renew(timeoutSeconds: number): Promise<void> {
+    return this.client.renew(this.instance_id, timeoutSeconds);
+  }
+
+  public kill(): Promise<void> {
+    return this.client.kill(this.instance_id);
+  }
+
+  public close(): Promise<void> {
+    return Promise.resolve();
   }
 }
 
@@ -428,7 +418,7 @@ describe("local job execution", () => {
       internClient,
       streamBroker: broker,
       leaseScheduler: new LeaseScheduler({ database }),
-      sandboxNodeAdapter: new SandboxNodeAdapter(sandboxClient),
+      nodeExecutionAdapter: new OpenSandboxNodeAdapter(sandboxClient),
     });
 
     const job = service.submitJob("ws_jobs", {
@@ -550,7 +540,7 @@ describe("local job execution", () => {
       internClient,
       streamBroker: broker,
       leaseScheduler: new LeaseScheduler({ database }),
-      sandboxNodeAdapter: new SandboxNodeAdapter(sandboxClient),
+      nodeExecutionAdapter: new OpenSandboxNodeAdapter(sandboxClient),
     });
 
     const job = service.submitJob("ws_jobs", {
@@ -563,11 +553,11 @@ describe("local job execution", () => {
       const stored = service.getJob("ws_jobs", job.job_id).job;
       expect(stored.status).toBe("completed");
       expect(stored.node_id).toBe("node_remote");
-      expect(stored.result?.meta["sandbox_id"]).toBe("sbx_1");
+      expect(stored.result?.meta["instance_id"]).toBe("sbx_1");
     });
 
     expect(internClient.submitTurnStreamCalls).toBe(0);
-    expect(sandboxClient.execCalls).toHaveLength(0);
+    expect(sandboxClient.execCalls).toHaveLength(1);
     expect(broker.history(job.job_id).map((event) => event.event)).toEqual([
       "job.accepted",
       "job.started",
@@ -576,6 +566,48 @@ describe("local job execution", () => {
     ]);
     expect(database.workspace("ws_jobs").listLeases()).toHaveLength(1);
     expect(database.workspace("ws_jobs").listLeases()[0]?.lease.state).toBe("released");
+  });
+
+  test("stages relative task artifacts under /workspace for remote sandbox execution", async () => {
+    const sandboxClient = new FakeSandboxClient();
+    const adapter = new OpenSandboxNodeAdapter(sandboxClient);
+
+    const result = await adapter.executeTask("ws_jobs", {
+      workspace_id: "ws_jobs",
+      job_id: "job_artifacts",
+      kind: "turn",
+      instructions: "echo ok",
+      artifacts: [
+        {
+          artifact_id: "art_readme",
+          path: "README.md",
+          kind: "file",
+          content_type: "text/plain",
+          size_bytes: 5,
+          text: "hello",
+        },
+        {
+          artifact_id: "art_src",
+          path: "src/index.ts",
+          kind: "file",
+          content_type: "text/plain",
+          size_bytes: 23,
+          text: "export const ok = true;",
+        },
+      ],
+      tool_policy: { mode: "allow_all", allowed_tools: [], blocked_tools: [] },
+      timeout: { soft_ms: 1_000, hard_ms: 2_000 },
+      lease_profile: { profile_id: "default", ttl_seconds: 60, required_capabilities: [] },
+      subagent_policy: { enabled: false, max_depth: 0, max_jobs: 0 },
+      metadata: {},
+    });
+
+    expect(result.exit_code).toBe(0);
+    expect(sandboxClient.directories).toContainEqual({ instanceId: result.instance_id, path: "/workspace/src" });
+    expect(sandboxClient.writes).toEqual([
+      { instanceId: result.instance_id, path: "/workspace/README.md", data: "hello" },
+      { instanceId: result.instance_id, path: "/workspace/src/index.ts", data: "export const ok = true;" },
+    ]);
   });
 
   test("aborts remote executor jobs via upstream handle and suppresses later completion", async () => {
@@ -876,6 +908,90 @@ describe("local job execution", () => {
 
     expect(executionCount).toBe(2);
     expect(database.workspace("ws_jobs").listLeases().every((lease) => lease.lease.state === "released")).toBeTrue();
+  });
+
+  test("routes remote jobs through a live outbound-wss connection and preserves streamed job events", async () => {
+    const keyPair = nacl.sign.keyPair();
+    const manifest: UnsignedManifest = {
+      node_id: "node_remote_live",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "remote",
+      capabilities: ["exec"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["outbound-wss"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: false, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    const nodeRegistry = new NodeRegistryService({ database });
+    await nodeRegistry.enrollNode("ws_jobs", { ...manifest, signature: signNodeManifest(manifest, keyPair.secretKey) });
+    const approval = await nodeRegistry.approveNode("ws_jobs", "node_remote_live");
+
+    const transportRegistry = new NodeTransportRegistry();
+    const transport = new OutboundWssNodeTransport({ database });
+    transportRegistry.registerKindTransport("outbound-wss", transport);
+    transport.attachLiveConnection({
+      workspaceId: "ws_jobs",
+      nodeId: "node_remote_live",
+      socket: {
+        send(data: string): void {
+          const parsed = JSON.parse(data) as { type: string; payload: { id: string; method: string } };
+          if (parsed.type !== "request") {
+            return;
+          }
+          if (parsed.payload.method === "execute") {
+            transport.handleLiveMessage(
+              "ws_jobs",
+              "node_remote_live",
+              JSON.stringify({
+                type: "event",
+                request_id: parsed.payload.id,
+                payload: { event: "progress", data: { percent: 10, message: "live-progress" } },
+              }),
+            );
+          }
+          transport.handleLiveMessage(
+            "ws_jobs",
+            "node_remote_live",
+            JSON.stringify({
+              type: "response",
+              payload: {
+                id: parsed.payload.id,
+                result: { output_text: "live job ok", artifacts: [], meta: { token: approval.credential.token } },
+              },
+            }),
+          );
+        },
+      },
+    });
+
+    const broker = new JobStreamBroker();
+    const service = new LocalJobService({
+      database,
+      internClient: new ScriptedInternClient(() => emptyAsyncIterable()),
+      streamBroker: broker,
+      leaseScheduler: new LeaseScheduler({ database }),
+      remoteNodeExecutor: new RemoteNodeExecutor(transportRegistry, database),
+    });
+
+    const created = service.submitJob("ws_jobs", {
+      session_key: "svc:remote-live",
+      message: "live remote",
+      execution_target: "remote",
+    });
+
+    await waitFor(() => {
+      const stored = service.getJob("ws_jobs", created.job_id).job;
+      expect(stored.status).toBe("completed");
+      expect(stored.result?.output_text).toBe("live job ok");
+    });
+
+    expect(broker.history(created.job_id).map((event) => event.event)).toEqual([
+      "job.accepted",
+      "job.started",
+      "text.delta",
+      "job.completed",
+    ]);
   });
 
   test("repairs startup state by failing orphaned jobs and releasing ghost leases", () => {

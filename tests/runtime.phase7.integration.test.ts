@@ -1,7 +1,10 @@
+/* eslint-disable @typescript-eslint/array-type, @typescript-eslint/require-await, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-return, @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-dynamic-delete */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+
+import { SandboxManager } from "@alibaba-group/opensandbox";
 
 import type { SessionProofValidator } from "../src/auth/service.ts";
 import { issueWorkspaceToken } from "../src/auth/tokens.ts";
@@ -14,22 +17,15 @@ import {
   LocalContainerRuntimeAdapter,
   LocalJobService,
   NodeRegistryService,
+  OpenSandboxRuntimeAdapter,
   RemoteNodeRuntimeAdapter,
   RuntimeRegistry,
   RuntimeSelectionService,
   RuntimeSessionService,
-  SandboxRuntimeAdapter,
 } from "../src/index.ts";
 import { runtimeSessionCreateInputSchema, type RuntimeExecutionRequest } from "../src/contracts/runtime/index.ts";
-import type {
-  LocalContainerCommandResult,
-  LocalContainerCommandRunner,
-} from "../src/runtime/adapters/local-container.ts";
-import type {
-  NodeExecutionHandle,
-  StoredNode,
-  TaskPackage,
-} from "../src/index.ts";
+import type { LocalContainerCommandResult, LocalContainerCommandRunner } from "../src/runtime/adapters/local-container.ts";
+import type { NodeExecutionHandle, StoredNode, TaskPackage } from "../src/index.ts";
 import type {
   InternAbortResponse,
   InternClient,
@@ -40,31 +36,23 @@ import type {
   InternTurnResponse,
 } from "../sdk/intern/index.ts";
 import type {
-  CreateSandboxRequest,
-  CreateTunnelRequest,
-  CreateTunnelSignedUrlRequest,
-  RuntimeCapacity,
-  RuntimeHealth,
-  RuntimeInfo,
-  SandboxClient,
-  SandboxExecEvent,
-  SandboxExecRequest,
-  SandboxExecResult,
-  SandboxFileContent,
-  SandboxInfo,
-  SandboxQuota,
-  SandboxRequestContext,
-  SandboxTunnel,
-  SandboxTunnelSignedUrl,
-  SandboxWriteFileRequest,
-} from "../sdk/sandbox/types.ts";
-import { SandboxRequestError } from "../sdk/sandbox/types.ts";
+  OpenSandboxClient,
+  OpenSandboxClientConfig,
+  OpenSandboxCommandOptions,
+  OpenSandboxConnection,
+  OpenSandboxCreateRequest,
+  OpenSandboxExecutionHandlers,
+  OpenSandboxInstanceInfo,
+  OpenSandboxListRequest,
+} from "../sdk/opensandbox/types.ts";
+import { OpenSandboxRequestError } from "../sdk/opensandbox/types.ts";
 
 const TEST_SECRET = "phase7-secret";
 
 describe("phase 7 runtime integration", () => {
   let database = createControlPlaneDatabase();
   let stagingDirs: string[] = [];
+  const restoreCallbacks: Array<() => void> = [];
 
   beforeEach(() => {
     database = createControlPlaneDatabase();
@@ -78,6 +66,9 @@ describe("phase 7 runtime integration", () => {
 
   afterEach(() => {
     database.close();
+    while (restoreCallbacks.length > 0) {
+      restoreCallbacks.pop()?.();
+    }
     for (const stagingDir of stagingDirs) {
       rmSync(stagingDir, { recursive: true, force: true });
     }
@@ -89,10 +80,19 @@ describe("phase 7 runtime integration", () => {
     return new RuntimeSessionService(registry, new RuntimeSelectionService(registry), database, { stagingBaseDir: stagingDir });
   };
 
-  test("createServerApp auto-registers runtime adapters when dependencies are available", async () => {
+  test("createServerApp auto-registers OpenSandbox when config is present", async () => {
+    setEnv("OR3_NET_OPENSANDBOX_API_KEY", "api-key", restoreCallbacks);
+    setEnv("OR3_NET_OPENSANDBOX_DOMAIN", "sandbox.test", restoreCallbacks);
+    patchStatic(SandboxManager, "create", (() => ({
+      listSandboxInfos: async () => ({ items: [] }),
+      getSandboxInfo: async () => createSdkSandboxInfo("osbx_1", "running"),
+      pauseSandbox: async () => undefined,
+      killSandbox: async () => undefined,
+      close: async () => undefined,
+    })) as any, restoreCallbacks);
+
     const authService = createAuthService(database);
     seedApprovedRemoteNode(database);
-    const sandboxClient = new FakeSandboxClient();
     const nodeRegistryService = new NodeRegistryService({ database });
     const leaseScheduler = new LeaseScheduler({ database });
     const remoteNodeExecutor = new FakeRemoteExecutor();
@@ -100,7 +100,6 @@ describe("phase 7 runtime integration", () => {
       database,
       authService,
       localJobService: createLocalJobService(database),
-      sandboxClient,
       nodeRegistryService,
       leaseScheduler,
       remoteNodeExecutor: remoteNodeExecutor as never,
@@ -118,22 +117,22 @@ describe("phase 7 runtime integration", () => {
     expect(response.status).toBe(200);
     expect(payload.items.map((item) => item.adapter_id).sort()).toEqual([
       "local-container",
-      "or3-sandbox",
+      "opensandbox",
       "remote-node-agent",
     ]);
   });
 
-  test("sandbox adapter supports full create exec destroy lifecycle through session service", async () => {
+  test("opensandbox adapter supports full create exec destroy lifecycle through session service", async () => {
     const registry = new RuntimeRegistry();
-    registry.register(new SandboxRuntimeAdapter({ sandboxClient: new FakeSandboxClient() }));
+    registry.register(new OpenSandboxRuntimeAdapter({ client: new FakeOpenSandboxClient() }));
     const service = createRuntimeSessionService(registry);
 
-    const session = await service.createSession("ws_test", createSessionConfig(["log-stream"]));
+    const session = await service.createSession("ws_test", createSessionConfig(["exec"]));
     const handle = await service.exec("ws_test", session.session_id, createExecRequest("echo", ["hello"]));
     const result = await handle.result;
     const destroyed = await service.destroySession("ws_test", session.session_id);
 
-    expect(session.adapter_id).toBe("or3-sandbox");
+    expect(session.adapter_id).toBe("opensandbox");
     expect(result.stdout).toBe("echo hello");
     expect(destroyed.status).toBe("destroyed");
   });
@@ -182,16 +181,17 @@ describe("phase 7 runtime integration", () => {
     expect(destroyed.status).toBe("destroyed");
   });
 
-  test("startup reconciliation runs when the server app is created", async () => {
-    const sandboxClient = new FakeSandboxClient();
+  test("startup reconciliation marks missing OpenSandbox sessions as destroyed", async () => {
+    const client = new FakeOpenSandboxClient();
+    client.missingIds.add("osbx_missing");
     const registry = new RuntimeRegistry();
-    registry.register(new SandboxRuntimeAdapter({ sandboxClient }));
+    registry.register(new OpenSandboxRuntimeAdapter({ client }));
     const service = createRuntimeSessionService(registry);
 
     database.workspace("ws_test").saveRuntimeSession({
       session_id: "sess_reconcile",
-      adapter_id: "or3-sandbox",
-      adapter_session_ref: "sbx_missing",
+      adapter_id: "opensandbox",
+      adapter_session_ref: "osbx_missing",
       status: "ready",
       capabilities: ["exec"],
       isolation_class: "sandbox",
@@ -215,7 +215,7 @@ describe("phase 7 runtime integration", () => {
   test("selection picks the remote adapter for production trust criteria", async () => {
     seedApprovedRemoteNode(database);
     const registry = new RuntimeRegistry();
-    registry.register(new SandboxRuntimeAdapter({ sandboxClient: new FakeSandboxClient() }));
+    registry.register(new OpenSandboxRuntimeAdapter({ client: new FakeOpenSandboxClient() }));
     registry.register(new LocalContainerRuntimeAdapter({ runner: new FakeRunner() }));
     registry.register(
       new RemoteNodeRuntimeAdapter({
@@ -272,176 +272,137 @@ class FakeInternClient implements InternClient {
   }
 }
 
-class FakeSandboxClient implements SandboxClient {
-  private readonly sandboxes = new Map<string, SandboxInfo>();
-  private readonly files = new Map<string, Map<string, string>>();
+class FakeOpenSandboxConnection implements OpenSandboxConnection {
+  public constructor(
+    public readonly instance_id: string,
+    private readonly client: FakeOpenSandboxClient,
+  ) {}
 
-  public create(request: CreateSandboxRequest, requestContext?: SandboxRequestContext): Promise<SandboxInfo> {
-    void requestContext;
-    const sandbox: SandboxInfo = {
-      id: `sbx_${String(this.sandboxes.size + 1)}`,
-      status: request.start === true ? "running" : "created",
-      ...(request.workspace_id === undefined ? {} : { workspace_id: request.workspace_id }),
-    };
-    this.sandboxes.set(sandbox.id, sandbox);
-    this.files.set(sandbox.id, new Map());
-    return Promise.resolve(sandbox);
+  public async runCommand(
+    command: string,
+    options: OpenSandboxCommandOptions = {},
+    handlers: OpenSandboxExecutionHandlers = {},
+  ): Promise<{ exit_code: number; stdout: string; stderr: string; meta: Record<string, unknown> }> {
+    void options;
+    await handlers.onStdout?.({ text: command });
+    await handlers.onResult?.({ status: "completed" });
+    return { exit_code: 0, stdout: command, stderr: "", meta: {} };
   }
 
-  public list(requestContext?: SandboxRequestContext): Promise<SandboxInfo[]> {
-    void requestContext;
-    return Promise.resolve([...this.sandboxes.values()]);
-  }
-
-  public get(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxInfo> {
-    void requestContext;
-    const sandbox = this.sandboxes.get(sandboxId);
-    if (sandbox === undefined) {
-      return Promise.reject(new SandboxRequestError("sandbox missing", 404, { error: "missing", status: 404 }));
+  public writeFiles(entries: Array<{ path: string; data: string }>): Promise<void> {
+    const files = this.client.files.get(this.instance_id) ?? new Map<string, string>();
+    for (const entry of entries) {
+      files.set(entry.path, entry.data);
     }
-    return Promise.resolve(sandbox);
-  }
-
-  public delete(sandboxId: string, requestContext?: SandboxRequestContext): Promise<void> {
-    void requestContext;
-    this.sandboxes.delete(sandboxId);
-    this.files.delete(sandboxId);
+    this.client.files.set(this.instance_id, files);
     return Promise.resolve();
   }
 
-  public start(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxInfo> {
-    void requestContext;
-    const sandbox = { ...(this.sandboxes.get(sandboxId) ?? { id: sandboxId }), status: "running" };
-    this.sandboxes.set(sandboxId, sandbox);
-    return Promise.resolve(sandbox);
+  public readFile(path: string): Promise<string> {
+    return Promise.resolve(this.client.files.get(this.instance_id)?.get(path) ?? "");
   }
 
-  public stop(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxInfo> {
-    void requestContext;
-    const sandbox = { ...(this.sandboxes.get(sandboxId) ?? { id: sandboxId }), status: "stopped" };
-    this.sandboxes.set(sandboxId, sandbox);
-    return Promise.resolve(sandbox);
-  }
-
-  public suspend(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxInfo> {
-    return this.stop(sandboxId, requestContext);
-  }
-
-  public resume(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxInfo> {
-    return this.start(sandboxId, requestContext);
-  }
-
-  public async *execStream(sandboxId: string, request: SandboxExecRequest, requestContext?: SandboxRequestContext): AsyncIterable<SandboxExecEvent> {
-    void sandboxId;
-    void requestContext;
-    await Promise.resolve();
-    const output = request.command.join(" ");
-    yield { event: "stdout", data: { chunk: output } };
-    yield { event: "result", data: { exit_code: 0, stdout: output, stderr: "" } };
-  }
-
-  public exec(sandboxId: string, request: SandboxExecRequest, requestContext?: SandboxRequestContext): Promise<SandboxExecResult> {
-    void sandboxId;
-    void requestContext;
-    return Promise.resolve({ exit_code: 0, stdout: request.command.join(" "), stderr: "" });
-  }
-
-  public readFile(sandboxId: string, path: string, requestContext?: SandboxRequestContext): Promise<SandboxFileContent> {
-    void requestContext;
-    const content = this.files.get(sandboxId)?.get(path) ?? "";
-    return Promise.resolve({ path, content });
-  }
-
-  public writeFile(sandboxId: string, request: SandboxWriteFileRequest, requestContext?: SandboxRequestContext): Promise<void> {
-    void requestContext;
-    const files = this.files.get(sandboxId) ?? new Map<string, string>();
-    files.set(request.path, request.content);
-    this.files.set(sandboxId, files);
+  public createDirectories(paths: Array<{ path: string }>): Promise<void> {
+    void paths;
     return Promise.resolve();
   }
 
-  public deleteFile(sandboxId: string, path: string, requestContext?: SandboxRequestContext): Promise<void> {
-    void requestContext;
-    this.files.get(sandboxId)?.delete(path);
+  public getEndpoint(port: number): Promise<{ endpoint: string; url?: string }> {
+    return Promise.resolve({ endpoint: `launch.local/${this.instance_id}/${String(port)}`, url: `https://launch.local/${this.instance_id}/${String(port)}` });
+  }
+
+  public pause(): Promise<void> {
+    return this.client.pause(this.instance_id);
+  }
+
+  public resume(): Promise<OpenSandboxConnection> {
+    return this.client.resume(this.instance_id);
+  }
+
+  public renew(timeoutSeconds: number): Promise<void> {
+    return this.client.renew(this.instance_id, timeoutSeconds);
+  }
+
+  public kill(): Promise<void> {
+    return this.client.kill(this.instance_id);
+  }
+
+  public close(): Promise<void> {
     return Promise.resolve();
   }
+}
 
-  public mkdir(sandboxId: string, path: string, requestContext?: SandboxRequestContext): Promise<void> {
-    void sandboxId;
-    void path;
-    void requestContext;
-    return Promise.resolve();
-  }
+class FakeOpenSandboxClient implements OpenSandboxClient {
+  public readonly config: OpenSandboxClientConfig = {
+    apiKey: "api-key",
+    domain: "sandbox.test",
+    defaultTimeoutSeconds: 120,
+  };
 
-  public importWorkspaceArchive(sandboxId: string, archive: Uint8Array, requestContext?: SandboxRequestContext): Promise<void> {
-    void requestContext;
-    const files = this.files.get(sandboxId) ?? new Map<string, string>();
-    files.set("/__archive__", String(archive.byteLength));
-    this.files.set(sandboxId, files);
-    return Promise.resolve();
-  }
+  public readonly instances = new Map<string, OpenSandboxInstanceInfo>();
+  public readonly files = new Map<string, Map<string, string>>();
+  public readonly missingIds = new Set<string>();
 
-  public exportWorkspaceArchive(sandboxId: string, request?: { paths?: string[] }, requestContext?: SandboxRequestContext): Promise<Uint8Array> {
-    void sandboxId;
-    void request;
-    void requestContext;
-    return Promise.resolve(new Uint8Array([1, 2, 3]));
-  }
-
-  public createTunnel(sandboxId: string, request: CreateTunnelRequest, requestContext?: SandboxRequestContext): Promise<SandboxTunnel> {
-    void requestContext;
-    return Promise.resolve({
-      id: `tun_${sandboxId}_${String(request.target_port)}`,
-      sandbox_id: sandboxId,
-      target_port: request.target_port,
-      endpoint: `https://sandbox.local/${sandboxId}/${String(request.target_port)}`,
+  public async create(input: OpenSandboxCreateRequest): Promise<OpenSandboxConnection> {
+    const instanceId = `osbx_${String(this.instances.size + 1)}`;
+    this.instances.set(instanceId, {
+      id: instanceId,
+      status: "running",
+      ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
     });
+    this.files.set(instanceId, new Map());
+    return new FakeOpenSandboxConnection(instanceId, this);
   }
 
-  public listTunnels(sandboxId: string, requestContext?: SandboxRequestContext): Promise<SandboxTunnel[]> {
-    void sandboxId;
-    void requestContext;
-    return Promise.resolve([]);
+  public connect(instanceId: string): Promise<OpenSandboxConnection> {
+    if (this.missingIds.has(instanceId) || !this.instances.has(instanceId)) {
+      return Promise.reject(new OpenSandboxRequestError("missing", 404, { code: "not_found" }));
+    }
+    return Promise.resolve(new FakeOpenSandboxConnection(instanceId, this));
   }
 
-  public revokeTunnel(tunnelId: string, requestContext?: SandboxRequestContext): Promise<void> {
-    void tunnelId;
-    void requestContext;
+  public list(input?: OpenSandboxListRequest): Promise<OpenSandboxInstanceInfo[]> {
+    void input;
+    return Promise.resolve([...this.instances.values()]);
+  }
+
+  public get(instanceId: string): Promise<OpenSandboxInstanceInfo> {
+    if (this.missingIds.has(instanceId)) {
+      return Promise.reject(new OpenSandboxRequestError("missing", 404, { code: "not_found" }));
+    }
+    const instance = this.instances.get(instanceId);
+    if (instance === undefined) {
+      return Promise.reject(new OpenSandboxRequestError("missing", 404, { code: "not_found" }));
+    }
+    return Promise.resolve(instance);
+  }
+
+  public pause(instanceId: string): Promise<void> {
+    const instance = this.instances.get(instanceId);
+    if (instance !== undefined) {
+      this.instances.set(instanceId, { ...instance, status: "paused" });
+    }
     return Promise.resolve();
   }
 
-  public createSignedTunnelUrl(tunnelId: string, request?: CreateTunnelSignedUrlRequest, requestContext?: SandboxRequestContext): Promise<SandboxTunnelSignedUrl> {
-    void request;
-    void requestContext;
-    return Promise.resolve({
-      url: `https://sandbox.local/signed/${tunnelId}`,
-      expires_at: "2099-01-01T00:00:00.000Z",
-    });
+  public resume(instanceId: string): Promise<OpenSandboxConnection> {
+    const instance = this.instances.get(instanceId);
+    if (instance !== undefined) {
+      this.instances.set(instanceId, { ...instance, status: "running" });
+    }
+    return this.connect(instanceId);
   }
 
-  public runtimeInfo(requestContext?: SandboxRequestContext): Promise<RuntimeInfo> {
-    void requestContext;
-    return Promise.resolve({ cpu_cores: 2, memory_mb: 1024, max_concurrent_execs: 4 });
+  public renew(instanceId: string, timeoutSeconds: number): Promise<void> {
+    void instanceId;
+    void timeoutSeconds;
+    return Promise.resolve();
   }
 
-  public runtimeHealth(requestContext?: SandboxRequestContext): Promise<RuntimeHealth> {
-    void requestContext;
-    return Promise.resolve({ status: "healthy" });
-  }
-
-  public runtimeCapacity(requestContext?: SandboxRequestContext): Promise<RuntimeCapacity> {
-    void requestContext;
-    return Promise.resolve({});
-  }
-
-  public getQuota(requestContext?: SandboxRequestContext): Promise<SandboxQuota> {
-    void requestContext;
-    return Promise.resolve({});
-  }
-
-  public getMetrics(requestContext?: SandboxRequestContext): Promise<string> {
-    void requestContext;
-    return Promise.resolve("");
+  public kill(instanceId: string): Promise<void> {
+    this.instances.delete(instanceId);
+    this.files.delete(instanceId);
+    return Promise.resolve();
   }
 }
 
@@ -463,6 +424,23 @@ class FakeRemoteExecutor {
   public canExecute(node: StoredNode): boolean {
     void node;
     return true;
+  }
+
+  public sendRequest(
+    node: StoredNode,
+    request: { id: string; method: string; params?: Record<string, unknown> },
+  ): Promise<{ id: string; result?: Record<string, unknown>; error?: { code: string; message: string; retriable: boolean; details: Record<string, unknown> } }> {
+    void node;
+    switch (request.method) {
+      case "create_session":
+        return Promise.resolve({ id: request.id, result: { status: "ready" } });
+      case "destroy_session":
+        return Promise.resolve({ id: request.id, result: { destroyed: true } });
+      case "get_logs":
+        return Promise.resolve({ id: request.id, result: { meta: { chunks: [] } } });
+      default:
+        return Promise.resolve({ id: request.id, result: {} });
+    }
   }
 }
 
@@ -504,7 +482,7 @@ const createToken = async (scopes: string[]): Promise<string> => {
   return token.token;
 };
 
-const createSessionConfig = (requiredCapabilities: string[] = []): ReturnType<typeof runtimeSessionCreateInputSchema.parse> =>
+const createSessionConfig = (requiredCapabilities: string[] = []) =>
   runtimeSessionCreateInputSchema.parse(
     requiredCapabilities.length === 0 ? {} : { required_capabilities: requiredCapabilities },
   );
@@ -537,3 +515,37 @@ const seedApprovedRemoteNode = (database: ReturnType<typeof createControlPlaneDa
     last_seen_at: "2024-01-01T00:00:00.000Z",
   });
 };
+
+const patchStatic = <T extends object, K extends keyof T>(
+  target: T,
+  key: K,
+  replacement: T[K],
+  restoreCallbacks: Array<() => void>,
+): void => {
+  const original = target[key];
+  target[key] = replacement;
+  restoreCallbacks.push(() => {
+    target[key] = original;
+  });
+};
+
+const setEnv = (key: string, value: string, restoreCallbacks: Array<() => void>): void => {
+  const previous = Bun.env[key];
+  Bun.env[key] = value;
+  restoreCallbacks.push(() => {
+    if (previous === undefined) {
+      delete Bun.env[key];
+      return;
+    }
+    Bun.env[key] = previous;
+  });
+};
+
+const createSdkSandboxInfo = (id: string, state: string): any => ({
+  id,
+  image: "ubuntu",
+  entrypoint: ["tail", "-f", "/dev/null"],
+  createdAt: new Date("2024-01-01T00:00:00.000Z"),
+  expiresAt: null,
+  status: { state },
+});
