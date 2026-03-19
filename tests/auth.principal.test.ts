@@ -65,8 +65,53 @@ describe("auth principal canonical fields", () => {
     expect(principal.workspace_id).toBe("ws_test");
     expect(principal.scopes).toEqual(["jobs:read"]);
     expect(principal.auth_type).toBe("api-key");
+    expect(Number.isFinite(principal.issued_at)).toBeTrue();
+    expect(Number.isFinite(principal.expires_at)).toBeTrue();
     expect(principal.issued_at).toBeGreaterThan(0);
     expect(principal.expires_at).toBeGreaterThan(principal.issued_at);
+  });
+
+  test("revoked api keys can no longer authenticate bearer requests", async () => {
+    const { api_key: apiKey, record } = await authService.createApiKey({
+      workspace_id: "ws_test",
+      name: "revoked-key",
+      scopes: ["jobs:read"],
+    });
+
+    const principal = await authService.authenticateBearerToken(`Bearer ${apiKey}`);
+    expect(principal.auth_type).toBe("api-key");
+    expect(principal.workspace_id).toBe("ws_test");
+
+    authService.revokeApiKey("ws_test", record.api_key_id);
+
+    await expect(authService.authenticateBearerToken(`Bearer ${apiKey}`)).rejects.toThrow("invalid bearer token");
+  });
+
+  test("api key auth rejects malformed persisted timestamp fields", async () => {
+    const authServiceWithMalformedApiKey = authService as AuthService & {
+      authenticateApiKey: (rawToken: string) => Promise<{
+        api_key_id: string;
+        workspace_id: string;
+        name: string;
+        key_hash: string;
+        scopes: string[];
+        created_at: string;
+        expires_at: string | null;
+        revoked_at: string | null;
+      }>;
+    };
+    authServiceWithMalformedApiKey.authenticateApiKey = async (_rawToken: string) => ({
+      api_key_id: "api_bad",
+      workspace_id: "ws_test",
+      name: "bad-key",
+      key_hash: "hashed",
+      scopes: ["jobs:read"],
+      created_at: "not-a-timestamp",
+      expires_at: null,
+      revoked_at: null,
+    });
+
+    await expect(authService.authenticateBearerToken("Bearer definitely-not-a-workspace-token")).rejects.toThrow("invalid bearer token");
   });
 
   test("token validation remains compatible with legacy sub-only claims", async () => {
