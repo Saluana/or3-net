@@ -18,6 +18,7 @@ import type { ControlPlaneDatabase, StoredApiKey } from "../db/index.ts";
 
 import { createId } from "../lib/ids.ts";
 import { hashApiKey } from "../lib/crypto.ts";
+import { fromIsoDateTime } from "../lib/time.ts";
 import type { AuthToken } from "../contracts/index.ts";
 import { issueWorkspaceToken, validateWorkspaceToken, type WorkspacePrincipal } from "./tokens.ts";
 
@@ -129,19 +130,23 @@ export class AuthService {
       if (isExpiredWorkspaceTokenError(error)) {
         throw error;
       }
-      const apiKey = await this.authenticateApiKey(value);
-      const issuedAt = Math.floor(Date.parse(apiKey.created_at) / 1000);
-      const expiresAt = apiKey.expires_at === null
-        ? MAX_API_KEY_EXPIRY_SECONDS
-        : Math.floor(Date.parse(apiKey.expires_at) / 1000);
-      return {
-        subject: apiKey.api_key_id,
-        workspace_id: apiKey.workspace_id,
-        scopes: apiKey.scopes,
-        auth_type: "api-key",
-        issued_at: issuedAt,
-        expires_at: expiresAt,
-      };
+      try {
+        const apiKey = await this.authenticateApiKey(value);
+        const issuedAt = toUnixTimestampSeconds(apiKey.created_at);
+        const expiresAt = apiKey.expires_at === null
+          ? MAX_API_KEY_EXPIRY_SECONDS
+          : toUnixTimestampSeconds(apiKey.expires_at);
+        return {
+          subject: apiKey.api_key_id,
+          workspace_id: apiKey.workspace_id,
+          scopes: apiKey.scopes,
+          auth_type: "api-key",
+          issued_at: issuedAt,
+          expires_at: expiresAt,
+        };
+      } catch {
+        throw new Error("invalid bearer token");
+      }
     }
   }
 
@@ -201,6 +206,14 @@ export class AuthService {
 
 /** Unix timestamp for 9999-12-31T23:59:59Z — effectively "never expires" for API keys. */
 const MAX_API_KEY_EXPIRY_SECONDS = 253402300799;
+
+const toUnixTimestampSeconds = (timestamp: string): number => {
+  const milliseconds = fromIsoDateTime(timestamp);
+  if (!Number.isFinite(milliseconds)) {
+    throw new Error("invalid bearer token");
+  }
+  return Math.floor(milliseconds / 1000);
+};
 
 const isExpiredWorkspaceTokenError = (error: unknown): boolean =>
   error instanceof Error && error.message.toLowerCase().includes("workspace token expired");

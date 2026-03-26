@@ -82,7 +82,7 @@
 
 ## 11. Add PTY support
 
-Tracked in detail by `planning/node-agent-pty/*`; the concrete PTY implementation and follow-up validation now live there.
+Implemented in the current codebase and validated by PTY coverage in `or3-node` and `or3-net`; keep any future follow-up notes in this plan.
 
 - [x] [Req 9] Define PTY RPC and event framing over WSS for open, input, resize, close, output, and exit.
 - [x] [Req 9] Implement agent-side PTY lifecycle management with platform checks and session limits.
@@ -105,16 +105,16 @@ Tracked in detail by `planning/node-agent-pty/*`; the concrete PTY implementatio
 
 ## 14. Cross-platform and packaging work
 
-- [ ] [Req 5, 9, 11] Define the supported matrix for Linux, macOS, and Windows, including which capabilities are enabled on each platform for v1.
-- [ ] [Req 1, 13] Make global Bun install the primary packaging story and add service-manager guidance only as a follow-up path (for example `launchd`, `systemd`, or Windows service documentation).
-- [ ] [Req 11] Document clearly that host mode is trusted-machine control, not hostile-code isolation.
+- [x] [Req 5, 9, 11] Define the supported matrix for Linux, macOS, and Windows, including which capabilities are enabled on each platform for v1.
+- [x] [Req 1, 13] Make global Bun install the primary packaging story and add service-manager guidance only as a follow-up path (for example `launchd`, `systemd`, or Windows service documentation).
+- [x] [Req 11] Document clearly that host mode is trusted-machine control, not hostile-code isolation.
 
 ## 15. Validation and release gate
 
-- [ ] [Req 1, 2, 3, 4, 6, 13] Run Bun typecheck, lint, and a focused automated suite covering bootstrap, approval, connect, remote execute, reconnect, and first-launch UX.
-- [ ] [Req 7, 8, 9, 10] Add staged release gates for runtime-session parity, file access, PTY, and service launch rather than treating them as hidden stretch work.
-- [ ] [Req 12, 13] Validate restart behavior for identity persistence, credential revocation, and stale-connection recovery.
-- [ ] [Req 1, 13] Add end-to-end smoke scripts that prove `bun install -g or3-node`, `or3-node launch`, approval, and first remote command work on a real machine.
+- [x] [Req 1, 2, 3, 4, 6, 13] Run Bun typecheck, lint, and a focused automated suite covering bootstrap, approval, connect, remote execute, reconnect, and first-launch UX.
+- [x] [Req 7, 8, 9, 10] Add staged release gates for runtime-session parity, file access, PTY, and service launch rather than treating them as hidden stretch work.
+- [x] [Req 12, 13] Validate restart behavior for identity persistence, credential revocation, and stale-connection recovery.
+- [x] [Req 1, 13] Add end-to-end smoke scripts that prove `bun install -g or3-node`, `or3-node launch`, approval, and first remote command work on a real machine.
 
 ## 16. Out of scope for the first cut
 
