@@ -37,9 +37,21 @@ The route for exchanging upstream proof into an OR3 bearer token is:
 
 - `POST /v1/auth/exchange`
 
-It accepts provider-specific `session_proof` data and returns a workspace token.
+For the primary chat integration, the preferred request is now a host-signed assertion from `or3-chat`:
 
-Use this route when you already have identity proof from another auth system and need an OR3-native bearer token for the control plane.
+```json
+{
+  "provider": "or3-chat",
+  "session_proof": {
+    "format": "or3-chat-assertion-v1",
+    "assertion": "<signed-token>"
+  },
+  "workspace_id": "ws_demo"
+}
+```
+
+In v1, `or3-chat` and `or3-net` share an HMAC secret for this assertion format.
+That keeps provider-specific auth logic on the chat server side instead of pushing Clerk or basic-auth details into OR3 Net clients.
 
 ## Error model
 
@@ -172,6 +184,11 @@ Purpose:
 - inspect service capabilities published by nodes
 - launch, revoke, or restart node-backed services
 
+Notes:
+
+- `GET .../services` only returns items when the node explicitly advertises `service-launch`
+- launch, revoke, and restart are forbidden when `service-launch` is not advertised
+
 ### Previews and launch tokens
 
 - `GET /v1/workspaces/:workspaceId/previews`
@@ -192,10 +209,11 @@ Purpose:
 
 ### Flow: exchange auth and submit a job
 
-1. `POST /v1/auth/exchange`
-2. store returned bearer token
-3. `POST /v1/workspaces/:workspaceId/jobs`
-4. `GET /v1/jobs/:jobId/stream`
+1. `or3-chat` resolves session and workspace server-side
+2. `POST /v1/auth/exchange`
+3. store returned bearer token
+4. `POST /v1/workspaces/:workspaceId/jobs`
+5. `GET /v1/jobs/:jobId/stream`
 
 ### Flow: create and use a runtime session
 

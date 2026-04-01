@@ -9,6 +9,7 @@ import type {
   ProviderRequestContext,
 } from "./execution-adapter.ts";
 import type { OpenSandboxClient, OpenSandboxConnection } from "../../sdk/opensandbox/types.ts";
+import { listAdvertisedNodeServices } from "./capabilities.ts";
 
 export interface OpenSandboxNodeAdapterOptions {
   readonly defaultImage?: string;
@@ -91,10 +92,7 @@ export class OpenSandboxNodeAdapter implements NodeExecutionAdapter {
   }
 
   public listServices(node: StoredNode): NodeServiceDescriptor[] {
-    return node.manifest.capabilities
-      .filter((capability) => capability.startsWith("service:"))
-      .map(parseServiceCapability)
-      .filter((service): service is NodeServiceDescriptor => service !== null);
+    return listAdvertisedNodeServices(node);
   }
 
   public async prepareServiceLaunch(
@@ -222,22 +220,6 @@ export class OpenSandboxNodeAdapter implements NodeExecutionAdapter {
     return service;
   }
 }
-
-const parseServiceCapability = (capability: string): NodeServiceDescriptor | null => {
-  const [, serviceId, port] = capability.split(":");
-  const targetPort = Number.parseInt(port ?? "", 10);
-  if (!serviceId || !Number.isInteger(targetPort) || targetPort <= 0) {
-    return null;
-  }
-  return {
-    service_id: serviceId,
-    label: serviceId,
-    status: "ready",
-    launchable: true,
-    target_port: targetPort,
-  };
-};
-
 const buildMetadata = (taskPackage: TaskPackage, workspaceId: string, role: "job"): Record<string, string> => ({
   or3_workspace_id: workspaceId,
   or3_role: role,

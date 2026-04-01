@@ -152,22 +152,26 @@ For `or3-node` today that means:
 
 ## Production Phases
 
-### Phase 0: Freeze contract and simplification
+### Phase 0: Freeze contract and simplification [Complete]
 
-Outputs:
+Completed on 2026-03-29.
 
-- one trusted `or3-chat` assertion format
-- one `SessionProofValidator` implementation in `or3-net`
-- one capability truth model tied to `or3-node`
+Outputs landed:
 
-### Phase 1: Finish the control plane
+- [x] one trusted `or3-chat` assertion format
+- [x] one `SessionProofValidator` implementation in `or3-net`
+- [x] one capability truth model tied to `or3-node`
 
-Outputs:
+### Phase 1: Finish the control plane [Complete]
 
-- stable auth exchange
-- stable jobs and sessions
-- stable previews
-- service launch still gated unless `or3-node` readiness clears it
+Completed on 2026-03-29.
+
+Outputs landed:
+
+- [x] stable auth exchange
+- [x] stable jobs and sessions
+- [x] stable previews
+- [x] service launch remains gated unless `or3-node` readiness clears it
 
 ### Phase 2: Finish the chat integration
 

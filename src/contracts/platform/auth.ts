@@ -1,3 +1,4 @@
+
 /**
  * @module src/contracts/platform/auth
  *
@@ -9,6 +10,19 @@ import { z } from "zod";
 
 import { authTokenSchema } from "../core.ts";
 import { nonEmptyStringSchema } from "../shared.ts";
+
+/**
+ * Purpose:
+ * Stable host-assertion envelope used by `or3-chat` when exchanging an SSR-
+ * resolved user session for an OR3 Net workspace token.
+ */
+export const or3ChatAssertionFormat = "or3-chat-assertion-v1" as const;
+
+/** Purpose: Canonical `session_proof` payload for `provider = "or3-chat"`. */
+export const or3ChatSessionProofSchema = z.object({
+  format: z.literal(or3ChatAssertionFormat),
+  assertion: nonEmptyStringSchema,
+});
 
 /**
  * Purpose:
@@ -27,5 +41,6 @@ export const exchangeSessionRequestSchema = z.object({
 /** Purpose: Auth exchange response reusing the canonical auth-token contract. */
 export const exchangeSessionResponseSchema = authTokenSchema;
 
+export type Or3ChatSessionProof = z.infer<typeof or3ChatSessionProofSchema>;
 export type ExchangeSessionRequest = z.infer<typeof exchangeSessionRequestSchema>;
 export type ExchangeSessionResponse = z.infer<typeof exchangeSessionResponseSchema>;

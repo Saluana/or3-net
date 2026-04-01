@@ -17,6 +17,7 @@
 export * from "./contracts/index.ts";
 export * from "./agents/index.ts";
 export * from "./auth/service.ts";
+export * from "./auth/or3-chat-assertions.ts";
 export * from "./auth/tokens.ts";
 export * from "./api/app.ts";
 export * from "./api/index.ts";

@@ -6,6 +6,7 @@
  * helpers.
  */
 export * from "./registry.ts";
+export * from "./capabilities.ts";
 export * from "./signatures.ts";
 export * from "./executor.ts";
 export * from "./execution-adapter.ts";

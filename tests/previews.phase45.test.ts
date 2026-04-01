@@ -506,7 +506,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       node_id: "node_service",
       pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
       adapter_kind: "sandbox",
-      capabilities: ["exec", "network", "service:openclaw:3000:OpenClaw Dashboard"],
+      capabilities: ["exec", "network", "service-launch", "service:openclaw:3000:OpenClaw Dashboard"],
       isolation_class: "docker-trusted",
       supports_transports: ["https"],
       resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
@@ -581,6 +581,43 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       }),
     );
     expect(forbiddenResponse.status).toBe(403);
+  });
+
+  test("hides node services until service-launch is explicitly advertised", async () => {
+    const token = await exchangeToken(app, "ws_preview");
+    const keyPair = nacl.sign.keyPair();
+    const unsignedManifest: UnsignedManifest = {
+      node_id: "node_hidden_service",
+      pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
+      adapter_kind: "sandbox",
+      capabilities: ["exec", "network", "service:openclaw:3000:OpenClaw Dashboard"],
+      isolation_class: "docker-trusted",
+      supports_transports: ["https"],
+      resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
+      lease_policy: { max_ttl_seconds: 300, supports_warm_pool: true, reset_methods: ["process_kill"] },
+      version: "1.0.0",
+    };
+    await nodeRegistry.enrollNode("ws_preview", { ...unsignedManifest, signature: signNodeManifest(unsignedManifest, keyPair.secretKey) });
+    await nodeRegistry.approveNode("ws_preview", "node_hidden_service");
+
+    const servicesResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/nodes/node_hidden_service/services", {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(servicesResponse.status).toBe(200);
+    expect(((await servicesResponse.json()) as { items: unknown[] }).items).toEqual([]);
+
+    const launchResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/workspaces/ws_preview/nodes/node_hidden_service/services/openclaw/launch", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(launchResponse.status).toBe(403);
+    expect(((await launchResponse.json()) as { error: string }).error).toContain("service-launch");
   });
 
   test("recycles sandbox-backed task execution safely when execution fails", async () => {
@@ -684,7 +721,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
         pubkey: "pubkey",
         signature: "sig",
         adapter_kind: "sandbox",
-        capabilities: ["exec", "service:openclaw:3000:OpenClaw Dashboard"],
+        capabilities: ["exec", "service-launch", "service:openclaw:3000:OpenClaw Dashboard"],
         isolation_class: "docker-trusted",
         supports_transports: ["https"],
         resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
@@ -727,7 +764,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       node_id: "node_reuse",
       pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
       adapter_kind: "sandbox",
-      capabilities: ["exec", "network", "service:openclaw:3000:OpenClaw Dashboard"],
+      capabilities: ["exec", "network", "service-launch", "service:openclaw:3000:OpenClaw Dashboard"],
       isolation_class: "docker-trusted",
       supports_transports: ["https"],
       resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
@@ -772,7 +809,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       node_id: "node_shared",
       pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
       adapter_kind: "sandbox",
-      capabilities: ["exec", "network", "service:openclaw:3000:OpenClaw Dashboard"],
+      capabilities: ["exec", "network", "service-launch", "service:openclaw:3000:OpenClaw Dashboard"],
       isolation_class: "docker-trusted",
       supports_transports: ["https"],
       resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },
@@ -811,7 +848,7 @@ describe("phase 4.5-6 previews, files, and service launches", () => {
       node_id: "node_restart",
       pubkey: Buffer.from(keyPair.publicKey).toString("base64"),
       adapter_kind: "sandbox",
-      capabilities: ["exec", "network", "service:openclaw:3000:OpenClaw Dashboard"],
+      capabilities: ["exec", "network", "service-launch", "service:openclaw:3000:OpenClaw Dashboard"],
       isolation_class: "docker-trusted",
       supports_transports: ["https"],
       resource_limits: { max_concurrent_jobs: 1, cpu_cores: 2, memory_mb: 2048, disk_mb: 2048 },

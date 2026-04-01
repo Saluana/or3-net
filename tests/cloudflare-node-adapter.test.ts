@@ -169,10 +169,18 @@ describe("cloudflare sandbox node adapter", () => {
     expect(connection.execs).toEqual(["echo 'hello from cloudflare'"]);
   });
 
+  test("hides service descriptors until service-launch is explicitly advertised", () => {
+    const client = new FakeClient();
+    const adapter = new CloudflareSandboxNodeAdapter(client);
+    const node = createStoredNode({ node_id: "node_hidden_service", capabilities: ["service:web:3000"] });
+
+    expect(adapter.listServices(node)).toEqual([]);
+  });
+
   test("launches, reuses, and revokes services through exposed ports", async () => {
     const client = new FakeClient();
     const adapter = new CloudflareSandboxNodeAdapter(client);
-    const node = createStoredNode({ node_id: "node_cf_service", capabilities: ["service:web:3000"] });
+    const node = createStoredNode({ node_id: "node_cf_service", capabilities: ["service-launch", "service:web:3000"] });
 
     const firstLaunch = await adapter.prepareServiceLaunch("ws_test", node, "web");
     const secondLaunch = await adapter.prepareServiceLaunch("ws_test", node, "web");

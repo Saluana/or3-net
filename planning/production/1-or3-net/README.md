@@ -32,11 +32,11 @@ Why this is compatible with the current code:
 
 ### 1. Exchange adapter support
 
-- [ ] Define `or3-chat-assertion-v1`
-- [ ] Implement `SessionProofValidator` for `provider = "or3-chat"`
-- [ ] Validate issuer, expiry, user id, workspace id, and scopes
-- [ ] Reject stale or wrong-workspace assertions
-- [ ] Document secret or JWKS distribution between `or3-chat` and `or3-net`
+- [x] Define `or3-chat-assertion-v1`
+- [x] Implement `SessionProofValidator` for `provider = "or3-chat"`
+- [x] Validate issuer, expiry, user id, workspace id, and scopes
+- [x] Reject stale or wrong-workspace assertions
+- [x] Document shared-secret distribution for `or3-chat-assertion-v1`
 
 Recommended request shape:
 
@@ -53,13 +53,13 @@ Recommended request shape:
 
 ### 2. Durable session contract
 
-- [ ] Keep and freeze support for:
+- [x] Keep and freeze support for:
   - `network_session_id`
   - `client_kind`
   - `client_session_id`
   - legacy `session_key`
-- [ ] Make `client_kind = "or3-chat"` the documented chat client binding
-- [ ] Ensure session lookup and reuse are stable after refresh
+- [x] Make `client_kind = "or3-chat"` the documented chat client binding
+- [x] Ensure session lookup and reuse are stable after refresh
 
 Evidence this already exists:
 
@@ -68,23 +68,23 @@ Evidence this already exists:
 
 ### 3. Job and stream stability
 
-- [ ] Freeze create-job payloads used by chat
-- [ ] Freeze stream event taxonomy used by chat
-- [ ] Keep terminal events idempotent
-- [ ] Keep replay and reconnect behavior explicit
+- [x] Freeze create-job payloads used by chat
+- [x] Freeze stream event taxonomy used by chat
+- [x] Keep terminal events idempotent
+- [x] Keep replay and reconnect behavior explicit
 
 ### 4. Preview-first UX contract
 
-- [ ] Treat previews as a first-class public surface
-- [ ] Keep preview descriptors authoritative at the control plane
-- [ ] Let service launch reuse preview/launch capability machinery where possible
-- [ ] Do not expose raw node or runtime URLs directly to browsers
+- [x] Treat previews as a first-class public surface
+- [x] Keep preview descriptors authoritative at the control plane
+- [x] Let service launch reuse preview/launch capability machinery where possible
+- [x] Do not expose raw node or runtime URLs directly to browsers
 
 ### 5. Capability-aware node/service contract
 
-- [ ] Align control-plane service actions with real node capabilities
-- [ ] Do not assume `service-launch` is available just because a node exists
-- [ ] Gate service routes and console actions on advertised capability
+- [x] Align control-plane service actions with real node capabilities
+- [x] Do not assume `service-launch` is available just because a node exists
+- [x] Gate service routes and console actions on advertised capability
 
 This matters because `or3-node` currently keeps `service-launch` hidden by default even though service-management scaffolding exists.
 
@@ -92,27 +92,27 @@ This matters because `or3-node` currently keeps `service-launch` hidden by defau
 
 ### M0: Contract freeze
 
-- [ ] freeze exchange assertion format
-- [ ] freeze chat session binding fields
-- [ ] freeze stream event names
-- [ ] freeze preview descriptor shape
-- [ ] freeze capability-truth rules
+- [x] freeze exchange assertion format
+- [x] freeze chat session binding fields
+- [x] freeze stream event names
+- [x] freeze preview descriptor shape
+- [x] freeze capability-truth rules
 
 ### M1: Auth implementation
 
-- [ ] add host-assertion validator
-- [ ] add tests for expiry, issuer, workspace mismatch, and bad signature
-- [ ] add fixtures for request and response payloads
+- [x] add host-assertion validator
+- [x] add tests for expiry, issuer, workspace mismatch, and bad signature
+- [x] add fixtures for request and response payloads
 
 ### M2: Session and jobs hardening
 
-- [ ] ensure all chat-facing job routes can work from `client_kind` + `client_session_id`
-- [ ] ensure job/session history remains stable after browser reconnect
+- [x] ensure all chat-facing job routes can work from `client_kind` + `client_session_id`
+- [x] ensure job/session history remains stable after browser reconnect
 
 ### M3: Preview and service hardening
 
-- [ ] keep previews working even if service-launch remains gated
-- [ ] only enable service launch in default UX after node readiness says it is safe
+- [x] keep previews working even if service-launch remains gated
+- [x] only enable service launch in default UX after node readiness says it is safe
 
 ### M4: Operational hardening
 
@@ -122,13 +122,13 @@ This matters because `or3-node` currently keeps `service-launch` hidden by defau
 
 ## Test Matrix
 
-- [ ] auth exchange with valid host assertion
-- [ ] auth exchange with expired host assertion
-- [ ] auth exchange with workspace mismatch
-- [ ] durable session reuse from `client_kind` + `client_session_id`
-- [ ] replay/reconnect behavior on job stream
-- [ ] preview launch and revoke
-- [ ] service launch gated by capability truth
+- [x] auth exchange with valid host assertion
+- [x] auth exchange with expired host assertion
+- [x] auth exchange with workspace mismatch
+- [x] durable session reuse from `client_kind` + `client_session_id`
+- [x] replay/reconnect behavior on job stream
+- [x] preview launch and revoke
+- [x] service launch gated by capability truth
 
 ## Definition Of Done
 

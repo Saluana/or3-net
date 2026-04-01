@@ -29,7 +29,7 @@ import { consoleEntryPath, renderConsoleHtml } from "../console/index.ts";
 import type { LocalJobService } from "../execution/local-jobs.ts";
 import { createJobRequestSchema } from "../execution/local-jobs.ts";
 import type { NodeExecutionAdapter, ProviderRequestContext } from "../nodes/execution-adapter.ts";
-import type { NodeRegistryService } from "../nodes/index.ts";
+import { nodeAdvertisesServiceLaunch, type NodeRegistryService } from "../nodes/index.ts";
 import { enrollNodeRequestSchema, issueNodeBootstrapTokenRequestSchema, redeemNodeBootstrapTokenRequestSchema } from "../nodes/index.ts";
 import { PreviewStateError, type PreviewService } from "../previews/service.ts";
 import { errorResponse, resolveRequestId } from "./response-helpers.ts";
@@ -740,7 +740,7 @@ export class Or3NetApp {
   private async handleListNodeServices(request: Request, workspaceId: string, nodeId: string): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "services:read");
     const adapter = requireNodeExecutionAdapter(this.services.nodeExecutionAdapter);
-    const node = this.requireLaunchableNode(principal.workspace_id, nodeId);
+    const node = requireNodeRegistry(this.services.nodeRegistryService).getNode(principal.workspace_id, nodeId);
     return jsonResponse(200, { items: adapter.listServices(node) });
   }
 
@@ -1043,9 +1043,14 @@ const requireNodeExecutionAdapter = (service: NodeExecutionAdapter | undefined):
   return service;
 };
 
-const ensureLaunchableNode = (node: { status: string; health_status: string }): void => {
+const ensureLaunchableNode = (
+  node: { status: string; health_status: string; manifest: { capabilities: readonly string[] } },
+): void => {
   if (node.status !== "approved") {
     throw new HttpError(403, "node is not approved");
+  }
+  if (!nodeAdvertisesServiceLaunch(node)) {
+    throw new HttpError(403, "node does not advertise service-launch capability");
   }
   if (node.health_status === "stale") {
     throw new HttpError(403, "node is not healthy enough for service launch");

@@ -1,7 +1,9 @@
+
 {
-  "provider": "clerk",
+  "provider": "or3-chat",
   "session_proof": {
-    "jwt": "header.payload.signature"
+    "format": "or3-chat-assertion-v1",
+    "assertion": "payload.signature"
   },
   "workspace_id": "ws_demo"
 }
