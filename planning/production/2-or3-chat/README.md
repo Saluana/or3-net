@@ -33,11 +33,11 @@ Preferred v1 pattern:
 
 Add an SSR route or server utility that:
 
-- [ ] resolves authenticated session
-- [ ] resolves active workspace
-- [ ] mints `or3-chat-assertion-v1`
-- [ ] exchanges with `or3-net`
-- [ ] returns OR3 Net workspace token to the client composable
+- [x] resolves authenticated session
+- [x] resolves active workspace
+- [x] mints `or3-chat-assertion-v1`
+- [x] exchanges with `or3-net`
+- [x] returns OR3 Net workspace token to the client composable
 
 Suggested files:
 
@@ -46,20 +46,21 @@ Suggested files:
 
 ### Client composables
 
-- [ ] `app/composables/or3-net/useOr3NetAuth.ts`
-- [ ] `app/composables/or3-net/useOr3NetClient.ts`
-- [ ] `app/composables/or3-net/useOr3NetStream.ts`
+- [x] `app/composables/or3-net/useOr3NetAuth.ts`
+- [x] `app/composables/or3-net/useOr3NetClient.ts`
+- [x] `app/composables/or3-net/useOr3NetSession.ts`
+- [x] `app/composables/or3-net/useOr3NetJobStream.ts`
 
 The client composables should call the local adapter first, not providers directly.
 
 ### UI
 
-- [ ] plugin shell
+- [x] plugin shell
 - [ ] agent CRUD
-- [ ] job submit/list/detail
-- [ ] stream view
-- [ ] preview pane
-- [ ] service actions only when capability is present
+- [x] job submit/list/detail
+- [x] stream view
+- [x] preview pane
+- [x] service actions only when capability is present
 
 ## UX Rules
 
@@ -72,41 +73,44 @@ The client composables should call the local adapter first, not providers direct
 
 ### M0: Update planning assumptions
 
-- [ ] update chat-side planning docs to remove provider-direct OR3 Net proof as the default path
+- [x] update chat-side planning docs to remove provider-direct OR3 Net proof as the default path
 - [ ] update chat-side planning docs to reference `or3-node` instead of `or3-sandbox` on the active path
 
 ### M1: Adapter route
 
-- [ ] implement server-side exchange adapter
-- [ ] gate it behind SSR auth and OR3 Net host config
-- [ ] return clean error states to the client
+- [x] implement server-side exchange adapter
+- [x] gate it behind SSR auth and OR3 Net host config
+- [x] return clean error states to the client
 
 ### M2: Auth client
 
-- [ ] build `useOr3NetAuth` around the local adapter route
-- [ ] keep OR3 Net token in memory only
-- [ ] invalidate on workspace switch
+- [x] build `useOr3NetAuth` around the local adapter route
+- [x] keep OR3 Net token in memory only
+- [x] invalidate on workspace switch
 
 ### M3: Jobs and previews
 
-- [ ] implement agent/job UI
-- [ ] implement stream reconnect
-- [ ] implement preview pane UX
+- [ ] implement agent UI
+- [x] implement baseline job submit/list/detail UI
+- [x] implement stream reconnect
+- [x] implement preview pane UX
 
 ### M4: Capability-aware service UX
 
-- [ ] read service capability from OR3 Net node/service payloads
-- [ ] only show launch actions when real capability exists
+- [x] read service capability from OR3 Net node/service payloads
+- [x] only show launch actions when real capability exists
 
 ## Tests
 
-- [ ] exchange adapter happy path
-- [ ] exchange adapter unauthenticated path
-- [ ] exchange adapter wrong-workspace path
-- [ ] workspace switch invalidation
-- [ ] stream reconnect
-- [ ] preview fallback
-- [ ] service launch hidden when capability absent
+- [x] exchange adapter happy path
+- [x] exchange adapter unauthenticated path
+- [x] exchange adapter wrong-workspace path
+- [x] workspace switch invalidation
+- [x] session binding recovery
+- [x] jobs page list/detail behavior
+- [x] stream reconnect
+- [x] preview fallback
+- [x] service launch hidden when capability absent
 
 ## Definition Of Done
 

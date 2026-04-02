@@ -442,8 +442,14 @@ export class Or3NetApp {
   private async handleListSessions(request: Request, workspaceId: string, url: URL): Promise<Response> {
     const principal = await this.requirePrincipal(request, workspaceId, "sessions:read");
     const limit = clampLimit(parsePositiveIntegerQuery(url.searchParams.get("limit")), MAX_LIST_QUERY_LIMIT);
+    const clientKind = normalizeOptionalQueryValue(url.searchParams.get("client_kind"));
+    const clientSessionId = normalizeOptionalQueryValue(url.searchParams.get("client_session_id"));
     return jsonResponse(200, {
-      items: this.services.localJobService.listSessions(principal.workspace_id, { ...(limit === undefined ? {} : { limit }) }),
+      items: this.services.localJobService.listSessions(principal.workspace_id, {
+        ...(limit === undefined ? {} : { limit }),
+        ...(clientKind === undefined ? {} : { client_kind: clientKind }),
+        ...(clientSessionId === undefined ? {} : { client_session_id: clientSessionId }),
+      }),
     });
   }
 
@@ -984,6 +990,15 @@ const requireGroup = (groups: Record<string, string | undefined>, key: string): 
     throw new HttpError(404, `missing route parameter ${key}`, { code: platformErrorCodes.resourceNotFound });
   }
   return value;
+};
+
+const normalizeOptionalQueryValue = (value: string | null): string | undefined => {
+  if (value === null) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 };
 
 const requireNodeRegistry = (service: NodeRegistryService | undefined): NodeRegistryService => {

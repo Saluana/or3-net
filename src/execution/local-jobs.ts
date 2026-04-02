@@ -248,7 +248,18 @@ export class LocalJobService {
   }
 
   /** Purpose: Lists resolved network sessions known to the local job service. */
-  public listSessions(workspaceId: string, input: { limit?: number } = {}): StoredNetworkSession[] {
+  public listSessions(
+    workspaceId: string,
+    input: { limit?: number; client_kind?: string; client_session_id?: string } = {},
+  ): StoredNetworkSession[] {
+    if (input.client_kind !== undefined && input.client_session_id !== undefined) {
+      const match = this.options.database.workspace(workspaceId).findNetworkSessionByClient(
+        input.client_kind,
+        input.client_session_id,
+      );
+      return match === null ? [] : [match];
+    }
+
     return this.sessionBindingService.listBindings(workspaceId, input);
   }
 

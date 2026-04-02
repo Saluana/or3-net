@@ -624,6 +624,61 @@ describe("phase 2 host API", () => {
     expect(payload.items).toHaveLength(100);
   });
 
+  test("filters session list queries by client session identity", async () => {
+    database.workspace("ws_test").saveNetworkSession({
+      network_session_id: "sess_thread_1",
+      client_kind: "or3-chat",
+      client_session_id: "thread_1",
+      intern_session_key: "svc:sess_thread_1",
+      status: "active",
+      created_at: "2024-01-01T00:00:00.000Z",
+      updated_at: "2024-01-01T00:01:00.000Z",
+      last_activity_at: "2024-01-01T00:02:00.000Z",
+    });
+    database.workspace("ws_test").saveNetworkSession({
+      network_session_id: "sess_thread_2",
+      client_kind: "or3-chat",
+      client_session_id: "thread_2",
+      intern_session_key: "svc:sess_thread_2",
+      status: "active",
+      created_at: "2024-01-01T00:03:00.000Z",
+      updated_at: "2024-01-01T00:04:00.000Z",
+      last_activity_at: "2024-01-01T00:05:00.000Z",
+    });
+
+    const tokenResponse = await handleAppRequest(
+      app,
+      new Request("http://or3.test/v1/auth/exchange", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "test",
+          session_proof: { session: "ok" },
+          workspace_id: "ws_test",
+        }),
+      }),
+    );
+    const tokenPayload = (await tokenResponse.json()) as { token: string };
+
+    const response = await handleAppRequest(
+      app,
+      new Request(
+        "http://or3.test/v1/workspaces/ws_test/sessions?client_kind=or3-chat&client_session_id=thread_2&limit=100",
+        {
+          headers: { Authorization: `Bearer ${tokenPayload.token}` },
+        },
+      ),
+    );
+    const payload = (await response.json()) as {
+      items: { network_session_id: string; client_session_id: string | null }[];
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.items).toHaveLength(1);
+    expect(payload.items[0]?.network_session_id).toBe("sess_thread_2");
+    expect(payload.items[0]?.client_session_id).toBe("thread_2");
+  });
+
   test("sanitizes unexpected 500 errors", async () => {
     const explodingApp = new Or3NetApp({
       database,
