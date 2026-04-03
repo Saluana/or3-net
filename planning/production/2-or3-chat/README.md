@@ -56,7 +56,8 @@ The client composables should call the local adapter first, not providers direct
 ### UI
 
 - [x] plugin shell
-- [ ] agent CRUD
+- [x] agent CRUD
+- [x] saved presets
 - [x] job submit/list/detail
 - [x] stream view
 - [x] preview pane
@@ -74,7 +75,7 @@ The client composables should call the local adapter first, not providers direct
 ### M0: Update planning assumptions
 
 - [x] update chat-side planning docs to remove provider-direct OR3 Net proof as the default path
-- [ ] update chat-side planning docs to reference `or3-node` instead of `or3-sandbox` on the active path
+- [x] update chat-side planning docs to reference `or3-node` instead of `or3-sandbox` on the active path
 
 ### M1: Adapter route
 
@@ -90,7 +91,8 @@ The client composables should call the local adapter first, not providers direct
 
 ### M3: Jobs and previews
 
-- [ ] implement agent UI
+- [x] implement agent UI
+- [x] implement saved preset UI
 - [x] implement baseline job submit/list/detail UI
 - [x] implement stream reconnect
 - [x] implement preview pane UX
@@ -108,6 +110,7 @@ The client composables should call the local adapter first, not providers direct
 - [x] workspace switch invalidation
 - [x] session binding recovery
 - [x] jobs page list/detail behavior
+- [x] saved preset persistence/apply behavior
 - [x] stream reconnect
 - [x] preview fallback
 - [x] service launch hidden when capability absent

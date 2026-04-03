@@ -67,7 +67,7 @@ The plugin should not invent its own session identity; it should bind to the hos
 
 Preferred flow:
 
-- when the user opens a chat-thread-linked OR3 Network view, the plugin derives `client_kind = "or3-chat"` and `client_session_id = <thread-or-pane-id>`
+- when the user opens a chat-thread-linked OR3 Network view, the plugin derives `client_kind = "chat"` and `client_session_id = <thread-or-pane-id>`
 - the first job submission resolves or creates the `network_session_id` through the host API
 - subsequent job submissions reuse that `network_session_id`
 - after refresh or reconnect, the plugin reloads jobs and event history for the same session binding

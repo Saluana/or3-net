@@ -1,10 +1,12 @@
 # Chat V1 Integration — Tasks
 
-## 1. Align the cross-repo contract before UI work
+## 1. Finalize the cross-repo contract after the shipped UI baseline
 
-- [ ] [Req 2, 3] Confirm the host routes, session-binding inputs, and replay APIs required by the plugin are available from the operator/session plan before shipping browser integration.
-- [ ] [Req 2] Confirm the token-exchange proof shape that `or3-chat` can produce through its existing provider-agnostic session flows.
+- [x] [Req 2, 3] Confirm the host routes, session-binding inputs, and replay APIs required by the plugin are available from the operator/session plan for the shipped browser integration.
+- [x] [Req 2] Confirm the token-exchange proof shape that `or3-chat` can produce through its existing provider-agnostic session flows.
 - [x] [Req 4] Confirm preview/service launch routes and metadata match the plugin UX assumptions for pane vs external launch.
+
+These items are no longer pre-UI blockers. The remaining follow-up lives in consumer/contract hardening and documentation work across `or3-chat` and the platform-standardization docs.
 
 ## 2. Add the `or3-chat` plugin shell
 
@@ -36,9 +38,9 @@
 ## 6. Add end-to-end regression coverage
 
 - [x] [Req 5] Add `or3-chat` tests for token exchange, session binding recovery, workspace switch rebinding, and the initial jobs page/client slice.
-- [ ] [Req 5] Add `or3-net` regression tests for the browser-facing routes the plugin consumes.
-- [ ] [Req 5] Add at least one integrated flow test covering: chat auth → host token exchange → job submit → live stream → abort or completion → preview/service launch.
-- [ ] [Req 5] Add negative tests for expired tokens, missing scope, expired launch URLs, and workspace/session mismatch.
+- [x] [Req 5] Add `or3-net` regression tests for the browser-facing routes the plugin consumes.
+- [x] [Req 5] Add at least one integrated flow test covering: chat auth → host token exchange → job submit → live stream → abort or completion → preview/service launch.
+- [x] [Req 5] Add negative tests for expired tokens, missing scope, expired launch URLs, and workspace/session mismatch.
 
 ## 7. Update docs and rollout guidance
 

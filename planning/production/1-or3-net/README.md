@@ -58,7 +58,7 @@ Recommended request shape:
   - `client_kind`
   - `client_session_id`
   - legacy `session_key`
-- [x] Make `client_kind = "or3-chat"` the documented chat client binding
+- [x] Make `client_kind = "chat"` the documented chat client binding
 - [x] Ensure session lookup and reuse are stable after refresh
 
 Evidence this already exists:
