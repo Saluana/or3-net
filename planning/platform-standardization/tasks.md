@@ -200,27 +200,27 @@ Tasks are organized by project in execution order. `or3-net` goes first as the b
 
 ### 24. Session proof exchange freeze (or3-chat)
 
-- [ ] [Req 2] Freeze the session proof exchange input format: `{ provider, session_proof, workspace_hint? }`.
-- [ ] [Req 2] Document what `or3-chat` sends as `session_proof` for each auth provider (Clerk JWT, basic-auth token).
-- [ ] [Req 2] Ensure `or3-chat` provider-specific auth stays hidden behind existing abstractions (`AuthTokenBroker`, `SessionContext`).
+- [x] [Req 2] Freeze the session proof exchange input format: `{ provider, session_proof, workspace_id? }`.
+- [x] [Req 2] Document the shipped `or3-chat` session proof format: server-issued `or3-chat-assertion-v1` proof relayed by the local exchange bridge, not browser-sent provider JWTs/tokens.
+- [x] [Req 2] Ensure `or3-chat` provider-specific auth stays hidden behind existing abstractions (`SessionContext` and the server-side exchange bridge) rather than leaking provider-specific proof logic into the browser.
 
 ### 25. Workspace switch invalidation (or3-chat)
 
-- [ ] [Req 2] Freeze workspace-switch invalidation behavior: cached `or3-net` workspace tokens are invalidated on workspace switch.
-- [ ] [Req 2] Ensure active workspace-scoped views (job streams, preview embeds) are torn down on workspace switch.
-- [ ] [Req 2] Document the invalidation contract so `or3-net` can rely on it for session binding cleanup.
+- [x] [Req 2] Freeze workspace-switch invalidation behavior: cached `or3-net` workspace tokens are invalidated on workspace switch.
+- [x] [Req 2] Ensure active workspace-scoped views (job streams, preview embeds) are torn down on workspace switch.
+- [x] [Req 2] Document the invalidation contract so `or3-net` can rely on it for session binding cleanup.
 
 ### 26. Error envelope consumption (or3-chat)
 
-- [ ] [Req 5] Update `or3-chat` `or3-net` client code to parse `ErrorEnvelope` responses instead of ad-hoc `{ error }` shapes.
-- [ ] [Req 7] Use `retry_after_ms` from `ErrorEnvelope` for 429 retry scheduling instead of fixed backoff.
-- [ ] [Req 5] Surface canonical error codes in user-facing error messages where appropriate.
+- [x] [Req 5] Update `or3-chat` `or3-net` client code to parse `ErrorEnvelope` responses instead of ad-hoc `{ error }` shapes.
+- [x] [Req 7] Use `retry_after_ms` from `ErrorEnvelope` for 429 retry scheduling instead of fixed backoff where the consumer automatically reconnects.
+- [x] [Req 5] Surface canonical error codes in user-facing error messages where appropriate.
 
 ### 27. or3-chat contract test fixtures
 
-- [ ] [Req 10] Create `tests/contracts/fixtures/or3-net-exchange-request.json` and `or3-net-exchange-response.json` fixtures.
-- [ ] [Req 10] Create `tests/contracts/fixtures/or3-net-job-stream-events.jsonl` fixture matching the platform stream event set.
-- [ ] [Req 10] Write contract tests validating fixtures against the frozen `or3-net` API shapes.
+- [x] [Req 10] Create `tests/contracts/fixtures/or3-net-exchange-request.json` and `or3-net-exchange-response.json` fixtures.
+- [x] [Req 10] Create `tests/contracts/fixtures/or3-net-job-stream-events.jsonl` fixture matching the platform stream event set.
+- [x] [Req 10] Write contract tests validating fixtures against the frozen `or3-net` API shapes.
 
 ---
 
@@ -231,7 +231,7 @@ Tasks are organized by project in execution order. `or3-net` goes first as the b
 - [x] [Req 10] Add contract test suite to `or3-net` CI pipeline so fixture drift fails the build.
 - [x] [Req 10] Add contract test suite to `or3-intern` CI pipeline for intern API fixtures.
 - [x] [Req 10] Add contract test suite to `or3-sandbox` CI pipeline for sandbox API fixtures.
-- [ ] [Req 10] Add contract test suite to `or3-chat` CI pipeline for `or3-net` API fixtures.
+- [x] [Req 10] Add contract test suite to `or3-chat` CI pipeline for `or3-net` API fixtures.
 
 ### 29. Configuration and env naming alignment (all repos)
 
